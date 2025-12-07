@@ -1,0 +1,47 @@
+# NiceMeta Data Source Connections
+# Copy this file to connections.yaml and add your database connections
+# 
+# Supported types: postgresql, mysql, sqlite, sqlserver
+# 
+# Connections can also be managed through the UI
+
+connections:
+  # Example PostgreSQL connection
+  - name: "Sample PostgreSQL"
+    type: postgresql
+    host: localhost
+    port: 5432
+    database: sample_db
+    user: analyst
+    password: your_password
+    # Optional: SSL mode (disable, allow, prefer, require, verify-ca, verify-full)
+    ssl_mode: prefer
+    
+  # Example MySQL connection
+  - name: "Sample MySQL"
+    type: mysql
+    host: localhost
+    port: 3306
+    database: sample_db
+    user: analyst
+    password: your_password
+    # Optional: charset
+    charset: utf8mb4
+    
+  # Example SQLite connection (local file)
+  - name: "Local SQLite"
+    type: sqlite
+    # For SQLite, only 'database' field is needed (path to file)
+    database: /path/to/your/database.db
+    
+  # Example SQL Server connection
+  - name: "Sample SQL Server"
+    type: sqlserver
+    host: localhost
+    port: 1433
+    database: sample_db
+    user: analyst
+    password: your_password
+    # Optional: driver name
+    driver: "ODBC Driver 18 for SQL Server"
+

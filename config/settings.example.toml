@@ -1,0 +1,42 @@
+# NiceMeta Application Settings
+# Copy this file to settings.toml and customize for your environment
+
+[app]
+title = "NiceMeta"
+host = "0.0.0.0"
+port = 3690
+debug = false
+# IMPORTANT: Change this secret key in production!
+secret_key = "change-this-to-a-random-secret-key-in-production"
+
+[database]
+# Internal database for storing queries, dashboards, users, etc.
+# Supported drivers: postgresql, sqlite
+driver = "sqlite"
+# For SQLite, only 'name' is used (path to database file)
+# For PostgreSQL, all fields are used
+host = "localhost"
+port = 5432
+name = "nicemeta.db"  # For SQLite: file path. For PostgreSQL: database name
+user = "nicemeta"
+password = "nicemeta"
+
+[auth]
+# JWT token lifetime in seconds (default: 1 hour)
+jwt_lifetime_seconds = 3600
+# Allow new user registration
+allow_registration = true
+# Require email verification (not implemented yet)
+require_verification = false
+
+[visualization]
+# Default visualization library for new charts
+default_renderer = "plotly"
+# Available renderers: plotly, matplotlib, seaborn, altair, bokeh
+
+[server]
+# Reload on code changes (development only)
+reload = false
+# Number of workers (production)
+workers = 1
+

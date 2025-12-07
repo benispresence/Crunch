@@ -1,0 +1,113 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nicemeta"
+version = "0.1.0"
+description = "Open-source business intelligence platform - Metabase alternative built with Python"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "NiceMeta Contributors" }
+]
+keywords = ["business-intelligence", "analytics", "dashboard", "visualization", "sql"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database :: Front-Ends",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+
+dependencies = [
+    # Web Framework
+    "nicegui>=2.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    
+    # Database
+    "sqlalchemy[asyncio]>=2.0.25",
+    "asyncpg>=0.29.0",          # PostgreSQL async driver
+    "aiomysql>=0.2.0",          # MySQL async driver
+    "aiosqlite>=0.19.0",        # SQLite async driver
+    "pyodbc>=5.0.0",            # SQL Server driver
+    "greenlet>=3.0.0",          # Required for SQLAlchemy async
+    
+    # Authentication
+    "fastapi-users[sqlalchemy]>=13.0.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "httpx>=0.26.0",            # For OAuth
+    
+    # Configuration
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "pyyaml>=6.0.1",
+    "tomli>=2.0.1",
+    "tomli-w>=1.0.0",
+    
+    # Data Processing
+    "pandas>=2.1.0",
+    "numpy>=1.26.0",
+    
+    # Visualization - Comprehensive
+    "plotly>=5.18.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "altair>=5.2.0",
+    "bokeh>=3.3.0",
+    
+    # Utilities
+    "python-multipart>=0.0.6",
+    "email-validator>=2.1.0",
+    "aiofiles>=23.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "black>=24.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.6.0",
+]
+
+[project.scripts]
+nicemeta = "nicemeta.main:run"
+
+[project.urls]
+Homepage = "https://github.com/nicemeta/nicemeta"
+Documentation = "https://github.com/nicemeta/nicemeta#readme"
+Repository = "https://github.com/nicemeta/nicemeta"
+Issues = "https://github.com/nicemeta/nicemeta/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nicemeta"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+

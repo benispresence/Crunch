@@ -1,0 +1,108 @@
+# NiceMeta Docker Compose Configuration
+# 
+# Usage:
+#   Development:  docker-compose up
+#   Production:   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Access the application at http://localhost:8080
+
+version: "3.8"
+
+services:
+  # NiceMeta Application
+  nicemeta:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: nicemeta-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Application settings
+      NICEMETA_APP__TITLE: "NiceMeta"
+      NICEMETA_APP__HOST: "0.0.0.0"
+      NICEMETA_APP__PORT: "8080"
+      NICEMETA_APP__DEBUG: "false"
+      NICEMETA_APP__SECRET_KEY: "${SECRET_KEY:-change-this-in-production}"
+      
+      # Database settings (PostgreSQL)
+      NICEMETA_DATABASE__DRIVER: "postgresql"
+      NICEMETA_DATABASE__HOST: "postgres"
+      NICEMETA_DATABASE__PORT: "5432"
+      NICEMETA_DATABASE__NAME: "nicemeta"
+      NICEMETA_DATABASE__USER: "nicemeta"
+      NICEMETA_DATABASE__PASSWORD: "${DB_PASSWORD:-nicemeta}"
+      
+      # Auth settings
+      NICEMETA_AUTH__JWT_LIFETIME_SECONDS: "3600"
+      NICEMETA_AUTH__ALLOW_REGISTRATION: "true"
+    volumes:
+      # Mount config for customization
+      - ../config:/app/config:ro
+      # Persist SQLite database if using SQLite
+      - nicemeta-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nicemeta-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # PostgreSQL Database (Internal)
+  postgres:
+    image: postgres:16-alpine
+    container_name: nicemeta-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nicemeta
+      POSTGRES_USER: nicemeta
+      POSTGRES_PASSWORD: "${DB_PASSWORD:-nicemeta}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - nicemeta-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nicemeta -d nicemeta"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: nicemeta-pgadmin
+    restart: unless-stopped
+    profiles:
+      - admin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_EMAIL:-admin@nicemeta.local}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_PASSWORD:-admin}"
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    networks:
+      - nicemeta-network
+    depends_on:
+      - postgres
+
+volumes:
+  postgres-data:
+    name: nicemeta-postgres-data
+  pgadmin-data:
+    name: nicemeta-pgadmin-data
+  nicemeta-data:
+    name: nicemeta-app-data
+
+networks:
+  nicemeta-network:
+    name: nicemeta-network
+    driver: bridge
+
