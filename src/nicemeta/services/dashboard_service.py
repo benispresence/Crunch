@@ -1,312 +1,370 @@
 """
-Dashboard service for managing dashboards and widgets.
+Dashboard service for database CRUD operations.
+
+Handles persistence of dashboards and widgets to the internal database.
 """
 
-from datetime import datetime
-from typing import Optional
-
-from sqlalchemy import select
+from sqlalchemy import select, delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from nicemeta.core.models import Dashboard, DashboardWidget, Visualization
+from nicemeta.core.database import get_session_context
+from nicemeta.core.models import Dashboard, DashboardWidget, Query, Visualization
 
 
 class DashboardService:
-    """
-    Service for managing dashboards.
-    
-    Provides CRUD operations for dashboards and their widgets.
-    """
+    """Service for managing dashboards in the database."""
 
-    def __init__(self, session: AsyncSession):
-        """
-        Initialize the dashboard service.
-        
-        Args:
-            session: Database session
-        """
-        self.session = session
+    @staticmethod
+    async def get_all() -> list[dict]:
+        """Get all dashboards."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Dashboard)
+                .options(selectinload(Dashboard.widgets))
+                .order_by(Dashboard.updated_at.desc())
+            )
+            dashboards = result.scalars().all()
+            return [DashboardService._to_dict(d) for d in dashboards]
 
-    async def create_dashboard(
-        self,
+    @staticmethod
+    async def get_by_id(dashboard_id: str) -> dict | None:
+        """Get a dashboard by ID with all widgets."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Dashboard)
+                .options(
+                    selectinload(Dashboard.widgets)
+                    .selectinload(DashboardWidget.visualization)
+                    .selectinload(Visualization.query)
+                )
+                .where(Dashboard.id == dashboard_id)
+            )
+            dashboard = result.scalar_one_or_none()
+            return DashboardService._to_dict_full(dashboard) if dashboard else None
+
+    @staticmethod
+    async def create(
         name: str,
-        owner_id: str,
         description: str | None = None,
         folder_id: str | None = None,
+    ) -> dict:
+        """Create a new dashboard."""
+        async with get_session_context() as session:
+            dashboard = Dashboard(
+                name=name,
+                description=description,
+                folder_id=folder_id,
+            )
+            session.add(dashboard)
+            await session.flush()
+            await session.refresh(dashboard)
+            # Don't try to access widgets for newly created dashboard
+            return DashboardService._to_dict(dashboard, include_widget_count=False)
+
+    @staticmethod
+    async def update(
+        dashboard_id: str,
+        name: str | None = None,
+        description: str | None = None,
         layout_config: dict | None = None,
-    ) -> Dashboard:
-        """
-        Create a new dashboard.
-        
-        Args:
-            name: Dashboard name
-            owner_id: Owner user ID
-            description: Dashboard description
-            folder_id: Parent folder ID
-            layout_config: Grid layout configuration
+    ) -> dict | None:
+        """Update a dashboard."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Dashboard)
+                .options(selectinload(Dashboard.widgets))
+                .where(Dashboard.id == dashboard_id)
+            )
+            dashboard = result.scalar_one_or_none()
             
-        Returns:
-            Created Dashboard object
-        """
-        dashboard = Dashboard(
-            name=name,
-            description=description,
-            folder_id=folder_id,
-            owner_id=owner_id,
-            layout_config=layout_config or {"columns": 12},
-        )
-        
-        self.session.add(dashboard)
-        await self.session.flush()
-        
-        return dashboard
-
-    async def get_dashboard(self, dashboard_id: str) -> Dashboard | None:
-        """Get a dashboard by ID with its widgets."""
-        result = await self.session.execute(
-            select(Dashboard)
-            .options(selectinload(Dashboard.widgets))
-            .where(Dashboard.id == dashboard_id)
-        )
-        return result.scalar_one_or_none()
-
-    async def get_dashboards_by_owner(
-        self,
-        owner_id: str,
-        folder_id: str | None = None,
-    ) -> list[Dashboard]:
-        """Get all dashboards owned by a user."""
-        stmt = select(Dashboard).where(Dashboard.owner_id == owner_id)
-        
-        if folder_id is not None:
-            stmt = stmt.where(Dashboard.folder_id == folder_id)
-        
-        result = await self.session.execute(stmt.order_by(Dashboard.updated_at.desc()))
-        return list(result.scalars().all())
-
-    async def update_dashboard(
-        self,
-        dashboard_id: str,
-        **updates,
-    ) -> Dashboard | None:
-        """
-        Update a dashboard.
-        
-        Args:
-            dashboard_id: Dashboard ID
-            **updates: Fields to update
+            if not dashboard:
+                return None
             
-        Returns:
-            Updated Dashboard or None if not found
-        """
-        dashboard = await self.get_dashboard(dashboard_id)
-        if not dashboard:
-            return None
-        
-        for key, value in updates.items():
-            if hasattr(dashboard, key):
-                setattr(dashboard, key, value)
-        
-        await self.session.flush()
-        return dashboard
-
-    async def delete_dashboard(self, dashboard_id: str) -> bool:
-        """
-        Delete a dashboard.
-        
-        Args:
-            dashboard_id: Dashboard ID
+            if name is not None:
+                dashboard.name = name
+            if description is not None:
+                dashboard.description = description
+            if layout_config is not None:
+                dashboard.layout_config = layout_config
             
-        Returns:
-            True if deleted, False if not found
-        """
-        dashboard = await self.get_dashboard(dashboard_id)
-        if not dashboard:
-            return False
-        
-        await self.session.delete(dashboard)
-        await self.session.flush()
-        return True
+            await session.flush()
+            await session.refresh(dashboard)
+            return DashboardService._to_dict(dashboard)
 
+    @staticmethod
+    async def delete(dashboard_id: str) -> bool:
+        """Delete a dashboard."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                sql_delete(Dashboard).where(Dashboard.id == dashboard_id)
+            )
+            return result.rowcount > 0
+
+    @staticmethod
     async def add_widget(
-        self,
         dashboard_id: str,
-        visualization_id: str,
+        query_id: str,
+        chart_type: str = "table",
+        chart_config: dict | None = None,
         position_x: int = 0,
         position_y: int = 0,
         width: int = 6,
         height: int = 4,
         title_override: str | None = None,
-    ) -> DashboardWidget | None:
-        """
-        Add a widget to a dashboard.
-        
-        Args:
-            dashboard_id: Dashboard ID
-            visualization_id: Visualization ID
-            position_x: X position in grid
-            position_y: Y position in grid
-            width: Widget width in grid units
-            height: Widget height in grid units
-            title_override: Custom title for widget
+    ) -> dict | None:
+        """Add a widget to a dashboard."""
+        async with get_session_context() as session:
+            # First, get or create a visualization for this query
+            viz_result = await session.execute(
+                select(Visualization).where(
+                    Visualization.query_id == query_id,
+                    Visualization.chart_type == chart_type,
+                )
+            )
+            visualization = viz_result.scalar_one_or_none()
             
-        Returns:
-            Created DashboardWidget or None if dashboard not found
-        """
-        dashboard = await self.get_dashboard(dashboard_id)
-        if not dashboard:
-            return None
-        
-        widget = DashboardWidget(
-            dashboard_id=dashboard_id,
-            visualization_id=visualization_id,
-            position_x=position_x,
-            position_y=position_y,
-            width=width,
-            height=height,
-            title_override=title_override,
-        )
-        
-        self.session.add(widget)
-        await self.session.flush()
-        
-        return widget
+            if not visualization:
+                # Get query name for visualization name
+                query_result = await session.execute(
+                    select(Query).where(Query.id == query_id)
+                )
+                query = query_result.scalar_one_or_none()
+                if not query:
+                    return None
+                
+                # Create visualization
+                visualization = Visualization(
+                    name=f"{query.name} - {chart_type}",
+                    query_id=query_id,
+                    chart_type=chart_type,
+                    config=chart_config or {},
+                )
+                session.add(visualization)
+                await session.flush()
+            
+            # Create widget
+            widget = DashboardWidget(
+                dashboard_id=dashboard_id,
+                visualization_id=visualization.id,
+                position_x=position_x,
+                position_y=position_y,
+                width=width,
+                height=height,
+                title_override=title_override,
+            )
+            session.add(widget)
+            await session.flush()
+            await session.refresh(widget)
+            
+            return {
+                "id": widget.id,
+                "dashboard_id": dashboard_id,
+                "visualization_id": visualization.id,
+                "query_id": query_id,
+                "chart_type": chart_type,
+                "position_x": position_x,
+                "position_y": position_y,
+                "width": width,
+                "height": height,
+                "title_override": title_override,
+            }
 
+    @staticmethod
     async def update_widget(
-        self,
         widget_id: str,
-        **updates,
-    ) -> DashboardWidget | None:
-        """
-        Update a dashboard widget.
-        
-        Args:
-            widget_id: Widget ID
-            **updates: Fields to update (position, size, etc.)
-            
-        Returns:
-            Updated widget or None if not found
-        """
-        result = await self.session.execute(
-            select(DashboardWidget).where(DashboardWidget.id == widget_id)
-        )
-        widget = result.scalar_one_or_none()
-        
-        if not widget:
-            return None
-        
-        for key, value in updates.items():
-            if hasattr(widget, key):
-                setattr(widget, key, value)
-        
-        await self.session.flush()
-        return widget
-
-    async def remove_widget(self, widget_id: str) -> bool:
-        """
-        Remove a widget from its dashboard.
-        
-        Args:
-            widget_id: Widget ID
-            
-        Returns:
-            True if removed, False if not found
-        """
-        result = await self.session.execute(
-            select(DashboardWidget).where(DashboardWidget.id == widget_id)
-        )
-        widget = result.scalar_one_or_none()
-        
-        if not widget:
-            return False
-        
-        await self.session.delete(widget)
-        await self.session.flush()
-        return True
-
-    async def update_layout(
-        self,
-        dashboard_id: str,
-        widgets: list[dict],
-    ) -> bool:
-        """
-        Update the layout of all widgets on a dashboard.
-        
-        Args:
-            dashboard_id: Dashboard ID
-            widgets: List of widget updates with id, position_x, position_y, width, height
-            
-        Returns:
-            True if updated successfully
-        """
-        dashboard = await self.get_dashboard(dashboard_id)
-        if not dashboard:
-            return False
-        
-        for widget_update in widgets:
-            widget_id = widget_update.get("id")
-            if not widget_id:
-                continue
-            
-            await self.update_widget(
-                widget_id,
-                position_x=widget_update.get("position_x", 0),
-                position_y=widget_update.get("position_y", 0),
-                width=widget_update.get("width", 6),
-                height=widget_update.get("height", 4),
+        position_x: int | None = None,
+        position_y: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        title_override: str | None = None,
+    ) -> dict | None:
+        """Update a widget's position/size."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(DashboardWidget).where(DashboardWidget.id == widget_id)
             )
-        
-        return True
-
-    async def duplicate_dashboard(
-        self,
-        dashboard_id: str,
-        new_name: str | None = None,
-        new_owner_id: str | None = None,
-    ) -> Dashboard | None:
-        """
-        Duplicate a dashboard with all its widgets.
-        
-        Args:
-            dashboard_id: Dashboard ID to duplicate
-            new_name: Name for the copy
-            new_owner_id: Owner for the copy
+            widget = result.scalar_one_or_none()
             
-        Returns:
-            New Dashboard or None if original not found
-        """
-        original = await self.get_dashboard(dashboard_id)
-        if not original:
-            return None
-        
-        # Create dashboard copy
-        copy = Dashboard(
-            name=new_name or f"{original.name} (Copy)",
-            description=original.description,
-            folder_id=original.folder_id,
-            owner_id=new_owner_id or original.owner_id,
-            layout_config=original.layout_config,
-            refresh_interval=original.refresh_interval,
-        )
-        
-        self.session.add(copy)
-        await self.session.flush()
-        
-        # Copy widgets
-        for widget in original.widgets:
-            widget_copy = DashboardWidget(
-                dashboard_id=copy.id,
-                visualization_id=widget.visualization_id,
-                position_x=widget.position_x,
-                position_y=widget.position_y,
-                width=widget.width,
-                height=widget.height,
-                title_override=widget.title_override,
-            )
-            self.session.add(widget_copy)
-        
-        await self.session.flush()
-        
-        return copy
+            if not widget:
+                return None
+            
+            if position_x is not None:
+                widget.position_x = position_x
+            if position_y is not None:
+                widget.position_y = position_y
+            if width is not None:
+                widget.width = width
+            if height is not None:
+                widget.height = height
+            if title_override is not None:
+                widget.title_override = title_override
+            
+            await session.flush()
+            return {
+                "id": widget.id,
+                "position_x": widget.position_x,
+                "position_y": widget.position_y,
+                "width": widget.width,
+                "height": widget.height,
+            }
 
+    @staticmethod
+    async def remove_widget(widget_id: str) -> bool:
+        """Remove a widget from a dashboard."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                sql_delete(DashboardWidget).where(DashboardWidget.id == widget_id)
+            )
+            return result.rowcount > 0
+
+    @staticmethod
+    async def update_widgets_positions(widgets: list[dict]) -> bool:
+        """Batch update widget positions."""
+        async with get_session_context() as session:
+            for widget_data in widgets:
+                result = await session.execute(
+                    select(DashboardWidget).where(
+                        DashboardWidget.id == widget_data["id"]
+                    )
+                )
+                widget = result.scalar_one_or_none()
+                if widget:
+                    widget.position_x = widget_data.get("position_x", widget.position_x)
+                    widget.position_y = widget_data.get("position_y", widget.position_y)
+                    widget.width = widget_data.get("width", widget.width)
+                    widget.height = widget_data.get("height", widget.height)
+            
+            await session.flush()
+            return True
+
+    @staticmethod
+    def _to_dict(dashboard: Dashboard, include_widget_count: bool = True) -> dict:
+        """Convert a Dashboard model to a dictionary."""
+        result = {
+            "id": dashboard.id,
+            "name": dashboard.name,
+            "description": dashboard.description,
+            "layout_config": dashboard.layout_config,
+            "folder_id": dashboard.folder_id,
+            "is_public": dashboard.is_public,
+            "created_at": dashboard.created_at.isoformat() if dashboard.created_at else None,
+            "updated_at": dashboard.updated_at.isoformat() if dashboard.updated_at else None,
+        }
+        # Only access widgets if they were eagerly loaded (avoid lazy load outside async)
+        if include_widget_count:
+            try:
+                result["widget_count"] = len(dashboard.widgets) if dashboard.widgets else 0
+            except Exception:
+                result["widget_count"] = 0
+        else:
+            result["widget_count"] = 0
+        return result
+
+    @staticmethod
+    def _to_dict_full(dashboard: Dashboard) -> dict:
+        """Convert a Dashboard with widgets to a full dictionary."""
+        result = DashboardService._to_dict(dashboard, include_widget_count=True)
+        result["widgets"] = []
+        
+        try:
+            widgets = dashboard.widgets
+        except Exception:
+            widgets = []
+        
+        if widgets:
+            for widget in widgets:
+                widget_dict = {
+                    "id": widget.id,
+                    "position_x": widget.position_x,
+                    "position_y": widget.position_y,
+                    "width": widget.width,
+                    "height": widget.height,
+                    "title_override": widget.title_override,
+                }
+                
+                if widget.visualization:
+                    widget_dict["visualization"] = {
+                        "id": widget.visualization.id,
+                        "name": widget.visualization.name,
+                        "chart_type": widget.visualization.chart_type,
+                        "config": widget.visualization.config,
+                    }
+                    
+                    if widget.visualization.query:
+                        widget_dict["query"] = {
+                            "id": widget.visualization.query.id,
+                            "name": widget.visualization.query.name,
+                            "sql": widget.visualization.query.sql,
+                            "connection_id": widget.visualization.query.connection_id,
+                        }
+                
+                result["widgets"].append(widget_dict)
+        
+        return result
+
+
+# Convenience functions
+async def get_dashboards() -> list[dict]:
+    """Get all dashboards."""
+    return await DashboardService.get_all()
+
+
+async def get_dashboard_by_id(dashboard_id: str) -> dict | None:
+    """Get a dashboard by ID."""
+    return await DashboardService.get_by_id(dashboard_id)
+
+
+async def create_dashboard(name: str, description: str | None = None) -> dict:
+    """Create a new dashboard."""
+    return await DashboardService.create(name=name, description=description)
+
+
+async def delete_dashboard(dashboard_id: str) -> bool:
+    """Delete a dashboard."""
+    return await DashboardService.delete(dashboard_id)
+
+
+async def add_widget_to_dashboard(
+    dashboard_id: str,
+    query_id: str,
+    chart_type: str = "table",
+    chart_config: dict | None = None,
+    position_x: int = 0,
+    position_y: int = 0,
+    width: int = 6,
+    height: int = 4,
+) -> dict | None:
+    """Add a widget to a dashboard."""
+    return await DashboardService.add_widget(
+        dashboard_id=dashboard_id,
+        query_id=query_id,
+        chart_type=chart_type,
+        chart_config=chart_config,
+        position_x=position_x,
+        position_y=position_y,
+        width=width,
+        height=height,
+    )
+
+
+async def update_widget_position(
+    widget_id: str,
+    position_x: int,
+    position_y: int,
+    width: int,
+    height: int,
+) -> dict | None:
+    """Update a widget's position."""
+    return await DashboardService.update_widget(
+        widget_id=widget_id,
+        position_x=position_x,
+        position_y=position_y,
+        width=width,
+        height=height,
+    )
+
+
+async def remove_widget(widget_id: str) -> bool:
+    """Remove a widget."""
+    return await DashboardService.remove_widget(widget_id)

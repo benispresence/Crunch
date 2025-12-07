@@ -21,25 +21,33 @@ from nicemeta.services.connection_service import (
     get_connections as db_get_connections,
     get_connection_by_id as db_get_connection_by_id,
 )
+from nicemeta.services.dashboard_service import (
+    DashboardService,
+    get_dashboards as db_get_dashboards,
+    get_dashboard_by_id as db_get_dashboard_by_id,
+    create_dashboard as db_create_dashboard,
+    delete_dashboard as db_delete_dashboard,
+)
 
 # Cache for queries (refreshed on demand)
 _cached_queries: list[dict] = []
 _cached_connections: list[dict] = []
+_cached_dashboards: list[dict] = []
 _cache_initialized: bool = False
 
 # Folders (still in-memory for now - can be moved to DB later)
 _folders: list[dict] = [
     {"id": "1", "name": "My Queries", "parent_id": None},
 ]
-_saved_dashboards: list[dict] = []
 
 
 async def refresh_cache() -> None:
-    """Refresh the cached queries and connections from database."""
-    global _cached_queries, _cached_connections, _cache_initialized
+    """Refresh the cached queries, connections, and dashboards from database."""
+    global _cached_queries, _cached_connections, _cached_dashboards, _cache_initialized
     try:
         _cached_queries = await db_get_saved_queries()
         _cached_connections = await db_get_connections()
+        _cached_dashboards = await db_get_dashboards()
         _cache_initialized = True
     except Exception as e:
         print(f"Error refreshing cache: {e}")
@@ -111,8 +119,32 @@ def get_folders() -> list[dict]:
 
 
 def get_saved_dashboards() -> list[dict]:
-    """Get all saved dashboards."""
-    return _saved_dashboards
+    """Get all saved dashboards (from cache)."""
+    return _cached_dashboards
+
+
+async def get_saved_dashboards_async() -> list[dict]:
+    """Get all saved dashboards from database."""
+    return await db_get_dashboards()
+
+
+async def get_dashboard_by_id(dashboard_id: str) -> dict | None:
+    """Get a dashboard by ID from database."""
+    return await db_get_dashboard_by_id(dashboard_id)
+
+
+async def create_dashboard(name: str, description: str | None = None) -> dict:
+    """Create a new dashboard."""
+    result = await db_create_dashboard(name=name, description=description)
+    await refresh_cache()
+    return result
+
+
+async def delete_dashboard(dashboard_id: str) -> bool:
+    """Delete a dashboard."""
+    result = await db_delete_dashboard(dashboard_id)
+    await refresh_cache()
+    return result
 
 
 class MetabaseSidebar:
@@ -224,9 +256,14 @@ class MetabaseSidebar:
         for dashboard in dashboards:
             with ui.row().classes(
                 "items-center gap-2 px-2 py-1 hover:bg-gray-100 rounded cursor-pointer"
-            ):
+            ).on("click", lambda d=dashboard: ui.navigate.to(f"/dashboards/{d['id']}")):
                 ui.icon("dashboard", size="sm").classes("text-purple-500")
-                ui.label(dashboard["name"]).classes("text-sm text-gray-700")
+                with ui.column().classes("gap-0 flex-grow"):
+                    ui.label(dashboard["name"]).classes("text-sm text-gray-700 truncate")
+                    widget_count = dashboard.get("widget_count", 0)
+                    ui.label(f"{widget_count} widget{'s' if widget_count != 1 else ''}").classes(
+                        "text-xs text-gray-400"
+                    )
     
     def _nav_item(self, path: str, icon: str, label: str) -> None:
         """Create a navigation item."""
