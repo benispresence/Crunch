@@ -9,12 +9,16 @@ from nicemeta.ui.components.sidebar import (
     MetabaseSidebar,
     get_saved_queries,
     get_saved_dashboards,
+    get_connections,
+    refresh_cache,
 )
-from nicemeta.ui.pages.connections import _connections
 
 
 async def home_page() -> None:
     """Render the home/dashboard overview page."""
+    
+    # Refresh cache to ensure we have latest data
+    await refresh_cache()
     
     # Create Metabase-style layout
     sidebar = MetabaseSidebar()
@@ -77,7 +81,10 @@ async def home_page() -> None:
                                         ui.icon("code", size="sm").classes("text-blue-500")
                                         with ui.column().classes("gap-0"):
                                             ui.label(query["name"]).classes("font-medium text-gray-800")
-                                            ui.label(f"Updated {query.get('updated_at', 'recently')[:10]}").classes(
+                                            updated = query.get('updated_at', 'recently')
+                                            if updated and len(updated) >= 10:
+                                                updated = updated[:10]
+                                            ui.label(f"Updated {updated}").classes(
                                                 "text-xs text-gray-400"
                                             )
                     else:
@@ -107,13 +114,14 @@ async def home_page() -> None:
                                 ui.label("No dashboards yet")
             
             # Stats
+            connections = get_connections()
             with ui.row().classes("gap-4 flex-wrap justify-center mt-8"):
                 stat_card("Questions", str(len(get_saved_queries())), "description", "text-blue-500")
                 stat_card("Dashboards", str(len(get_saved_dashboards())), "dashboard", "text-green-500")
-                stat_card("Connections", str(len(_connections)), "storage", "text-purple-500")
+                stat_card("Connections", str(len(connections)), "storage", "text-purple-500")
             
             # Connection status
-            if not _connections:
+            if not connections:
                 with ui.card().classes("w-full bg-orange-50 border border-orange-200"):
                     with ui.row().classes("items-center gap-4 p-4"):
                         ui.icon("warning", size="md").classes("text-orange-500")

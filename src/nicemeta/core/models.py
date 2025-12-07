@@ -75,10 +75,11 @@ class Folder(Base, TimestampMixin):
         ForeignKey("folders.id", ondelete="CASCADE"),
         nullable=True,
     )
-    owner_id: Mapped[str] = mapped_column(
+    # TODO: Make required when auth is fully integrated
+    owner_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -135,10 +136,11 @@ class Connection(Base, TimestampMixin):
     # Additional connection options stored as JSON
     options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     
-    owner_id: Mapped[str] = mapped_column(
+    # TODO: Make required when auth is fully integrated
+    owner_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -189,10 +191,11 @@ class Query(Base, TimestampMixin):
         ForeignKey("folders.id", ondelete="SET NULL"),
         nullable=True,
     )
-    owner_id: Mapped[str] = mapped_column(
+    # TODO: Make required when auth is fully integrated
+    owner_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -251,10 +254,11 @@ class Visualization(Base, TimestampMixin):
         ForeignKey("queries.id", ondelete="CASCADE"),
         nullable=False,
     )
-    owner_id: Mapped[str] = mapped_column(
+    # TODO: Make required when auth is fully integrated
+    owner_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
 
     # Relationships
@@ -293,10 +297,11 @@ class Dashboard(Base, TimestampMixin):
         ForeignKey("folders.id", ondelete="SET NULL"),
         nullable=True,
     )
-    owner_id: Mapped[str] = mapped_column(
+    # TODO: Make required when auth is fully integrated
+    owner_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)

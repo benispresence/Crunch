@@ -4,10 +4,18 @@ Connections management page for NiceMeta.
 
 from nicegui import ui
 
-from nicemeta.ui.components.sidebar import MetabaseHeader, MetabaseSidebar
-
-# Store connections at module level for persistence across page loads
-_connections: list[dict] = []
+from nicemeta.ui.components.sidebar import (
+    MetabaseHeader,
+    MetabaseSidebar,
+    get_connections,
+    refresh_cache,
+)
+from nicemeta.services.connection_service import (
+    ConnectionService,
+    create_connection,
+    delete_connection,
+    get_connection_by_id,
+)
 
 
 class ConnectionsPage:
@@ -18,6 +26,9 @@ class ConnectionsPage:
 
     async def render(self) -> None:
         """Render the connections page."""
+        # Refresh cache to ensure we have latest connections
+        await refresh_cache()
+        
         # Metabase-style layout
         sidebar = MetabaseSidebar()
         sidebar.create()
@@ -44,9 +55,11 @@ class ConnectionsPage:
         """Render connection cards."""
         self._cards_container.clear()
         
+        connections = get_connections()
+        
         with self._cards_container:
             # Show saved connections
-            for conn in _connections:
+            for conn in connections:
                 connection_card(
                     name=conn["name"],
                     db_type=conn["db_type"],
@@ -130,9 +143,9 @@ class ConnectionsPage:
                 
                 with ui.row().classes("gap-2"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button(
-                        "Save",
-                        on_click=lambda: self._do_save_connection(
+                    
+                    async def save_and_close():
+                        await self._do_save_connection(
                             name_input.value,
                             db_type.value,
                             host_input.value,
@@ -141,8 +154,9 @@ class ConnectionsPage:
                             user_input.value,
                             password_input.value,
                             dialog,
-                        ),
-                    ).props("color=primary")
+                        )
+                    
+                    ui.button("Save", on_click=save_and_close).props("color=primary")
         
         dialog.open()
 
@@ -186,7 +200,7 @@ class ConnectionsPage:
         except Exception as e:
             ui.notify(f"✗ Error: {str(e)}", type="negative")
 
-    def _do_save_connection(
+    async def _do_save_connection(
         self,
         name: str,
         db_type: str,
@@ -197,7 +211,7 @@ class ConnectionsPage:
         password: str,
         dialog,
     ) -> None:
-        """Save the connection."""
+        """Save the connection to database."""
         if not name:
             ui.notify("Please enter a connection name", type="warning")
             return
@@ -206,24 +220,29 @@ class ConnectionsPage:
             ui.notify("Please enter a database name", type="warning")
             return
         
-        # Save to module-level list
-        conn = {
-            "id": str(len(_connections) + 1),
-            "name": name,
-            "db_type": db_type,
-            "host": host,
-            "port": port,
-            "database": database,
-            "user": user,
-            "password": password,
-        }
-        _connections.append(conn)
-        
-        # Refresh the display
-        self._render_connections()
-        
-        ui.notify(f"Connection '{name}' saved!", type="positive")
-        dialog.close()
+        try:
+            # Save to database
+            await create_connection(
+                name=name,
+                db_type=db_type,
+                host=host,
+                port=port,
+                database=database,
+                username=user,
+                password=password,
+            )
+            
+            # Refresh cache
+            await refresh_cache()
+            
+            # Refresh the display
+            self._render_connections()
+            
+            ui.notify(f"Connection '{name}' saved!", type="positive")
+            dialog.close()
+            
+        except Exception as e:
+            ui.notify(f"Error saving connection: {str(e)}", type="negative")
 
     async def _test_connection(self, conn: dict) -> None:
         """Test an existing connection."""
@@ -233,7 +252,7 @@ class ConnectionsPage:
             conn["host"],
             conn["port"],
             conn["database"],
-            conn.get("user", ""),
+            conn.get("user", "") or conn.get("username", ""),
             conn.get("password", ""),
         )
 
@@ -250,22 +269,25 @@ class ConnectionsPage:
                 "will no longer work."
             ).classes("text-gray-500")
             
+            async def do_delete():
+                await self._do_delete_connection(conn, dialog)
+            
             with ui.row().classes("justify-end gap-2 mt-4"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button(
-                    "Delete",
-                    on_click=lambda: self._do_delete_connection(conn, dialog),
-                ).props("color=negative")
+                ui.button("Delete", on_click=do_delete).props("color=negative")
         
         dialog.open()
 
-    def _do_delete_connection(self, conn: dict, dialog) -> None:
-        """Actually delete the connection."""
-        global _connections
-        _connections = [c for c in _connections if c["id"] != conn["id"]]
-        self._render_connections()
-        ui.notify(f"Connection '{conn['name']}' deleted", type="info")
-        dialog.close()
+    async def _do_delete_connection(self, conn: dict, dialog) -> None:
+        """Actually delete the connection from database."""
+        try:
+            await delete_connection(conn["id"])
+            await refresh_cache()
+            self._render_connections()
+            ui.notify(f"Connection '{conn['name']}' deleted", type="info")
+            dialog.close()
+        except Exception as e:
+            ui.notify(f"Error deleting connection: {str(e)}", type="negative")
 
 
 def connection_card(

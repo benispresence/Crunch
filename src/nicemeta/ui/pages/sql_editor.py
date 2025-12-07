@@ -9,15 +9,18 @@ from nicemeta.ui.components.sidebar import (
     MetabaseHeader,
     MetabaseSidebar,
     get_saved_queries,
+    get_query_by_id,
     save_query,
     delete_query,
+    get_connections,
+    get_connections_async,
+    refresh_cache,
 )
 from nicemeta.ui.components.sql_editor_widget import (
     SQLEditorWidget,
     create_results_table,
     serialize_value,
 )
-from nicemeta.ui.pages.connections import _connections
 
 
 class SQLEditorPage:
@@ -55,7 +58,8 @@ class SQLEditorPage:
         # Check for query_id in URL params
         query_id = ui.context.client.request.query_params.get("query_id")
         if query_id:
-            self._load_query(query_id)
+            # Load query data (async)
+            await self._load_query(query_id)
             self._is_saved_query = True
         
         # Create Metabase-style sidebar (top-level)
@@ -279,9 +283,10 @@ class SQLEditorPage:
 
     def _get_connection_options(self) -> dict:
         """Get connection options for the selector."""
-        if not _connections:
+        connections = get_connections()
+        if not connections:
             return {}
-        return {conn["id"]: conn["name"] for conn in _connections}
+        return {conn["id"]: conn["name"] for conn in connections}
 
     def _on_connection_change(self, e) -> None:
         """Handle connection selection change."""
@@ -291,10 +296,9 @@ class SQLEditorPage:
         """Update the query name."""
         self.query_name = name
 
-    def _load_query(self, query_id: str) -> None:
-        """Load a saved query."""
-        queries = get_saved_queries()
-        query = next((q for q in queries if q["id"] == query_id), None)
+    async def _load_query(self, query_id: str) -> None:
+        """Load a saved query from database."""
+        query = await get_query_by_id(query_id)
         if query:
             self.query_id = query["id"]
             self.query_name = query["name"]
@@ -310,7 +314,8 @@ class SQLEditorPage:
 
     def _on_query_selected(self, query: dict) -> None:
         """Handle query selection from sidebar."""
-        self._load_query(query["id"])
+        # Navigate to SQL editor with query ID - it will load async
+        ui.navigate.to(f"/sql?query_id={query['id']}")
 
     def _save_query_dialog(self) -> None:
         """Show save query dialog."""
@@ -329,21 +334,17 @@ class SQLEditorPage:
                 value="1",
             ).classes("w-full")
             
+            async def do_save():
+                await self._do_save_query(name_input.value, folder_select.value, dialog)
+            
             with ui.row().classes("justify-end gap-2 mt-4"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button(
-                    "Save",
-                    on_click=lambda: self._do_save_query(
-                        name_input.value,
-                        folder_select.value,
-                        dialog,
-                    ),
-                ).props("color=primary")
+                ui.button("Save", on_click=do_save).props("color=primary")
         
         dialog.open()
 
-    def _do_save_query(self, name: str, folder_id: str, dialog) -> None:
-        """Actually save the query."""
+    async def _do_save_query(self, name: str, folder_id: str, dialog) -> None:
+        """Actually save the query to database."""
         if not name:
             ui.notify("Please enter a name", type="warning")
             return
@@ -353,7 +354,7 @@ class SQLEditorPage:
             ui.notify("Please enter a SQL query", type="warning")
             return
         
-        saved = save_query(
+        saved = await save_query(
             name=name,
             sql=sql,
             connection_id=self.current_connection or "",
@@ -378,20 +379,21 @@ class SQLEditorPage:
             ui.label(f"Delete '{self.query_name}'?").classes("text-lg font-semibold")
             ui.label("This action cannot be undone.").classes("text-gray-500")
             
+            async def do_delete():
+                await self._do_delete_query(dialog)
+            
             with ui.row().classes("justify-end gap-2 mt-4"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button(
-                    "Delete",
-                    on_click=lambda: self._do_delete_query(dialog),
-                ).props("color=negative")
+                ui.button("Delete", on_click=do_delete).props("color=negative")
         
         dialog.open()
 
-    def _do_delete_query(self, dialog) -> None:
-        """Actually delete the query."""
-        delete_query(self.query_id)
+    async def _do_delete_query(self, dialog) -> None:
+        """Actually delete the query from database."""
+        await delete_query(self.query_id)
         ui.notify(f"Deleted '{self.query_name}'", type="info")
         dialog.close()
+        ui.navigate.to("/sql")
         ui.navigate.to("/sql")
 
     def _set_view(self, view: str) -> None:
@@ -675,7 +677,8 @@ class SQLEditorPage:
             ui.notify("Please enter a SQL query", type="warning")
             return
         
-        conn = next((c for c in _connections if c["id"] == self.current_connection), None)
+        connections = get_connections()
+        conn = next((c for c in connections if c["id"] == self.current_connection), None)
         if not conn:
             ui.notify("Connection not found", type="negative")
             return

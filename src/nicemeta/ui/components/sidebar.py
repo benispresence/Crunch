@@ -2,63 +2,107 @@
 Metabase-style sidebar and header components.
 """
 
+import asyncio
 from datetime import datetime
 from typing import Callable
 
 from nicegui import app, ui
 
-# Global saved queries storage
-_saved_queries: list[dict] = []
-_saved_dashboards: list[dict] = []
+# Import database services
+from nicemeta.services.query_service import (
+    QueryService,
+    get_saved_queries as db_get_saved_queries,
+    save_query as db_save_query,
+    delete_query as db_delete_query,
+    get_query_by_id as db_get_query_by_id,
+)
+from nicemeta.services.connection_service import (
+    ConnectionService,
+    get_connections as db_get_connections,
+    get_connection_by_id as db_get_connection_by_id,
+)
+
+# Cache for queries (refreshed on demand)
+_cached_queries: list[dict] = []
+_cached_connections: list[dict] = []
+_cache_initialized: bool = False
+
+# Folders (still in-memory for now - can be moved to DB later)
 _folders: list[dict] = [
     {"id": "1", "name": "My Queries", "parent_id": None},
 ]
+_saved_dashboards: list[dict] = []
+
+
+async def refresh_cache() -> None:
+    """Refresh the cached queries and connections from database."""
+    global _cached_queries, _cached_connections, _cache_initialized
+    try:
+        _cached_queries = await db_get_saved_queries()
+        _cached_connections = await db_get_connections()
+        _cache_initialized = True
+    except Exception as e:
+        print(f"Error refreshing cache: {e}")
 
 
 def get_saved_queries() -> list[dict]:
-    """Get all saved queries."""
-    return _saved_queries
+    """Get all saved queries (from cache)."""
+    return _cached_queries
 
 
-def save_query(
+async def get_saved_queries_async() -> list[dict]:
+    """Get all saved queries from database."""
+    return await db_get_saved_queries()
+
+
+async def get_query_by_id(query_id: str) -> dict | None:
+    """Get a query by ID from database."""
+    return await db_get_query_by_id(query_id)
+
+
+async def save_query(
     name: str,
     sql: str,
     connection_id: str,
     folder_id: str | None = None,
     query_id: str | None = None,
 ) -> dict:
-    """Save a query."""
-    global _saved_queries
-    
-    if query_id:
-        # Update existing
-        for q in _saved_queries:
-            if q["id"] == query_id:
-                q["name"] = name
-                q["sql"] = sql
-                q["connection_id"] = connection_id
-                q["folder_id"] = folder_id
-                q["updated_at"] = datetime.now().isoformat()
-                return q
-    
-    # Create new
-    new_query = {
-        "id": str(len(_saved_queries) + 1),
-        "name": name,
-        "sql": sql,
-        "connection_id": connection_id,
-        "folder_id": folder_id or "1",
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    }
-    _saved_queries.append(new_query)
-    return new_query
+    """Save a query to database."""
+    global _cached_queries
+    result = await db_save_query(
+        name=name,
+        sql=sql,
+        connection_id=connection_id,
+        folder_id=folder_id,
+        query_id=query_id,
+    )
+    # Refresh cache after save
+    await refresh_cache()
+    return result
 
 
-def delete_query(query_id: str) -> None:
-    """Delete a query."""
-    global _saved_queries
-    _saved_queries = [q for q in _saved_queries if q["id"] != query_id]
+async def delete_query(query_id: str) -> bool:
+    """Delete a query from database."""
+    global _cached_queries
+    result = await db_delete_query(query_id)
+    # Refresh cache after delete
+    await refresh_cache()
+    return result
+
+
+def get_connections() -> list[dict]:
+    """Get all connections (from cache)."""
+    return _cached_connections
+
+
+async def get_connections_async() -> list[dict]:
+    """Get all connections from database."""
+    return await db_get_connections()
+
+
+async def get_connection_by_id(connection_id: str) -> dict | None:
+    """Get a connection by ID from database."""
+    return await db_get_connection_by_id(connection_id)
 
 
 def get_folders() -> list[dict]:
@@ -77,6 +121,7 @@ class MetabaseSidebar:
     def __init__(self, on_query_select: Callable[[dict], None] | None = None):
         self.on_query_select = on_query_select
         self._drawer = None
+        self._queries_container = None
     
     def create(self) -> ui.left_drawer:
         """Create the sidebar drawer."""
@@ -107,7 +152,10 @@ class MetabaseSidebar:
                 self._render_section("Collections", "folder", self._render_folders)
                 
                 # Saved Queries
-                self._render_section("Saved Questions", "description", self._render_queries)
+                with ui.expansion("Saved Questions", icon="description").classes("w-full").props("dense"):
+                    self._queries_container = ui.column().classes("w-full")
+                    with self._queries_container:
+                        self._render_queries_sync()
                 
                 # Dashboards
                 self._render_section("Dashboards", "dashboard", self._render_dashboards)
@@ -116,6 +164,13 @@ class MetabaseSidebar:
             with ui.column().classes("border-t border-gray-200 p-2"):
                 self._nav_item("/connections", "storage", "Data")
                 self._nav_item("/admin", "settings", "Settings")
+        
+        # Schedule cache refresh
+        async def init_cache():
+            await refresh_cache()
+            self._refresh_queries_display()
+        
+        ui.timer(0.1, init_cache, once=True)
         
         return self._drawer
     
@@ -138,8 +193,8 @@ class MetabaseSidebar:
                 ui.icon("folder", size="sm").classes("text-yellow-500")
                 ui.label(folder["name"]).classes("text-sm text-gray-700")
     
-    def _render_queries(self) -> None:
-        """Render saved queries list."""
+    def _render_queries_sync(self) -> None:
+        """Render saved queries list (synchronous, uses cache)."""
         queries = get_saved_queries()
         if not queries:
             ui.label("No saved questions yet").classes("text-gray-400 text-sm p-2")
@@ -151,6 +206,13 @@ class MetabaseSidebar:
             ).on("click", lambda q=query: self._select_query(q)):
                 ui.icon("code", size="sm").classes("text-blue-500")
                 ui.label(query["name"]).classes("text-sm text-gray-700 truncate")
+    
+    def _refresh_queries_display(self) -> None:
+        """Refresh the queries display after cache update."""
+        if self._queries_container:
+            self._queries_container.clear()
+            with self._queries_container:
+                self._render_queries_sync()
     
     def _render_dashboards(self) -> None:
         """Render dashboards list."""
@@ -186,6 +248,11 @@ class MetabaseSidebar:
         """Toggle the drawer."""
         if self._drawer:
             self._drawer.toggle()
+    
+    async def refresh(self) -> None:
+        """Refresh the sidebar content."""
+        await refresh_cache()
+        self._refresh_queries_display()
 
 
 class MetabaseHeader:
