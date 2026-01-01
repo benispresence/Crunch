@@ -157,6 +157,7 @@ class ChartFactory:
         cls,
         data: pd.DataFrame,
         config: ChartConfig,
+        options: dict | None = None,
         renderer: str | None = None,
     ) -> str:
         """
@@ -165,6 +166,7 @@ class ChartFactory:
         Args:
             data: DataFrame containing chart data
             config: Chart configuration
+            options: Optional additional chart options
             renderer: Optional renderer name
             
         Returns:
@@ -175,7 +177,7 @@ class ChartFactory:
         else:
             r = cls.get_best_renderer(config.chart_type)
         
-        return r.render_to_html(data, config)
+        return r.render_to_html(data, config, options)
 
     @classmethod
     def get_chart_types(cls, category: str | None = None) -> list[dict]:

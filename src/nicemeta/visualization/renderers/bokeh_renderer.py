@@ -65,8 +65,13 @@ class BokehRenderer(ChartRenderer):
                 error=str(e),
             )
 
-    def render_to_html(self, data: pd.DataFrame, config: ChartConfig) -> str:
+    def render_to_html(
+        self, data: pd.DataFrame, config: ChartConfig, options: dict | None = None
+    ) -> str:
         """Render directly to HTML string."""
+        if options:
+            for key, value in options.items():
+                config.options[key] = value
         try:
             p = self._create_figure(data, config)
             self._apply_styling(p, config)

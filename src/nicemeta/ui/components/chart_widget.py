@@ -42,7 +42,7 @@ class ChartWidget:
             if self.config and self.config.title:
                 ui.label(self.config.title).classes("text-lg font-semibold mb-2")
             
-            self._chart_container = ui.html("").classes("w-full")
+            self._chart_container = ui.html("", sanitize=False).classes("w-full")
             
             if self.data is not None and self.config is not None:
                 self.render()

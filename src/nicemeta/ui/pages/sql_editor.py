@@ -409,126 +409,291 @@ class SQLEditorPage:
         self._show_viz_options_dialog()
 
     def _show_viz_options_dialog(self) -> None:
-        """Show visualization options dialog."""
+        """Show Metabase-style visualization settings dialog."""
         if self.result_df is None:
             return
         
         analysis = self._analyze_columns(self.result_df)
         suitable_charts = self._get_suitable_chart_types(analysis)
         
-        with ui.dialog() as dialog, ui.card().classes("w-[600px]"):
-            ui.label("Visualization Settings").classes("text-lg font-semibold mb-4")
-            
-            with ui.row().classes("w-full gap-4"):
-                # Left - Chart type selection
-                with ui.column().classes("w-1/2"):
-                    ui.label("Chart Type").classes("font-medium text-sm text-gray-600 mb-2")
-                    
-                    # Group by category
-                    categories = {}
-                    for chart in suitable_charts:
-                        cat = chart.get("category", "Other")
-                        if cat not in categories:
-                            categories[cat] = []
-                        categories[cat].append(chart)
-                    
-                    with ui.scroll_area().style("max-height: 300px"):
-                        for category, charts in categories.items():
-                            ui.label(category).classes("text-xs text-gray-400 mt-2 mb-1")
-                            with ui.column().classes("gap-1"):
-                                for chart in charts:
-                                    is_selected = chart["id"] == self._selected_chart_type
-                                    with ui.row().classes(
-                                        f"items-center gap-2 px-2 py-1 rounded cursor-pointer "
-                                        f"{'bg-blue-50 border border-blue-200' if is_selected else 'hover:bg-gray-100'}"
-                                    ).on("click", lambda c=chart["id"]: self._select_chart_type(c, dialog)):
-                                        ui.icon(chart["icon"], size="sm").classes(
-                                            "text-blue-500" if is_selected else "text-gray-400"
-                                        )
-                                        ui.label(chart["name"]).classes(
-                                            "text-sm " + ("text-blue-700" if is_selected else "text-gray-700")
-                                        )
+        # Chart library info
+        CHART_LIBRARIES = {
+            "bar": {"lib": "Plotly", "type": "plotly.express.bar"},
+            "line": {"lib": "Plotly", "type": "plotly.express.line"},
+            "area": {"lib": "Plotly", "type": "plotly.express.area"},
+            "pie": {"lib": "Plotly", "type": "plotly.express.pie"},
+            "donut": {"lib": "Plotly", "type": "plotly.express.pie (hole=0.4)"},
+            "scatter": {"lib": "Plotly", "type": "plotly.express.scatter"},
+            "histogram": {"lib": "Plotly", "type": "plotly.express.histogram"},
+            "heatmap": {"lib": "Plotly", "type": "plotly.express.imshow"},
+            "box": {"lib": "Plotly", "type": "plotly.express.box"},
+            "table": {"lib": "NiceGUI", "type": "ui.table"},
+        }
+        
+        with ui.dialog().props("maximized") as dialog:
+            with ui.card().classes("w-full h-full").style("max-width: 900px; max-height: 650px; margin: auto;"):
+                # Header
+                with ui.row().classes("w-full items-center justify-between p-4 border-b"):
+                    ui.label("Visualization Settings").classes("text-xl font-bold")
+                    ui.button(icon="close", on_click=dialog.close).props("flat round")
                 
-                # Right - Column mapping
-                with ui.column().classes("w-1/2"):
-                    ui.label("Data Mapping").classes("font-medium text-sm text-gray-600 mb-2")
-                    self._render_column_mapping_dialog(analysis)
-            
-            with ui.row().classes("justify-end gap-2 mt-4"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button(
-                    "Done",
-                    on_click=lambda: self._apply_viz_settings(dialog),
-                ).props("color=primary")
+                # Main content - side by side
+                with ui.splitter(value=35).classes("w-full").style("height: 500px;") as splitter:
+                    # LEFT SIDEBAR - Chart Types
+                    with splitter.before:
+                        with ui.column().classes("w-full h-full bg-gray-50 p-0"):
+                            ui.label("Chart Type").classes("text-sm font-semibold text-gray-600 p-3 border-b bg-white")
+                            
+                            with ui.scroll_area().classes("w-full").style("height: 450px;"):
+                                with ui.column().classes("p-2 gap-1 w-full"):
+                                    # Group by category
+                                    categories = {}
+                                    for chart in suitable_charts:
+                                        cat = chart.get("category", "Other")
+                                        if cat not in categories:
+                                            categories[cat] = []
+                                        categories[cat].append(chart)
+                                    
+                                    for category, charts in categories.items():
+                                        ui.label(category.upper()).classes(
+                                            "text-xs font-bold text-gray-400 px-2 pt-4 pb-1"
+                                        )
+                                        for chart in charts:
+                                            is_selected = chart["id"] == self._selected_chart_type
+                                            lib_info = CHART_LIBRARIES.get(chart["id"], {})
+                                            
+                                            btn_classes = (
+                                                "w-full justify-start text-left " +
+                                                ("bg-blue-500 text-white" if is_selected else "")
+                                            )
+                                            
+                                            with ui.button(on_click=lambda c=chart["id"]: self._select_chart_type(c, dialog)).props(
+                                                "flat align=left no-caps"
+                                            ).classes(btn_classes):
+                                                with ui.row().classes("items-center gap-3 w-full"):
+                                                    ui.icon(chart["icon"]).classes(
+                                                        "text-white" if is_selected else "text-gray-500"
+                                                    )
+                                                    with ui.column().classes("gap-0"):
+                                                        ui.label(chart["name"]).classes(
+                                                            "text-sm font-medium " + 
+                                                            ("text-white" if is_selected else "text-gray-700")
+                                                        )
+                                                        ui.label(lib_info.get("lib", "")).classes(
+                                                            "text-xs " +
+                                                            ("text-blue-100" if is_selected else "text-gray-400")
+                                                        )
+                    
+                    # RIGHT PANEL - Settings
+                    with splitter.after:
+                        with ui.column().classes("w-full h-full"):
+                            # Settings header
+                            lib_info = CHART_LIBRARIES.get(self._selected_chart_type, {})
+                            with ui.row().classes("w-full items-center justify-between p-3 border-b bg-white"):
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Settings").classes("text-sm font-semibold text-gray-600")
+                                    if lib_info:
+                                        ui.label(f"{lib_info.get('lib', '')} • {lib_info.get('type', '')}").classes(
+                                            "text-xs text-gray-400 font-mono"
+                                        )
+                            
+                            # Settings content
+                            with ui.scroll_area().classes("w-full").style("height: 400px;"):
+                                with ui.column().classes("p-4 gap-4 w-full"):
+                                    self._render_viz_settings_panel(analysis)
+                
+                # Footer with actions
+                with ui.row().classes("w-full justify-end gap-2 p-4 border-t bg-gray-50"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                    ui.button(
+                        "Apply", 
+                        icon="check",
+                        on_click=lambda: self._apply_viz_settings(dialog)
+                    ).props("color=primary")
         
         dialog.open()
+
+    def _render_viz_settings_panel(self, analysis: dict) -> None:
+        """Render the settings panel based on chart type."""
+        all_cols = analysis["all_cols"]
+        numeric_cols = analysis["numeric_cols"]
+        categorical_cols = analysis["categorical_cols"]
+        datetime_cols = analysis["datetime_cols"]
+        chart_type = self._selected_chart_type
+        
+        # DATA section
+        with ui.card().classes("w-full"):
+            with ui.card_section():
+                ui.label("📊 Data Mapping").classes("text-sm font-bold text-gray-700")
+            
+            with ui.card_section().classes("pt-0"):
+                if chart_type in ["bar", "line", "area", "scatter", "histogram"]:
+                    # X-Axis - allow all columns
+                    x_options = {c: c for c in all_cols}
+                    default_x = self._chart_config.get("x") or (categorical_cols[0] if categorical_cols else (all_cols[0] if all_cols else None))
+                    
+                    ui.select(
+                        label="X-Axis (Categories)",
+                        options=x_options,
+                        value=default_x,
+                        on_change=lambda e: self._update_chart_config("x", e.value),
+                    ).classes("w-full mb-2")
+                    
+                    if chart_type == "bar":
+                        ui.select(
+                            label="Orientation",
+                            options={"v": "Vertical", "h": "Horizontal"},
+                            value=self._chart_config.get("orientation", "v"),
+                            on_change=lambda e: self._update_chart_config("orientation", e.value),
+                        ).classes("w-full mb-2")
+                
+                if chart_type in ["bar", "line", "area", "scatter"]:
+                    # Y-Axis - prefer numeric but allow all
+                    y_options = {c: f"{c} ★" if c in numeric_cols else c for c in all_cols}
+                    default_y = self._chart_config.get("y") or (numeric_cols[0] if numeric_cols else (all_cols[1] if len(all_cols) > 1 else all_cols[0] if all_cols else None))
+                    
+                    ui.select(
+                        label="Y-Axis (Values) - ★ = numeric",
+                        options=y_options,
+                        value=default_y,
+                        on_change=lambda e: self._update_chart_config("y", e.value),
+                    ).classes("w-full mb-2")
+                
+                if chart_type in ["pie", "donut"]:
+                    label_options = {c: c for c in all_cols}
+                    value_options = {c: f"{c} ★" if c in numeric_cols else c for c in all_cols}
+                    
+                    ui.select(
+                        label="Labels (Categories)",
+                        options=label_options,
+                        value=self._chart_config.get("labels") or (categorical_cols[0] if categorical_cols else (all_cols[0] if all_cols else None)),
+                        on_change=lambda e: self._update_chart_config("labels", e.value),
+                    ).classes("w-full mb-2")
+                    
+                    ui.select(
+                        label="Values (Size) - ★ = numeric",
+                        options=value_options,
+                        value=self._chart_config.get("values") or (numeric_cols[0] if numeric_cols else None),
+                        on_change=lambda e: self._update_chart_config("values", e.value),
+                    ).classes("w-full mb-2")
+                
+                if chart_type in ["bar", "line", "scatter", "area"]:
+                    color_options = {"": "None (single color)"} | {c: c for c in all_cols}
+                    ui.select(
+                        label="Color / Group By",
+                        options=color_options,
+                        value=self._chart_config.get("color", ""),
+                        on_change=lambda e: self._update_chart_config("color", e.value),
+                    ).classes("w-full")
+        
+        # DISPLAY section
+        with ui.card().classes("w-full"):
+            with ui.card_section():
+                ui.label("🎨 Display Options").classes("text-sm font-bold text-gray-700")
+            
+            with ui.card_section().classes("pt-0"):
+                ui.input(
+                    label="Chart Title",
+                    value=self._chart_config.get("title", ""),
+                    on_change=lambda e: self._update_chart_config("title", e.value),
+                ).classes("w-full mb-2")
+                
+                if chart_type in ["bar", "line", "area", "scatter"]:
+                    ui.input(
+                        label="X-Axis Label",
+                        value=self._chart_config.get("x_label", ""),
+                        on_change=lambda e: self._update_chart_config("x_label", e.value),
+                    ).classes("w-full mb-2")
+                    
+                    ui.input(
+                        label="Y-Axis Label",
+                        value=self._chart_config.get("y_label", ""),
+                        on_change=lambda e: self._update_chart_config("y_label", e.value),
+                    ).classes("w-full mb-2")
+                
+                with ui.row().classes("gap-4"):
+                    ui.checkbox(
+                        "Show legend",
+                        value=self._chart_config.get("show_legend", True),
+                        on_change=lambda e: self._update_chart_config("show_legend", e.value),
+                    )
+                    
+                    if chart_type in ["bar", "line", "scatter"]:
+                        ui.checkbox(
+                            "Show values",
+                            value=self._chart_config.get("show_values", False),
+                            on_change=lambda e: self._update_chart_config("show_values", e.value),
+                        )
+        
+        # STYLE section (for applicable charts)
+        if chart_type in ["bar", "line", "pie", "donut", "area"]:
+            with ui.card().classes("w-full"):
+                with ui.card_section():
+                    ui.label("⚙️ Style Settings").classes("text-sm font-bold text-gray-700")
+                
+                with ui.card_section().classes("pt-0"):
+                    ui.select(
+                        label="Color Palette",
+                        options={
+                            "plotly": "Plotly (Default)",
+                            "set2": "Set2 (Pastel)",
+                            "viridis": "Viridis",
+                            "plasma": "Plasma",
+                            "blues": "Blues",
+                            "reds": "Reds",
+                            "greens": "Greens",
+                            "dark24": "Dark24",
+                        },
+                        value=self._chart_config.get("color_palette", "plotly"),
+                        on_change=lambda e: self._update_chart_config("color_palette", e.value),
+                    ).classes("w-full mb-2")
+                    
+                    if chart_type == "line":
+                        ui.select(
+                            label="Line Style",
+                            options={"solid": "Solid", "dash": "Dashed", "dot": "Dotted"},
+                            value=self._chart_config.get("line_style", "solid"),
+                            on_change=lambda e: self._update_chart_config("line_style", e.value),
+                        ).classes("w-full mb-2")
+                        
+                        ui.checkbox(
+                            "Show markers on line",
+                            value=self._chart_config.get("show_markers", False),
+                            on_change=lambda e: self._update_chart_config("show_markers", e.value),
+                        )
+                    
+                    if chart_type == "bar":
+                        ui.select(
+                            label="Bar Mode (when grouped)",
+                            options={"group": "Grouped", "stack": "Stacked", "relative": "Relative"},
+                            value=self._chart_config.get("bar_mode", "group"),
+                            on_change=lambda e: self._update_chart_config("bar_mode", e.value),
+                        ).classes("w-full")
+                    
+                    if chart_type in ["pie", "donut"]:
+                        ui.checkbox(
+                            "Show percentages",
+                            value=self._chart_config.get("show_percent", True),
+                            on_change=lambda e: self._update_chart_config("show_percent", e.value),
+                        )
+
+    def _preview_chart(self, dialog) -> None:
+        """Preview the chart with current settings."""
+        self._selected_view = "visualization"
+        self._render_results()
+        ui.notify("Preview updated", type="info")
 
     def _select_chart_type(self, chart_type: str, dialog=None) -> None:
         """Select a chart type."""
         self._selected_chart_type = chart_type
-        self._chart_config = {}  # Reset config
+        # Don't reset all config, just update type-specific defaults
         if dialog:
             dialog.close()
             self._show_viz_options_dialog()  # Reopen with new selection
 
     def _render_column_mapping_dialog(self, analysis: dict) -> None:
-        """Render column mapping options in dialog."""
-        all_cols = analysis["all_cols"]
-        numeric_cols = analysis["numeric_cols"]
-        categorical_cols = analysis["categorical_cols"]
-        chart_type = self._selected_chart_type
-        
-        with ui.column().classes("w-full gap-3"):
-            if chart_type in ["bar", "line", "area", "scatter", "histogram"]:
-                x_options = {c: c for c in all_cols}
-                ui.select(
-                    label="X-Axis",
-                    options=x_options,
-                    value=self._chart_config.get("x", all_cols[0] if all_cols else None),
-                    on_change=lambda e: self._update_chart_config("x", e.value),
-                ).classes("w-full").props("dense")
-            
-            if chart_type in ["bar", "line", "area", "scatter"]:
-                y_options = {c: c for c in numeric_cols} if numeric_cols else {c: c for c in all_cols}
-                ui.select(
-                    label="Y-Axis",
-                    options=y_options,
-                    value=self._chart_config.get("y", numeric_cols[0] if numeric_cols else None),
-                    on_change=lambda e: self._update_chart_config("y", e.value),
-                ).classes("w-full").props("dense")
-            
-            if chart_type in ["pie", "donut", "funnel", "treemap"]:
-                label_options = {c: c for c in categorical_cols} if categorical_cols else {c: c for c in all_cols}
-                value_options = {c: c for c in numeric_cols} if numeric_cols else {c: c for c in all_cols}
-                
-                ui.select(
-                    label="Labels",
-                    options=label_options,
-                    value=self._chart_config.get("labels"),
-                    on_change=lambda e: self._update_chart_config("labels", e.value),
-                ).classes("w-full").props("dense")
-                
-                ui.select(
-                    label="Values",
-                    options=value_options,
-                    value=self._chart_config.get("values"),
-                    on_change=lambda e: self._update_chart_config("values", e.value),
-                ).classes("w-full").props("dense")
-            
-            if chart_type in ["bar", "line", "scatter"]:
-                color_options = {"": "(none)"} | {c: c for c in categorical_cols}
-                ui.select(
-                    label="Color/Group By",
-                    options=color_options,
-                    value=self._chart_config.get("color", ""),
-                    on_change=lambda e: self._update_chart_config("color", e.value),
-                ).classes("w-full").props("dense")
-            
-            ui.input(
-                label="Chart Title",
-                value=self._chart_config.get("title", ""),
-                on_change=lambda e: self._update_chart_config("title", e.value),
-            ).classes("w-full").props("dense")
+        """Legacy method - now using _render_viz_settings_panel."""
+        self._render_viz_settings_panel(analysis)
 
     def _update_chart_config(self, key: str, value) -> None:
         """Update chart configuration."""
@@ -542,6 +707,8 @@ class SQLEditorPage:
 
     def _analyze_columns(self, df: pd.DataFrame) -> dict:
         """Analyze DataFrame columns to determine suitable chart types."""
+        import numpy as np
+        
         analysis = {
             "numeric_cols": [],
             "categorical_cols": [],
@@ -551,18 +718,38 @@ class SQLEditorPage:
         
         for col in df.columns:
             dtype = df[col].dtype
+            
+            # Check for numeric types (including int64, float64, Int64, etc.)
             if pd.api.types.is_numeric_dtype(dtype):
+                analysis["numeric_cols"].append(col)
+            elif pd.api.types.is_integer_dtype(dtype):
+                analysis["numeric_cols"].append(col)
+            elif dtype in [np.int64, np.int32, np.float64, np.float32, 'int64', 'int32', 'float64', 'float32']:
                 analysis["numeric_cols"].append(col)
             elif pd.api.types.is_datetime64_any_dtype(dtype):
                 analysis["datetime_cols"].append(col)
             else:
+                # Try to detect if it's actually numeric but stored as object
+                try:
+                    if len(df) > 0:
+                        sample = df[col].dropna().head(10)
+                        if len(sample) > 0:
+                            # Try converting to numeric
+                            pd.to_numeric(sample, errors='raise')
+                            analysis["numeric_cols"].append(col)
+                            continue
+                except (ValueError, TypeError):
+                    pass
+                
+                # Try datetime detection
                 try:
                     if df[col].dtype == object and len(df) > 0:
-                        pd.to_datetime(df[col].iloc[0])
+                        pd.to_datetime(df[col].dropna().iloc[0])
                         analysis["datetime_cols"].append(col)
                         continue
                 except:
                     pass
+                
                 analysis["categorical_cols"].append(col)
         
         return analysis
@@ -575,18 +762,20 @@ class SQLEditorPage:
         has_categorical = len(analysis["categorical_cols"]) > 0
         has_datetime = len(analysis["datetime_cols"]) > 0
         has_multiple_numeric = len(analysis["numeric_cols"]) >= 2
+        has_any_cols = len(analysis["all_cols"]) > 0
         
+        # Always show table
         charts.append({"id": "table", "name": "Table", "icon": "table_chart", "category": "Basic"})
         
-        if has_numeric:
+        # Show basic charts if we have any data
+        if has_any_cols:
             charts.append({"id": "bar", "name": "Bar Chart", "icon": "bar_chart", "category": "Basic"})
             charts.append({"id": "line", "name": "Line Chart", "icon": "show_chart", "category": "Basic"})
             charts.append({"id": "area", "name": "Area Chart", "icon": "area_chart", "category": "Basic"})
         
-        if has_categorical and has_numeric:
+        if has_any_cols:
             charts.append({"id": "pie", "name": "Pie Chart", "icon": "pie_chart", "category": "Part-to-Whole"})
             charts.append({"id": "donut", "name": "Donut Chart", "icon": "donut_large", "category": "Part-to-Whole"})
-            charts.append({"id": "funnel", "name": "Funnel", "icon": "filter_alt", "category": "Part-to-Whole"})
             charts.append({"id": "treemap", "name": "Treemap", "icon": "grid_view", "category": "Part-to-Whole"})
         
         if has_multiple_numeric:
@@ -639,7 +828,7 @@ class SQLEditorPage:
         ).classes("w-full")
 
     def _render_chart(self) -> None:
-        """Render the selected visualization."""
+        """Render the selected visualization with advanced options."""
         if self._selected_chart_type == "table":
             self._render_table()
             return
@@ -647,6 +836,7 @@ class SQLEditorPage:
         try:
             from nicemeta.visualization import ChartConfig, ChartFactory
             
+            # Build config with all options
             config = ChartConfig(
                 chart_type=self._selected_chart_type,
                 title=self._chart_config.get("title", ""),
@@ -655,17 +845,61 @@ class SQLEditorPage:
                 labels=self._chart_config.get("labels"),
                 values=self._chart_config.get("values"),
                 color=self._chart_config.get("color") or None,
-                width=800,
+                width=900,
                 height=500,
             )
             
-            html = ChartFactory.render_to_html(self.result_df, config)
-            ui.html(html).classes("w-full")
+            # Build additional options dict for advanced settings
+            options = {
+                "show_legend": self._chart_config.get("show_legend", True),
+                "show_values": self._chart_config.get("show_values", False),
+                "color_palette": self._chart_config.get("color_palette", "plotly"),
+                "x_label": self._chart_config.get("x_label", ""),
+                "y_label": self._chart_config.get("y_label", ""),
+            }
+            
+            # Chart-specific options
+            if self._selected_chart_type == "bar":
+                options["orientation"] = self._chart_config.get("orientation", "v")
+                options["bar_mode"] = self._chart_config.get("bar_mode", "group")
+            
+            if self._selected_chart_type == "line":
+                options["line_style"] = self._chart_config.get("line_style", "solid")
+                options["show_markers"] = self._chart_config.get("show_markers", False)
+            
+            if self._selected_chart_type in ["pie", "donut"]:
+                options["show_percent"] = self._chart_config.get("show_percent", True)
+            
+            # Render chart with options
+            html = ChartFactory.render_to_html(self.result_df, config, options)
+            
+            # Show library info badge
+            CHART_LIBRARIES = {
+                "bar": "Plotly Express • Bar Chart",
+                "line": "Plotly Express • Line Chart",
+                "area": "Plotly Express • Area Chart",
+                "pie": "Plotly Express • Pie Chart",
+                "donut": "Plotly Express • Donut Chart",
+                "scatter": "Plotly Express • Scatter Plot",
+                "histogram": "Plotly Express • Histogram",
+                "heatmap": "Plotly Express • Heatmap",
+                "box": "Plotly Express • Box Plot",
+            }
+            
+            lib_info = CHART_LIBRARIES.get(self._selected_chart_type, "")
+            if lib_info:
+                with ui.row().classes("items-center gap-2 mb-2"):
+                    ui.badge(lib_info).props("color=grey-7 outline")
+            
+            ui.html(html, sanitize=False).classes("w-full")
             
         except Exception as e:
-            with ui.card().classes("w-full bg-yellow-50 p-4"):
-                ui.label("Chart Error").classes("font-semibold text-yellow-700")
-                ui.label(str(e)).classes("text-yellow-600 text-sm mt-1")
+            import traceback
+            with ui.card().classes("w-full bg-red-50 p-4 border border-red-200"):
+                ui.label("Chart Error").classes("font-semibold text-red-700")
+                ui.label(str(e)).classes("text-red-600 text-sm mt-1")
+                with ui.expansion("Details").classes("mt-2"):
+                    ui.code(traceback.format_exc()).classes("text-xs")
 
     async def _run_query(self, sql: str) -> None:
         """Execute the SQL query."""

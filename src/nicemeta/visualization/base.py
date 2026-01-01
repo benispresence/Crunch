@@ -155,13 +155,16 @@ class ChartRenderer(ABC):
         pass
 
     @abstractmethod
-    def render_to_html(self, data: pd.DataFrame, config: ChartConfig) -> str:
+    def render_to_html(
+        self, data: pd.DataFrame, config: ChartConfig, options: dict | None = None
+    ) -> str:
         """
         Render chart directly to HTML string.
         
         Args:
             data: DataFrame containing the chart data
             config: Chart configuration
+            options: Optional additional rendering options
             
         Returns:
             HTML string that can be embedded in a page

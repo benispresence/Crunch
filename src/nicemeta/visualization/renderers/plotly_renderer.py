@@ -74,8 +74,15 @@ class PlotlyRenderer(ChartRenderer):
                 error=str(e),
             )
 
-    def render_to_html(self, data: pd.DataFrame, config: ChartConfig) -> str:
-        """Render directly to HTML string."""
+    def render_to_html(
+        self, data: pd.DataFrame, config: ChartConfig, options: dict | None = None
+    ) -> str:
+        """Render directly to HTML string with optional advanced options."""
+        # Merge options into config
+        if options:
+            for key, value in options.items():
+                config.options[key] = value
+        
         result = self.render(data, config)
         if result.success:
             return result.html or ""
@@ -173,33 +180,89 @@ class PlotlyRenderer(ChartRenderer):
             "template": config.template or "plotly_white",
         }
         
-        if config.x_label:
-            layout_updates["xaxis_title"] = config.x_label
-        if config.y_label:
-            layout_updates["yaxis_title"] = config.y_label
+        # Axis labels from config or options
+        x_label = config.x_label or config.options.get("x_label", "")
+        y_label = config.y_label or config.options.get("y_label", "")
+        
+        if x_label:
+            layout_updates["xaxis_title"] = x_label
+        if y_label:
+            layout_updates["yaxis_title"] = y_label
         if config.width:
             layout_updates["width"] = config.width
         if config.height:
             layout_updates["height"] = config.height
+        
+        # Legend visibility
+        if not config.options.get("show_legend", True):
+            layout_updates["showlegend"] = False
             
         fig.update_layout(**layout_updates)
+        
+        # Show values on chart if requested
+        if config.options.get("show_values", False):
+            fig.update_traces(textposition="outside", texttemplate="%{y}")
+
+    def _get_color_palette(self, config: ChartConfig) -> list:
+        """Get the color palette based on config options."""
+        palette_name = config.options.get("color_palette", "plotly")
+        palettes = {
+            "plotly": px.colors.qualitative.Plotly,
+            "viridis": px.colors.sequential.Viridis,
+            "plasma": px.colors.sequential.Plasma,
+            "inferno": px.colors.sequential.Inferno,
+            "blues": px.colors.sequential.Blues,
+            "reds": px.colors.sequential.Reds,
+            "greens": px.colors.sequential.Greens,
+            "set2": px.colors.qualitative.Set2,
+            "pastel": px.colors.qualitative.Pastel,
+            "dark24": px.colors.qualitative.Dark24,
+        }
+        return palettes.get(palette_name, px.colors.qualitative.Plotly)
 
     # Chart creation methods
     def _line_chart(self, data: pd.DataFrame, config: ChartConfig) -> go.Figure:
-        return px.line(
+        colors = self._get_color_palette(config)
+        line_shape = "linear"
+        
+        # Line style mapping
+        line_style = config.options.get("line_style", "solid")
+        dash_map = {"solid": None, "dash": "dash", "dot": "dot", "dashdot": "dashdot"}
+        
+        fig = px.line(
             data, x=config.x, y=config.y,
             color=config.color,
-            color_discrete_sequence=px.colors.qualitative.Set2,
+            color_discrete_sequence=colors,
+            markers=config.options.get("show_markers", False),
         )
+        
+        # Apply line dash style
+        if line_style != "solid":
+            fig.update_traces(line=dict(dash=dash_map.get(line_style)))
+        
+        return fig
 
     def _bar_chart(self, data: pd.DataFrame, config: ChartConfig) -> go.Figure:
         orientation = config.options.get("orientation", "v")
-        return px.bar(
-            data, x=config.x, y=config.y,
+        bar_mode = config.options.get("bar_mode", "group")
+        colors = self._get_color_palette(config)
+        
+        # Swap x/y for horizontal
+        x_col = config.x
+        y_col = config.y
+        if orientation == "h":
+            x_col, y_col = config.y, config.x
+        
+        fig = px.bar(
+            data, x=x_col, y=y_col,
             color=config.color,
             orientation=orientation,
-            color_discrete_sequence=px.colors.qualitative.Set2,
+            color_discrete_sequence=colors,
+            barmode=bar_mode,
+            text_auto=config.options.get("show_values", False),
         )
+        
+        return fig
 
     def _scatter_chart(self, data: pd.DataFrame, config: ChartConfig) -> go.Figure:
         return px.scatter(
@@ -217,21 +280,41 @@ class PlotlyRenderer(ChartRenderer):
         )
 
     def _pie_chart(self, data: pd.DataFrame, config: ChartConfig) -> go.Figure:
-        return px.pie(
+        colors = self._get_color_palette(config)
+        show_percent = config.options.get("show_percent", True)
+        
+        fig = px.pie(
             data,
             values=config.values,
             names=config.labels,
-            color_discrete_sequence=px.colors.qualitative.Set2,
+            color_discrete_sequence=colors,
         )
+        
+        if show_percent:
+            fig.update_traces(textinfo="percent+label")
+        else:
+            fig.update_traces(textinfo="label+value")
+        
+        return fig
 
     def _donut_chart(self, data: pd.DataFrame, config: ChartConfig) -> go.Figure:
-        return px.pie(
+        colors = self._get_color_palette(config)
+        show_percent = config.options.get("show_percent", True)
+        
+        fig = px.pie(
             data,
             values=config.values,
             names=config.labels,
             hole=0.4,
-            color_discrete_sequence=px.colors.qualitative.Set2,
+            color_discrete_sequence=colors,
         )
+        
+        if show_percent:
+            fig.update_traces(textinfo="percent+label")
+        else:
+            fig.update_traces(textinfo="label+value")
+        
+        return fig
 
     def _treemap_chart(self, data: pd.DataFrame, config: ChartConfig) -> go.Figure:
         path = [config.labels] if config.labels else []

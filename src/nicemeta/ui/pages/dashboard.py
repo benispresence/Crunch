@@ -317,7 +317,7 @@ class DashboardPage:
             )
             
             html = ChartFactory.render_to_html(df, chart_config)
-            ui.html(html).classes("w-full")
+            ui.html(html, sanitize=False).classes("w-full")
         except Exception as e:
             ui.label(f"Chart error: {str(e)}").classes("text-red-400 text-sm")
 
