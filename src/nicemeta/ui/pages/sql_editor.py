@@ -444,21 +444,21 @@ class SQLEditorPage:
             "table": {"lib": "NiceGUI", "type": "ui.table"},
         }
         
-        with ui.dialog().props("maximized") as dialog:
-            with ui.card().classes("w-full h-full").style("max-width: 900px; max-height: 650px; margin: auto;"):
+        with ui.dialog().props("persistent").classes("viz-settings-dialog") as dialog:
+            with ui.card().classes("w-full").style("width: 950px; height: 700px;"):
                 # Header
-                with ui.row().classes("w-full items-center justify-between p-4 border-b"):
-                    ui.label("Visualization Settings").classes("text-xl font-bold")
+                with ui.row().classes("w-full items-center justify-between p-4 border-b bg-white"):
+                    ui.label("Visualization Settings").classes("text-xl font-bold text-gray-800")
                     ui.button(icon="close", on_click=dialog.close).props("flat round")
                 
                 # Main content - side by side
-                with ui.splitter(value=35).classes("w-full").style("height: 500px;") as splitter:
+                with ui.splitter(value=30).classes("w-full").style("height: 550px;") as splitter:
                     # LEFT SIDEBAR - Chart Types
                     with splitter.before:
                         with ui.column().classes("w-full h-full bg-gray-50 p-0"):
                             ui.label("Chart Type").classes("text-sm font-semibold text-gray-600 p-3 border-b bg-white")
                             
-                            with ui.scroll_area().classes("w-full").style("height: 450px;"):
+                            with ui.scroll_area().classes("w-full").style("height: 500px;"):
                                 with ui.column().classes("p-2 gap-1 w-full"):
                                     # Group by category
                                     categories = {}
@@ -500,14 +500,20 @@ class SQLEditorPage:
                     
                     # RIGHT PANEL - Settings & Code Tabs
                     with splitter.after:
-                        with ui.column().classes("w-full h-full"):
-                            # Tab headers
-                            with ui.tabs().classes("w-full") as tabs:
-                                settings_tab = ui.tab("Settings", icon="tune")
-                                code_tab = ui.tab("Python Code", icon="code")
+                        with ui.column().classes("w-full h-full bg-white"):
+                            # Tab headers - styled for clear visibility
+                            with ui.tabs().classes("w-full border-b-2 border-blue-200").props(
+                                "dense inline-label indicator-color=primary active-color=primary"
+                            ).style("background: #e3f2fd;") as tabs:
+                                settings_tab = ui.tab("Settings", icon="tune").props("no-caps").style(
+                                    "color: #1565c0; font-weight: 600; font-size: 14px;"
+                                )
+                                code_tab = ui.tab("Python Code", icon="code").props("no-caps").style(
+                                    "color: #1565c0; font-weight: 600; font-size: 14px;"
+                                )
                             
                             # Tab panels
-                            with ui.tab_panels(tabs, value=settings_tab).classes("w-full").style("height: 450px;"):
+                            with ui.tab_panels(tabs, value=settings_tab).classes("w-full").style("height: 480px;"):
                                 # Settings Panel
                                 with ui.tab_panel(settings_tab):
                                     lib_info = CHART_LIBRARIES.get(self._selected_chart_type, {})
@@ -518,7 +524,7 @@ class SQLEditorPage:
                                                 "text-xs text-gray-500 font-mono"
                                             )
                                     
-                                    with ui.scroll_area().classes("w-full").style("height: 380px;"):
+                                    with ui.scroll_area().classes("w-full").style("height: 420px;"):
                                         with ui.column().classes("p-2 gap-4 w-full"):
                                             self._render_viz_settings_panel(analysis)
                                 
