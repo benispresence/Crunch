@@ -59,6 +59,22 @@ import plotly.graph_objects as go
         columns = list(df.columns) if df is not None else []
         row_count = len(df) if df is not None else 0
         
+        # Auto-detect x and y columns if not specified
+        if df is not None and len(columns) > 0:
+            # Try to find numeric and categorical columns
+            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+            non_numeric_cols = [c for c in columns if c not in numeric_cols]
+            
+            # Set defaults if not specified
+            if not config.x:
+                config.x = non_numeric_cols[0] if non_numeric_cols else columns[0]
+            if not config.y:
+                config.y = numeric_cols[0] if numeric_cols else (columns[1] if len(columns) > 1 else columns[0])
+            if not config.labels:
+                config.labels = non_numeric_cols[0] if non_numeric_cols else columns[0]
+            if not config.values:
+                config.values = numeric_cols[0] if numeric_cols else (columns[1] if len(columns) > 1 else columns[0])
+        
         extra_imports = ""
         if config.chart_type in ["heatmap", "correlation"]:
             extra_imports = "import numpy as np\n"
@@ -112,13 +128,25 @@ import plotly.graph_objects as go
         show_values = options.get("show_values", False)
         color_palette = options.get("color_palette", "plotly")
         
+        # Get column names with fallbacks
+        x_col = config.x or "df.columns[0]"
+        y_col = config.y or "df.columns[1] if len(df.columns) > 1 else df.columns[0]"
+        
         # Handle orientation swap
         if orientation == "h":
-            x_col, y_col = config.y, config.x
-        else:
-            x_col, y_col = config.x, config.y
+            x_col, y_col = y_col, x_col
         
-        code = f'''# Create bar chart
+        # Check if we need to use dynamic column selection
+        if x_col.startswith("df.columns"):
+            code = f'''# Create bar chart
+x_col = {x_col}
+y_col = {y_col}
+fig = px.bar(
+    df,
+    x=x_col,
+    y=y_col,'''
+        else:
+            code = f'''# Create bar chart
 fig = px.bar(
     df,
     x="{x_col}",
