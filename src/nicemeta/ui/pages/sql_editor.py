@@ -55,6 +55,12 @@ class SQLEditorPage:
         self._python_editor: PythonEditorWidget | None = None
         self._code_preview_container = None
         
+        # Editor panel state
+        self._editors_visible: bool = True  # Toggle for showing/hiding editors
+        self._editor_panel_container = None
+        self._main_python_editor = None  # Python editor in main view
+        self._editor_toggle_btn = None  # Toggle button reference
+        
         # UI references
         self._connection_select = None
         self._results_container = None
@@ -88,15 +94,9 @@ class SQLEditorPage:
         
         # Main content area
         with ui.column().classes("w-full bg-gray-50").style("min-height: calc(100vh - 120px); padding-bottom: 60px;"):
-            # Editor section (collapsible) - collapsed if loading saved query
-            self._editor_expansion = ui.expansion(
-                "SQL Editor", 
-                icon="code", 
-                value=not self._is_saved_query  # Collapsed if saved query
-            ).classes("w-full bg-white").props("dense")
-            
-            with self._editor_expansion:
-                self._create_editor_section()
+            # Editor panel with "OPEN EDITOR" toggle
+            self._editors_visible = not self._is_saved_query
+            self._create_editor_panel()
             
             # Loading indicator (shown when running query)
             self._loading_container = ui.column().classes("w-full items-center justify-center p-8")
@@ -228,8 +228,185 @@ class SQLEditorPage:
                         on_click=lambda: ui.navigate.to("/admin"),
                     ).props("flat round").classes("text-gray-600")
 
+    def _create_editor_panel(self) -> None:
+        """Create the editor panel with OPEN EDITOR toggle and dual SQL/Python editors."""
+        # Header row with "OPEN EDITOR" toggle
+        with ui.row().classes(
+            "w-full items-center justify-between px-4 py-2 bg-white border-b border-gray-200"
+        ):
+            # Left side - Query info
+            with ui.row().classes("items-center gap-3"):
+                ui.label("This question is written in SQL.").classes(
+                    "text-sm text-gray-500"
+                )
+            
+            # Right side - OPEN EDITOR toggle
+            self._editor_toggle_btn = ui.button(
+                "OPEN EDITOR" if not self._editors_visible else "CLOSE EDITOR",
+                icon="keyboard_arrow_down" if self._editors_visible else "keyboard_arrow_right",
+                on_click=self._toggle_editors,
+            ).props("flat no-caps").classes(
+                "text-blue-600 font-medium"
+            ).style("font-size: 13px;")
+        
+        # Collapsible editor panel container
+        self._editor_panel_container = ui.column().classes("w-full")
+        with self._editor_panel_container:
+            if self._editors_visible:
+                self._render_editor_panels()
+    
+    def _toggle_editors(self) -> None:
+        """Toggle the visibility of the editor panels."""
+        self._editors_visible = not self._editors_visible
+        
+        # Update button text and icon
+        if self._editor_toggle_btn:
+            if self._editors_visible:
+                self._editor_toggle_btn.text = "CLOSE EDITOR"
+                self._editor_toggle_btn.props(remove="icon=keyboard_arrow_right")
+                self._editor_toggle_btn.props(add="icon=keyboard_arrow_down")
+            else:
+                self._editor_toggle_btn.text = "OPEN EDITOR"
+                self._editor_toggle_btn.props(remove="icon=keyboard_arrow_down")
+                self._editor_toggle_btn.props(add="icon=keyboard_arrow_right")
+        
+        # Re-render editor panels
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                if self._editors_visible:
+                    self._render_editor_panels()
+    
+    def _render_editor_panels(self) -> None:
+        """Render both SQL and Python editor panels."""
+        with ui.column().classes("w-full gap-0"):
+            # SQL Editor Card
+            with ui.card().classes(
+                "w-full rounded-none border-b border-gray-200"
+            ).style("box-shadow: none;"):
+                # SQL Editor header
+                with ui.row().classes(
+                    "w-full items-center gap-2 px-4 py-2 bg-slate-700"
+                ):
+                    ui.icon("code", size="sm").classes("text-blue-300")
+                    ui.label("SQL Query").classes(
+                        "text-sm font-semibold text-white"
+                    )
+                
+                # SQL Editor content
+                with ui.column().classes("w-full p-3 bg-slate-800"):
+                    self._create_sql_editor_content()
+            
+            # Python Visualization Editor Card
+            with ui.card().classes(
+                "w-full rounded-none"
+            ).style("box-shadow: none;"):
+                # Python Editor header
+                with ui.row().classes(
+                    "w-full items-center justify-between px-4 py-2 bg-emerald-700"
+                ):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.icon("functions", size="sm").classes("text-emerald-200")
+                        ui.label("Python Visualization Code").classes(
+                            "text-sm font-semibold text-white"
+                        )
+                    
+                    # Auto-generated badge if not modified
+                    if not self._python_code_modified:
+                        ui.badge("Auto-generated").props("color=white outline").classes(
+                            "text-xs"
+                        )
+                
+                # Python Editor content
+                with ui.column().classes("w-full p-3 bg-slate-800"):
+                    self._create_python_editor_content()
+    
+    def _create_sql_editor_content(self) -> None:
+        """Create the SQL editor content within the panel."""
+        # SQL Editor - use _initial_sql which may have been set by _load_query
+        self.editor = SQLEditorWidget(
+            value=self._initial_sql,
+            on_run=self._run_query,
+        )
+        self.editor.create()
+    
+    def _create_python_editor_content(self) -> None:
+        """Create the Python visualization editor content within the panel."""
+        # Generate code if not already set
+        if not self._python_code:
+            self._python_code = self._generate_viz_code()
+        
+        # Action buttons row
+        with ui.row().classes("w-full items-center gap-2 mb-2"):
+            ui.button(
+                "Run Code",
+                icon="play_arrow",
+                on_click=lambda: self._execute_main_python_code(),
+            ).props("color=primary dense").classes("text-xs")
+            
+            ui.button(
+                "Validate",
+                icon="check_circle",
+                on_click=self._validate_python_code,
+            ).props("flat dense").classes("text-xs text-gray-300")
+            
+            ui.button(
+                "Reset",
+                icon="refresh",
+                on_click=self._reset_main_python_code,
+            ).props("flat dense").classes("text-xs text-gray-300")
+            
+            ui.space()
+            
+            ui.label("Ctrl+Enter to run").classes("text-xs text-gray-500")
+        
+        # Python code editor
+        self._main_python_editor = ui.textarea(
+            value=self._python_code,
+        ).props("outlined dense").classes(
+            "w-full font-mono text-sm"
+        ).style(
+            "background: #1e293b; color: #e2e8f0; min-height: 150px; font-family: 'Fira Code', monospace;"
+        ).on("change", lambda e: self._on_main_python_code_change(e.value))
+    
+    def _on_main_python_code_change(self, value: str) -> None:
+        """Handle Python code changes in main editor."""
+        if value != self._python_code:
+            self._python_code = value
+            self._python_code_modified = True
+    
+    def _reset_main_python_code(self) -> None:
+        """Reset Python code to auto-generated version."""
+        self._python_code_modified = False
+        self._python_code = self._generate_viz_code()
+        if self._main_python_editor:
+            self._main_python_editor.value = self._python_code
+        ui.notify("Code reset to auto-generated version", type="info")
+    
+    def _execute_main_python_code(self) -> None:
+        """Execute the Python code from main editor."""
+        if self.result_df is None:
+            ui.notify("No data available. Run the SQL query first.", type="warning")
+            return
+        
+        # Execute the code
+        result = execute_visualization_code(self._python_code, self.result_df)
+        
+        if result.success:
+            ui.notify("Code executed successfully", type="positive")
+            
+            # Store the figure for rendering
+            self._chart_config["_custom_figure"] = result.figure
+            self._chart_config["_use_custom_code"] = True
+            
+            # Switch to visualization view and refresh
+            self._selected_view = "visualization"
+            self._render_results()
+        else:
+            ui.notify(f"Execution error: {result.error}", type="negative")
+
     def _create_editor_section(self) -> None:
-        """Create the SQL editor section."""
+        """Create the SQL editor section (legacy method for compatibility)."""
         with ui.column().classes("w-full p-4 gap-2"):
             # SQL Editor - use _initial_sql which may have been set by _load_query
             self.editor = SQLEditorWidget(
@@ -1166,6 +1343,13 @@ class SQLEditorPage:
                 self.result_df = None
             else:
                 self.result_df = result.to_dataframe()
+                
+                # Regenerate Python visualization code with new data
+                if not self._python_code_modified:
+                    self._python_code = self._generate_viz_code()
+                    # Update main Python editor if visible
+                    if self._main_python_editor:
+                        self._main_python_editor.value = self._python_code
                 
                 # Update bottom bar stats
                 if self._row_count_label:
