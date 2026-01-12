@@ -21,6 +21,14 @@ from nicemeta.ui.components.sql_editor_widget import (
     create_results_table,
     serialize_value,
 )
+from nicemeta.ui.components.python_editor_widget import PythonEditorWidget
+from nicemeta.visualization import (
+    ChartConfig,
+    ChartFactory,
+    generate_visualization_code,
+    execute_visualization_code,
+    validate_visualization_code,
+)
 
 
 class SQLEditorPage:
@@ -40,6 +48,12 @@ class SQLEditorPage:
         self._is_saved_query: bool = False  # True if loading a saved query
         self._editor_expansion = None
         self._loading_container = None
+        
+        # Python code editor state
+        self._python_code: str = ""
+        self._python_code_modified: bool = False  # True if user manually edited code
+        self._python_editor: PythonEditorWidget | None = None
+        self._code_preview_container = None
         
         # UI references
         self._connection_select = None
@@ -484,23 +498,33 @@ class SQLEditorPage:
                                                             ("text-blue-100" if is_selected else "text-gray-400")
                                                         )
                     
-                    # RIGHT PANEL - Settings
+                    # RIGHT PANEL - Settings & Code Tabs
                     with splitter.after:
                         with ui.column().classes("w-full h-full"):
-                            # Settings header
-                            lib_info = CHART_LIBRARIES.get(self._selected_chart_type, {})
-                            with ui.row().classes("w-full items-center justify-between p-3 border-b bg-white"):
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Settings").classes("text-sm font-semibold text-gray-600")
-                                    if lib_info:
-                                        ui.label(f"{lib_info.get('lib', '')} • {lib_info.get('type', '')}").classes(
-                                            "text-xs text-gray-400 font-mono"
-                                        )
+                            # Tab headers
+                            with ui.tabs().classes("w-full") as tabs:
+                                settings_tab = ui.tab("Settings", icon="tune")
+                                code_tab = ui.tab("Python Code", icon="code")
                             
-                            # Settings content
-                            with ui.scroll_area().classes("w-full").style("height: 400px;"):
-                                with ui.column().classes("p-4 gap-4 w-full"):
-                                    self._render_viz_settings_panel(analysis)
+                            # Tab panels
+                            with ui.tab_panels(tabs, value=settings_tab).classes("w-full").style("height: 450px;"):
+                                # Settings Panel
+                                with ui.tab_panel(settings_tab):
+                                    lib_info = CHART_LIBRARIES.get(self._selected_chart_type, {})
+                                    if lib_info:
+                                        with ui.row().classes("items-center gap-2 p-2 bg-gray-50 rounded mb-2"):
+                                            ui.icon("info", size="xs").classes("text-gray-400")
+                                            ui.label(f"{lib_info.get('lib', '')} • {lib_info.get('type', '')}").classes(
+                                                "text-xs text-gray-500 font-mono"
+                                            )
+                                    
+                                    with ui.scroll_area().classes("w-full").style("height: 380px;"):
+                                        with ui.column().classes("p-2 gap-4 w-full"):
+                                            self._render_viz_settings_panel(analysis)
+                                
+                                # Python Code Panel
+                                with ui.tab_panel(code_tab):
+                                    self._render_python_code_panel(analysis, dialog)
                 
                 # Footer with actions
                 with ui.row().classes("w-full justify-end gap-2 p-4 border-t bg-gray-50"):
@@ -677,6 +701,160 @@ class SQLEditorPage:
                             on_change=lambda e: self._update_chart_config("show_percent", e.value),
                         )
 
+    def _render_python_code_panel(self, analysis: dict, dialog) -> None:
+        """Render the Python code editor panel."""
+        # Generate code if not modified or empty
+        if not self._python_code_modified or not self._python_code:
+            self._python_code = self._generate_viz_code()
+        
+        with ui.column().classes("w-full h-full gap-2"):
+            # Info banner
+            with ui.row().classes("items-center gap-2 p-2 bg-blue-50 rounded"):
+                ui.icon("lightbulb", size="xs").classes("text-blue-500")
+                ui.label("Edit the Python code below to customize your visualization").classes(
+                    "text-xs text-blue-700"
+                )
+            
+            # Status indicator
+            with ui.row().classes("items-center gap-2"):
+                if self._python_code_modified:
+                    ui.badge("Modified", color="orange").props("outline")
+                    ui.button(
+                        "Reset to Generated",
+                        icon="refresh",
+                        on_click=lambda: self._reset_python_code(dialog),
+                    ).props("flat dense size=sm")
+                else:
+                    ui.badge("Auto-generated", color="green").props("outline")
+            
+            # Code editor
+            self._python_editor = ui.codemirror(
+                value=self._python_code,
+                language="Python",
+                on_change=self._on_python_code_change,
+            ).classes("w-full border rounded").style(
+                "height: 280px; font-size: 12px;"
+            )
+            
+            # Action buttons
+            with ui.row().classes("items-center gap-2"):
+                ui.button(
+                    "Run Code",
+                    icon="play_arrow",
+                    on_click=lambda: self._execute_python_code(dialog),
+                ).props("color=primary dense")
+                
+                ui.button(
+                    "Validate",
+                    icon="check_circle",
+                    on_click=self._validate_python_code,
+                ).props("flat dense")
+                
+                ui.space()
+                
+                ui.label("Ctrl+Enter to run").classes("text-xs text-gray-400")
+            
+            # Preview container for execution results
+            self._code_preview_container = ui.column().classes("w-full")
+
+    def _generate_viz_code(self) -> str:
+        """Generate Python visualization code from current config."""
+        if self.result_df is None:
+            return "# No data available. Run a query first."
+        
+        # Build ChartConfig from current settings
+        config = ChartConfig(
+            chart_type=self._selected_chart_type,
+            title=self._chart_config.get("title", ""),
+            x=self._chart_config.get("x"),
+            y=self._chart_config.get("y"),
+            labels=self._chart_config.get("labels"),
+            values=self._chart_config.get("values"),
+            color=self._chart_config.get("color") or None,
+            x_label=self._chart_config.get("x_label", ""),
+            y_label=self._chart_config.get("y_label", ""),
+            width=900,
+            height=500,
+        )
+        
+        # Build options
+        options = {
+            "show_legend": self._chart_config.get("show_legend", True),
+            "show_values": self._chart_config.get("show_values", False),
+            "color_palette": self._chart_config.get("color_palette", "plotly"),
+            "orientation": self._chart_config.get("orientation", "v"),
+            "bar_mode": self._chart_config.get("bar_mode", "group"),
+            "line_style": self._chart_config.get("line_style", "solid"),
+            "show_markers": self._chart_config.get("show_markers", False),
+            "show_percent": self._chart_config.get("show_percent", True),
+        }
+        
+        return generate_visualization_code(config, self.result_df, options)
+
+    def _on_python_code_change(self, e) -> None:
+        """Handle Python code changes."""
+        new_code = e.value
+        if new_code != self._python_code:
+            self._python_code = new_code
+            self._python_code_modified = True
+
+    def _reset_python_code(self, dialog) -> None:
+        """Reset Python code to auto-generated version."""
+        self._python_code_modified = False
+        self._python_code = self._generate_viz_code()
+        if self._python_editor:
+            self._python_editor.value = self._python_code
+        ui.notify("Code reset to generated version", type="info")
+
+    def _validate_python_code(self) -> None:
+        """Validate the Python code without executing."""
+        errors = validate_visualization_code(self._python_code)
+        if errors:
+            ui.notify(f"Validation errors: {'; '.join(errors)}", type="negative")
+        else:
+            ui.notify("Code is valid", type="positive")
+
+    def _execute_python_code(self, dialog) -> None:
+        """Execute the Python code and show the result."""
+        if self.result_df is None:
+            ui.notify("No data available. Run a query first.", type="warning")
+            return
+        
+        # Clear preview container
+        if self._code_preview_container:
+            self._code_preview_container.clear()
+        
+        # Execute the code
+        result = execute_visualization_code(self._python_code, self.result_df)
+        
+        if result.success:
+            ui.notify("Code executed successfully", type="positive")
+            
+            # Store the HTML for rendering
+            self._chart_config["_custom_html"] = result.html
+            self._chart_config["_use_custom_code"] = True
+            
+            # Show preview in the dialog
+            if self._code_preview_container and result.html:
+                with self._code_preview_container:
+                    with ui.card().classes("w-full bg-green-50 border border-green-200 p-2"):
+                        ui.label("Preview").classes("text-xs font-semibold text-green-700")
+                    ui.html(result.html, sanitize=False).classes("w-full").style("max-height: 200px; overflow: auto;")
+        else:
+            ui.notify(f"Execution error: {result.error}", type="negative")
+            
+            # Show error in preview container
+            if self._code_preview_container:
+                with self._code_preview_container:
+                    with ui.card().classes("w-full bg-red-50 border border-red-200 p-2"):
+                        with ui.row().classes("items-start gap-2"):
+                            ui.icon("error", size="sm").classes("text-red-500")
+                            with ui.column().classes("gap-1"):
+                                ui.label("Execution Error").classes("text-sm font-semibold text-red-700")
+                                if result.error_line:
+                                    ui.label(f"Line {result.error_line}").classes("text-xs text-red-500")
+                                ui.code(result.error or "Unknown error", language="text").classes("text-xs")
+
     def _preview_chart(self, dialog) -> None:
         """Preview the chart with current settings."""
         self._selected_view = "visualization"
@@ -834,7 +1012,21 @@ class SQLEditorPage:
             return
         
         try:
-            from nicemeta.visualization import ChartConfig, ChartFactory
+            # Check if we should use custom code HTML
+            if self._chart_config.get("_use_custom_code") and self._chart_config.get("_custom_html"):
+                html = self._chart_config["_custom_html"]
+                
+                # Show custom code badge
+                with ui.row().classes("items-center gap-2 mb-2"):
+                    ui.badge("Custom Python Code").props("color=orange outline")
+                    ui.button(
+                        "Reset to Auto",
+                        icon="refresh",
+                        on_click=self._reset_to_auto_chart,
+                    ).props("flat dense size=sm")
+                
+                ui.html(html, sanitize=False).classes("w-full")
+                return
             
             # Build config with all options
             config = ChartConfig(
@@ -900,6 +1092,15 @@ class SQLEditorPage:
                 ui.label(str(e)).classes("text-red-600 text-sm mt-1")
                 with ui.expansion("Details").classes("mt-2"):
                     ui.code(traceback.format_exc()).classes("text-xs")
+
+    def _reset_to_auto_chart(self) -> None:
+        """Reset chart to use auto-generated visualization instead of custom code."""
+        self._chart_config["_use_custom_code"] = False
+        self._chart_config["_custom_html"] = None
+        self._python_code_modified = False
+        self._python_code = ""
+        self._render_results()
+        ui.notify("Reset to auto-generated chart", type="info")
 
     async def _run_query(self, sql: str) -> None:
         """Execute the SQL query."""
