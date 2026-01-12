@@ -836,16 +836,17 @@ class SQLEditorPage:
         if result.success:
             ui.notify("Code executed successfully", type="positive")
             
-            # Store the HTML for rendering
-            self._chart_config["_custom_html"] = result.html
+            # Store the figure for rendering (not HTML)
+            self._chart_config["_custom_figure"] = result.figure
             self._chart_config["_use_custom_code"] = True
             
             # Show preview in the dialog
-            if self._code_preview_container and result.html:
+            if self._code_preview_container and result.figure:
                 with self._code_preview_container:
                     with ui.card().classes("w-full bg-green-50 border border-green-200 p-2"):
                         ui.label("Preview").classes("text-xs font-semibold text-green-700")
-                    ui.html(result.html, sanitize=False).classes("w-full").style("max-height: 200px; overflow: auto;")
+                    # Use ui.plotly() instead of ui.html() to avoid script tag issues
+                    ui.plotly(result.figure).classes("w-full").style("max-height: 300px;")
         else:
             ui.notify(f"Execution error: {result.error}", type="negative")
             
@@ -1018,9 +1019,9 @@ class SQLEditorPage:
             return
         
         try:
-            # Check if we should use custom code HTML
-            if self._chart_config.get("_use_custom_code") and self._chart_config.get("_custom_html"):
-                html = self._chart_config["_custom_html"]
+            # Check if we should use custom code figure
+            if self._chart_config.get("_use_custom_code") and self._chart_config.get("_custom_figure"):
+                fig = self._chart_config["_custom_figure"]
                 
                 # Show custom code badge
                 with ui.row().classes("items-center gap-2 mb-2"):
@@ -1031,7 +1032,7 @@ class SQLEditorPage:
                         on_click=self._reset_to_auto_chart,
                     ).props("flat dense size=sm")
                 
-                ui.html(html, sanitize=False).classes("w-full")
+                ui.plotly(fig).classes("w-full")
                 return
             
             # Build config with all options
@@ -1068,8 +1069,15 @@ class SQLEditorPage:
             if self._selected_chart_type in ["pie", "donut"]:
                 options["show_percent"] = self._chart_config.get("show_percent", True)
             
-            # Render chart with options
-            html = ChartFactory.render_to_html(self.result_df, config, options)
+            # Render chart figure directly (not HTML)
+            fig = ChartFactory.render_figure(self.result_df, config, options)
+            
+            if fig is None:
+                # Fallback to HTML rendering if figure method not available
+                html = ChartFactory.render_to_html(self.result_df, config, options)
+                # Use add_body_html for scripts
+                ui.add_body_html(html)
+                return
             
             # Show library info badge
             CHART_LIBRARIES = {
@@ -1089,7 +1097,7 @@ class SQLEditorPage:
                 with ui.row().classes("items-center gap-2 mb-2"):
                     ui.badge(lib_info).props("color=grey-7 outline")
             
-            ui.html(html, sanitize=False).classes("w-full")
+            ui.plotly(fig).classes("w-full")
             
         except Exception as e:
             import traceback
@@ -1102,7 +1110,7 @@ class SQLEditorPage:
     def _reset_to_auto_chart(self) -> None:
         """Reset chart to use auto-generated visualization instead of custom code."""
         self._chart_config["_use_custom_code"] = False
-        self._chart_config["_custom_html"] = None
+        self._chart_config["_custom_figure"] = None
         self._python_code_modified = False
         self._python_code = ""
         self._render_results()

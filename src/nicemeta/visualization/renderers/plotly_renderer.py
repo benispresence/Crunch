@@ -88,6 +88,33 @@ class PlotlyRenderer(ChartRenderer):
             return result.html or ""
         return f"<div class='error'>Error: {result.error}</div>"
 
+    def render_figure(
+        self, data: pd.DataFrame, config: ChartConfig, options: dict | None = None
+    ) -> go.Figure | None:
+        """Render and return the Plotly figure object directly.
+        
+        This is useful for NiceGUI's ui.plotly() component.
+        
+        Args:
+            data: DataFrame containing chart data
+            config: Chart configuration
+            options: Optional additional chart options
+            
+        Returns:
+            Plotly Figure object or None on error
+        """
+        # Merge options into config
+        if options:
+            for key, value in options.items():
+                config.options[key] = value
+        
+        try:
+            fig = self._create_figure(data, config)
+            self._apply_layout(fig, config)
+            return fig
+        except Exception:
+            return None
+
     def _create_figure(self, data: pd.DataFrame, config: ChartConfig) -> go.Figure:
         """Create the appropriate Plotly figure based on chart type."""
         chart_type = config.chart_type
