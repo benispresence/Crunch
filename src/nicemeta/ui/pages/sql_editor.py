@@ -203,12 +203,14 @@ class SQLEditorPage:
                     # Bookmark
                     ui.button(
                         icon="bookmark_border",
-                    ).props("flat round").classes("text-gray-600")
+                        on_click=lambda: ui.notify("Bookmark feature coming soon", type="info"),
+                    ).props("flat round").classes("text-gray-600").tooltip("Bookmark this query")
                     
                     # Share
                     ui.button(
                         icon="share",
-                    ).props("flat round").classes("text-gray-600")
+                        on_click=lambda: ui.notify("Share feature coming soon", type="info"),
+                    ).props("flat round").classes("text-gray-600").tooltip("Share this query")
                     
                     # More options
                     with ui.button(icon="more_vert").props("flat round").classes("text-gray-600"):
@@ -263,6 +265,12 @@ class SQLEditorPage:
     
     def _toggle_editors(self) -> None:
         """Toggle the visibility of the editor panels."""
+        # Save current editor values before toggling to prevent state loss
+        if self.editor:
+            self._initial_sql = self.editor.value
+        if self._main_python_editor:
+            self._python_code = self._main_python_editor.value
+        
         self._editors_visible = not self._editors_visible
         
         # Update button text and icon
@@ -341,6 +349,10 @@ class SQLEditorPage:
     
     def _toggle_sql_editor(self) -> None:
         """Toggle SQL editor visibility."""
+        # Save current SQL value before toggling to prevent state loss
+        if self.editor:
+            self._initial_sql = self.editor.value
+        
         self._sql_editor_expanded = not self._sql_editor_expanded
         if self._sql_editor_container:
             self._sql_editor_container.clear()
@@ -356,6 +368,10 @@ class SQLEditorPage:
     
     def _toggle_python_editor(self) -> None:
         """Toggle Python editor visibility."""
+        # Save current Python code before toggling to prevent state loss
+        if self._main_python_editor:
+            self._python_code = self._main_python_editor.value
+        
         self._python_editor_expanded = not self._python_editor_expanded
         if self._python_editor_container:
             self._python_editor_container.clear()
@@ -374,9 +390,14 @@ class SQLEditorPage:
         # SQL Editor - use _initial_sql which may have been set by _load_query
         self.editor = SQLEditorWidget(
             value=self._initial_sql,
+            on_change=self._on_sql_change,
             on_run=self._run_query,
         )
         self.editor.create()
+    
+    def _on_sql_change(self, value: str) -> None:
+        """Handle SQL code changes - keeps _initial_sql in sync."""
+        self._initial_sql = value
     
     def _create_python_editor_content(self) -> None:
         """Create the Python visualization editor content within the panel."""
@@ -500,13 +521,40 @@ class SQLEditorPage:
                     self._timing_label = ui.label("")
                     
                     # Export buttons
-                    ui.button(icon="download").props("flat round dense").classes(
+                    ui.button(
+                        icon="download",
+                        on_click=self._download_results,
+                    ).props("flat round dense").classes(
                         "text-gray-400"
-                    ).tooltip("Download results")
-                    ui.button(icon="fullscreen").props("flat round dense").classes(
+                    ).tooltip("Download results as CSV")
+                    ui.button(
+                        icon="fullscreen",
+                        on_click=lambda: ui.notify("Fullscreen mode coming soon", type="info"),
+                    ).props("flat round dense").classes(
                         "text-gray-400"
                     ).tooltip("Fullscreen")
 
+    def _download_results(self) -> None:
+        """Download query results as CSV."""
+        if self.result_df is None or self.result_df.empty:
+            ui.notify("No results to download. Run a query first.", type="warning")
+            return
+        
+        try:
+            import io
+            csv_buffer = io.StringIO()
+            self.result_df.to_csv(csv_buffer, index=False)
+            csv_data = csv_buffer.getvalue()
+            
+            # Generate filename
+            filename = f"{self.query_name.replace(' ', '_')}_results.csv"
+            
+            # Trigger download using NiceGUI's download functionality
+            ui.download(csv_data.encode('utf-8'), filename)
+            ui.notify(f"Downloading {filename}", type="positive")
+        except Exception as e:
+            ui.notify(f"Error downloading results: {e}", type="negative")
+    
     def _show_empty_state(self) -> None:
         """Show empty state when no query has been run."""
         with ui.column().classes("w-full h-full items-center justify-center"):

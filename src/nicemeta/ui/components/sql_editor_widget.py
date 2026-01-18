@@ -118,7 +118,10 @@ class SQLEditorWidget:
 
     def _format_sql(self) -> None:
         """Format the SQL query."""
-        # Basic formatting - in production use sqlparse or similar
+        if not self.value.strip():
+            ui.notify("No SQL to format", type="warning")
+            return
+        
         try:
             import sqlparse
             formatted = sqlparse.format(
@@ -129,6 +132,7 @@ class SQLEditorWidget:
             if self._editor:
                 self._editor.set_value(formatted)
             self.value = formatted
+            ui.notify("SQL formatted", type="positive")
         except ImportError:
             # sqlparse not available, do basic formatting
             keywords = [
@@ -143,6 +147,7 @@ class SQLEditorWidget:
             if self._editor:
                 self._editor.set_value(formatted)
             self.value = formatted
+            ui.notify("Basic formatting applied (install sqlparse for advanced formatting)", type="info")
 
     def _clear(self) -> None:
         """Clear the editor."""
@@ -218,12 +223,27 @@ def export_csv(columns: list[str], rows: list[tuple]) -> None:
     """Export results to CSV and trigger download."""
     import io
     import csv
+    from datetime import datetime
     
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(columns)
-    writer.writerows(rows)
+    if not columns or not rows:
+        ui.notify("No data to export", type="warning")
+        return
     
-    # In production, trigger file download
-    ui.notify("Export functionality coming soon", type="info")
+    try:
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(columns)
+        writer.writerows(rows)
+        
+        csv_data = output.getvalue()
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"query_results_{timestamp}.csv"
+        
+        # Trigger file download
+        ui.download(csv_data.encode('utf-8'), filename)
+        ui.notify(f"Downloading {filename}", type="positive")
+    except Exception as e:
+        ui.notify(f"Error exporting CSV: {e}", type="negative")
 

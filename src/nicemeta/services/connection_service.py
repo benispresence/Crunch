@@ -183,6 +183,29 @@ async def create_connection(
     )
 
 
+async def update_connection(
+    connection_id: str,
+    name: str | None = None,
+    db_type: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    database: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+) -> dict | None:
+    """Update an existing connection."""
+    return await ConnectionService.update(
+        connection_id=connection_id,
+        name=name,
+        db_type=db_type,
+        host=host,
+        port=port,
+        database=database,
+        username=username,
+        password=password,
+    )
+
+
 async def delete_connection(connection_id: str) -> bool:
     """Delete (soft) a connection."""
     return await ConnectionService.delete(connection_id)

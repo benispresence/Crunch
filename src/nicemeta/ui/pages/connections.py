@@ -13,6 +13,7 @@ from nicemeta.ui.components.sidebar import (
 from nicemeta.services.connection_service import (
     ConnectionService,
     create_connection,
+    update_connection,
     delete_connection,
     get_connection_by_id,
 )
@@ -258,7 +259,135 @@ class ConnectionsPage:
 
     def _edit_connection(self, conn: dict) -> None:
         """Edit a connection."""
-        ui.notify(f"Edit {conn['name']} - feature coming soon!")
+        with ui.dialog() as dialog, ui.card().classes("w-[500px]"):
+            ui.label("Edit Connection").classes("text-lg font-semibold mb-4")
+            
+            # Connection type
+            db_type_options = {
+                "postgresql": "PostgreSQL",
+                "mysql": "MySQL", 
+                "sqlite": "SQLite",
+                "sqlserver": "SQL Server",
+            }
+            db_type = ui.select(
+                label="Database Type",
+                options=db_type_options,
+                value=conn["db_type"],
+            ).classes("w-full")
+            
+            # Connection details
+            name_input = ui.input(
+                label="Connection Name", 
+                value=conn["name"],
+            ).classes("w-full")
+            
+            with ui.row().classes("gap-4 w-full"):
+                host_input = ui.input(
+                    label="Host", 
+                    value=conn["host"],
+                ).classes("flex-grow")
+                port_input = ui.number(
+                    label="Port", 
+                    value=conn["port"],
+                ).classes("w-24")
+            
+            database_input = ui.input(
+                label="Database", 
+                value=conn["database"],
+            ).classes("w-full")
+            
+            with ui.row().classes("gap-4 w-full"):
+                user_input = ui.input(
+                    label="Username",
+                    value=conn.get("username", "") or conn.get("user", ""),
+                ).classes("flex-grow")
+                password_input = ui.input(
+                    label="Password",
+                    password=True,
+                    password_toggle_button=True,
+                    value=conn.get("password", ""),
+                ).classes("flex-grow")
+            
+            # Actions
+            with ui.row().classes("justify-between items-center mt-4"):
+                ui.button(
+                    "Test Connection",
+                    icon="cable",
+                    on_click=lambda: self._do_test_connection(
+                        db_type.value,
+                        host_input.value,
+                        int(port_input.value or 0),
+                        database_input.value,
+                        user_input.value,
+                        password_input.value,
+                    ),
+                ).props("flat")
+                
+                with ui.row().classes("gap-2"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                    
+                    async def save_changes():
+                        await self._do_update_connection(
+                            conn["id"],
+                            name_input.value,
+                            db_type.value,
+                            host_input.value,
+                            int(port_input.value or 0),
+                            database_input.value,
+                            user_input.value,
+                            password_input.value,
+                            dialog,
+                        )
+                    
+                    ui.button("Save", on_click=save_changes).props("color=primary")
+        
+        dialog.open()
+    
+    async def _do_update_connection(
+        self,
+        connection_id: str,
+        name: str,
+        db_type: str,
+        host: str,
+        port: int,
+        database: str,
+        user: str,
+        password: str,
+        dialog,
+    ) -> None:
+        """Update the connection in database."""
+        if not name:
+            ui.notify("Please enter a connection name", type="warning")
+            return
+        
+        if not database:
+            ui.notify("Please enter a database name", type="warning")
+            return
+        
+        try:
+            # Update in database
+            await update_connection(
+                connection_id=connection_id,
+                name=name,
+                db_type=db_type,
+                host=host,
+                port=port,
+                database=database,
+                username=user,
+                password=password,
+            )
+            
+            # Refresh cache
+            await refresh_cache()
+            
+            # Refresh the display
+            self._render_connections()
+            
+            ui.notify(f"Connection '{name}' updated!", type="positive")
+            dialog.close()
+            
+        except Exception as e:
+            ui.notify(f"Error updating connection: {str(e)}", type="negative")
 
     def _delete_connection(self, conn: dict) -> None:
         """Delete a connection."""
