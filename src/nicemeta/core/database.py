@@ -162,7 +162,6 @@ def _check_tables_exist(conn) -> bool:
 async def _run_migrations() -> None:
     """Run Alembic migrations programmatically."""
     import asyncio
-    from concurrent.futures import ThreadPoolExecutor
     
     def run_upgrade():
         from alembic import command
@@ -172,22 +171,26 @@ async def _run_migrations() -> None:
         alembic_ini = _find_alembic_ini()
         if alembic_ini is None:
             logger.warning("alembic.ini not found. Falling back to create_all().")
-            _fallback_create_all()
-            return
+            return False
         
-        config = Config(str(alembic_ini))
-        command.upgrade(config, "head")
+        try:
+            config = Config(str(alembic_ini))
+            command.upgrade(config, "head")
+            return True
+        except Exception as e:
+            logger.error(f"Migration failed: {e}")
+            return False
     
-    # Run in thread pool to avoid blocking
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as pool:
-        await loop.run_in_executor(pool, run_upgrade)
+    # Run in thread to avoid blocking the event loop
+    result = await asyncio.to_thread(run_upgrade)
+    if not result:
+        # Fallback to create_all if migrations failed
+        await _fallback_create_all_async()
 
 
 async def _stamp_database(revision: str) -> None:
     """Stamp the database with a revision without running migrations."""
     import asyncio
-    from concurrent.futures import ThreadPoolExecutor
     
     def run_stamp():
         from alembic import command
@@ -197,12 +200,13 @@ async def _stamp_database(revision: str) -> None:
         if alembic_ini is None:
             return
         
-        config = Config(str(alembic_ini))
-        command.stamp(config, revision)
+        try:
+            config = Config(str(alembic_ini))
+            command.stamp(config, revision)
+        except Exception as e:
+            logger.error(f"Stamp failed: {e}")
     
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as pool:
-        await loop.run_in_executor(pool, run_stamp)
+    await asyncio.to_thread(run_stamp)
 
 
 def _find_alembic_ini() -> Path | None:
@@ -220,16 +224,11 @@ def _find_alembic_ini() -> Path | None:
     return None
 
 
-def _fallback_create_all() -> None:
-    """Fallback to create_all if Alembic is not configured."""
-    import asyncio
-    
-    async def create():
-        engine = get_engine()
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-    
-    asyncio.run(create())
+async def _fallback_create_all_async() -> None:
+    """Fallback to create_all if Alembic is not configured (async version)."""
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
 async def close_db() -> None:
