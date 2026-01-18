@@ -16,6 +16,10 @@ from nicemeta.ui.components.sidebar import (
     get_connections_async,
     refresh_cache,
 )
+from nicemeta.services.visualization_service import (
+    get_visualization_by_query_id,
+    save_visualization,
+)
 from nicemeta.ui.components.sql_editor_widget import (
     SQLEditorWidget,
     create_results_table,
@@ -585,7 +589,7 @@ class SQLEditorPage:
         self.query_name = name
 
     async def _load_query(self, query_id: str) -> None:
-        """Load a saved query from database."""
+        """Load a saved query and visualization settings from database."""
         query = await get_query_by_id(query_id)
         if query:
             self.query_id = query["id"]
@@ -599,6 +603,17 @@ class SQLEditorPage:
                 self._query_name_input.value = query["name"]
             if self._connection_select and self.current_connection:
                 self._connection_select.value = self.current_connection
+            
+            # Load visualization settings if they exist
+            viz = await get_visualization_by_query_id(query_id)
+            if viz:
+                self._selected_chart_type = viz.get("chart_type", "bar")
+                self._chart_config = viz.get("config", {})
+                if viz.get("python_code"):
+                    self._python_code = viz["python_code"]
+                    self._python_code_modified = True
+                # Set view to visualization if we have saved viz settings
+                self._selected_view = "visualization"
 
     def _on_query_selected(self, query: dict) -> None:
         """Handle query selection from sidebar."""
@@ -632,7 +647,7 @@ class SQLEditorPage:
         dialog.open()
 
     async def _do_save_query(self, name: str, folder_id: str, dialog) -> None:
-        """Actually save the query to database."""
+        """Actually save the query and visualization settings to database."""
         if not name:
             ui.notify("Please enter a name", type="warning")
             return
@@ -642,6 +657,7 @@ class SQLEditorPage:
             ui.notify("Please enter a SQL query", type="warning")
             return
         
+        # Save the query
         saved = await save_query(
             name=name,
             sql=sql,
@@ -654,6 +670,15 @@ class SQLEditorPage:
         self.query_name = name
         if self._query_name_input:
             self._query_name_input.value = name
+        
+        # Save visualization settings if configured
+        if self._selected_chart_type:
+            await save_visualization(
+                query_id=self.query_id,
+                chart_type=self._selected_chart_type,
+                config=self._chart_config,
+                python_code=self._python_code if self._python_code_modified else None,
+            )
         
         ui.notify(f"Saved '{name}'", type="positive")
         dialog.close()

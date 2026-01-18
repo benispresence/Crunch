@@ -33,6 +33,7 @@ dependencies = [
     
     # Database
     "sqlalchemy[asyncio]>=2.0.25",
+    "alembic>=1.13.0",          # Database migrations
     "asyncpg>=0.29.0",          # PostgreSQL async driver
     "aiomysql>=0.2.0",          # MySQL async driver
     "aiosqlite>=0.19.0",        # SQLite async driver
@@ -81,7 +82,7 @@ dev = [
 ]
 
 [project.scripts]
-nicemeta = "nicemeta.main:run"
+nicemeta = "nicemeta.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/nicemeta/nicemeta"

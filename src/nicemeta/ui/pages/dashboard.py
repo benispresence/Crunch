@@ -22,6 +22,7 @@ from nicemeta.services.dashboard_service import (
     update_widget_position,
     remove_widget,
 )
+from nicemeta.services.visualization_service import get_visualization_by_query_id
 from nicemeta.ui.components.sql_editor_widget import serialize_value
 
 
@@ -391,8 +392,18 @@ class DashboardPage:
                         "pie": "Pie Chart",
                         "area": "Area Chart",
                     },
-                    value="table",
+                    value="bar",  # Default to bar chart instead of table
                 ).classes("w-full")
+                
+                # When a query is selected, load its saved visualization settings
+                async def on_query_change(e):
+                    if e.value:
+                        viz = await get_visualization_by_query_id(e.value)
+                        if viz and viz.get("chart_type"):
+                            # Update chart type to match saved visualization
+                            chart_select.value = viz["chart_type"]
+                
+                query_select.on("update:model-value", on_query_change)
                 
                 # Size options
                 ui.label("Widget size:").classes("text-gray-600 mt-4 mb-2")
