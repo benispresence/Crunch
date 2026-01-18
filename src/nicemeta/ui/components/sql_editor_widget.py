@@ -66,42 +66,38 @@ class SQLEditorWidget:
 
     def create(self) -> ui.element:
         """Create the SQL editor widget."""
-        with ui.card().classes("w-full") as container:
+        with ui.column().classes("w-full p-3 bg-white border border-gray-200") as container:
             # Toolbar
             with ui.row().classes("items-center gap-2 mb-2"):
                 ui.button(
                     "Run",
                     icon="play_arrow",
                     on_click=self._handle_run,
-                ).props("color=primary")
+                ).props("color=primary dense")
                 
                 ui.button(
                     "Format",
                     icon="auto_fix_high",
                     on_click=self._format_sql,
-                ).props("flat")
+                ).props("flat dense").classes("text-gray-600")
                 
                 ui.button(
                     "Clear",
                     icon="clear",
                     on_click=self._clear,
-                ).props("flat")
+                ).props("flat dense").classes("text-gray-600")
                 
                 ui.space()
                 
-                ui.label("Ctrl/Cmd + Enter to run").classes("text-xs text-gray-500")
+                ui.label("Ctrl/Cmd + Enter to run").classes("text-xs text-gray-400")
             
-            # Editor using textarea with monospace font
-            # In production, integrate CodeMirror or Monaco
-            self._editor = ui.textarea(
+            # SQL Editor with CodeMirror and syntax highlighting
+            self._editor = ui.codemirror(
                 value=self.value,
+                language="sql",
                 on_change=self._handle_change,
-            ).props(
-                "outlined autogrow"
-            ).classes(
-                "w-full font-mono text-sm"
-            ).style(
-                "min-height: 200px; font-family: 'Fira Code', monospace;"
+            ).classes("w-full border border-gray-200 rounded").style(
+                "min-height: 150px;"
             )
         
         return container
@@ -130,7 +126,8 @@ class SQLEditorWidget:
                 reindent=True,
                 keyword_case="upper",
             )
-            self._editor.value = formatted
+            if self._editor:
+                self._editor.set_value(formatted)
             self.value = formatted
         except ImportError:
             # sqlparse not available, do basic formatting
@@ -143,19 +140,21 @@ class SQLEditorWidget:
             formatted = self.value
             for kw in keywords:
                 formatted = formatted.replace(kw.lower(), kw)
-            self._editor.value = formatted
+            if self._editor:
+                self._editor.set_value(formatted)
             self.value = formatted
 
     def _clear(self) -> None:
         """Clear the editor."""
-        self._editor.value = ""
+        if self._editor:
+            self._editor.set_value("")
         self.value = ""
 
     def set_value(self, value: str) -> None:
         """Set the editor content."""
         self.value = value
         if self._editor:
-            self._editor.value = value
+            self._editor.set_value(value)
 
     def get_value(self) -> str:
         """Get the editor content."""

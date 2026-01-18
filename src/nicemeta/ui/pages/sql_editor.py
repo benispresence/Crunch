@@ -61,6 +61,12 @@ class SQLEditorPage:
         self._main_python_editor = None  # Python editor in main view
         self._editor_toggle_btn = None  # Toggle button reference
         
+        # Individual editor expansion state
+        self._sql_editor_expanded: bool = True
+        self._python_editor_expanded: bool = True
+        self._sql_editor_container = None
+        self._python_editor_container = None
+        
         # UI references
         self._connection_select = None
         self._results_container = None
@@ -284,42 +290,84 @@ class SQLEditorPage:
             with ui.card().classes(
                 "w-full rounded-none border-b border-gray-200"
             ).style("box-shadow: none;"):
-                # SQL Editor header
+                # SQL Editor header - clickable to expand/collapse
                 with ui.row().classes(
-                    "w-full items-center gap-2 px-4 py-2 bg-slate-700"
-                ):
-                    ui.icon("code", size="sm").classes("text-blue-300")
+                    "w-full items-center gap-2 px-4 py-2 bg-gray-50 border-b border-gray-200 cursor-pointer hover:bg-gray-100"
+                ).on("click", self._toggle_sql_editor):
+                    ui.icon(
+                        "expand_more" if self._sql_editor_expanded else "chevron_right",
+                        size="sm"
+                    ).classes("text-gray-400")
+                    ui.icon("code", size="sm").classes("text-blue-500")
                     ui.label("SQL Query").classes(
-                        "text-sm font-semibold text-white"
+                        "text-sm font-medium text-gray-700"
                     )
                 
-                # SQL Editor content
-                with ui.column().classes("w-full p-3 bg-slate-800"):
-                    self._create_sql_editor_content()
+                # SQL Editor content - collapsible
+                self._sql_editor_container = ui.column().classes("w-full")
+                with self._sql_editor_container:
+                    if self._sql_editor_expanded:
+                        self._create_sql_editor_content()
             
             # Python Visualization Editor Card
             with ui.card().classes(
                 "w-full rounded-none"
             ).style("box-shadow: none;"):
-                # Python Editor header
+                # Python Editor header - clickable to expand/collapse
                 with ui.row().classes(
-                    "w-full items-center justify-between px-4 py-2 bg-emerald-700"
-                ):
+                    "w-full items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-200 cursor-pointer hover:bg-gray-100"
+                ).on("click", self._toggle_python_editor):
                     with ui.row().classes("items-center gap-2"):
-                        ui.icon("functions", size="sm").classes("text-emerald-200")
+                        ui.icon(
+                            "expand_more" if self._python_editor_expanded else "chevron_right",
+                            size="sm"
+                        ).classes("text-gray-400")
+                        ui.icon("functions", size="sm").classes("text-emerald-600")
                         ui.label("Python Visualization Code").classes(
-                            "text-sm font-semibold text-white"
+                            "text-sm font-medium text-gray-700"
                         )
                     
                     # Auto-generated badge if not modified
                     if not self._python_code_modified:
-                        ui.badge("Auto-generated").props("color=white outline").classes(
+                        ui.badge("Auto-generated").props("color=grey-6 outline").classes(
                             "text-xs"
                         )
                 
-                # Python Editor content
-                with ui.column().classes("w-full p-3 bg-slate-800"):
+                # Python Editor content - collapsible
+                self._python_editor_container = ui.column().classes("w-full")
+                with self._python_editor_container:
+                    if self._python_editor_expanded:
+                        self._create_python_editor_content()
+    
+    def _toggle_sql_editor(self) -> None:
+        """Toggle SQL editor visibility."""
+        self._sql_editor_expanded = not self._sql_editor_expanded
+        if self._sql_editor_container:
+            self._sql_editor_container.clear()
+            with self._sql_editor_container:
+                if self._sql_editor_expanded:
+                    self._create_sql_editor_content()
+        # Re-render the whole panel to update the icon
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                if self._editors_visible:
+                    self._render_editor_panels()
+    
+    def _toggle_python_editor(self) -> None:
+        """Toggle Python editor visibility."""
+        self._python_editor_expanded = not self._python_editor_expanded
+        if self._python_editor_container:
+            self._python_editor_container.clear()
+            with self._python_editor_container:
+                if self._python_editor_expanded:
                     self._create_python_editor_content()
+        # Re-render the whole panel to update the icon
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                if self._editors_visible:
+                    self._render_editor_panels()
     
     def _create_sql_editor_content(self) -> None:
         """Create the SQL editor content within the panel."""
@@ -336,38 +384,39 @@ class SQLEditorPage:
         if not self._python_code:
             self._python_code = self._generate_viz_code()
         
-        # Action buttons row
-        with ui.row().classes("w-full items-center gap-2 mb-2"):
-            ui.button(
-                "Run Code",
-                icon="play_arrow",
-                on_click=lambda: self._execute_main_python_code(),
-            ).props("color=primary dense").classes("text-xs")
+        with ui.column().classes("w-full p-3 bg-white border border-gray-200"):
+            # Action buttons row
+            with ui.row().classes("w-full items-center gap-2 mb-2"):
+                ui.button(
+                    "Run Code",
+                    icon="play_arrow",
+                    on_click=lambda: self._execute_main_python_code(),
+                ).props("color=primary dense").classes("text-xs")
+                
+                ui.button(
+                    "Validate",
+                    icon="check_circle",
+                    on_click=self._validate_python_code,
+                ).props("flat dense").classes("text-xs text-gray-600")
+                
+                ui.button(
+                    "Reset",
+                    icon="refresh",
+                    on_click=self._reset_main_python_code,
+                ).props("flat dense").classes("text-xs text-gray-600")
+                
+                ui.space()
+                
+                ui.label("Ctrl+Enter to run").classes("text-xs text-gray-400")
             
-            ui.button(
-                "Validate",
-                icon="check_circle",
-                on_click=self._validate_python_code,
-            ).props("flat dense").classes("text-xs text-gray-300")
-            
-            ui.button(
-                "Reset",
-                icon="refresh",
-                on_click=self._reset_main_python_code,
-            ).props("flat dense").classes("text-xs text-gray-300")
-            
-            ui.space()
-            
-            ui.label("Ctrl+Enter to run").classes("text-xs text-gray-500")
-        
-        # Python code editor
-        self._main_python_editor = ui.textarea(
-            value=self._python_code,
-        ).props("outlined dense").classes(
-            "w-full font-mono text-sm"
-        ).style(
-            "background: #1e293b; color: #e2e8f0; min-height: 150px; font-family: 'Fira Code', monospace;"
-        ).on("change", lambda e: self._on_main_python_code_change(e.value))
+            # Python code editor with syntax highlighting
+            self._main_python_editor = ui.codemirror(
+                value=self._python_code,
+                language="python",
+                on_change=lambda e: self._on_main_python_code_change(e.value),
+            ).classes("w-full border border-gray-200 rounded").style(
+                "min-height: 180px;"
+            )
     
     def _on_main_python_code_change(self, value: str) -> None:
         """Handle Python code changes in main editor."""
@@ -380,7 +429,7 @@ class SQLEditorPage:
         self._python_code_modified = False
         self._python_code = self._generate_viz_code()
         if self._main_python_editor:
-            self._main_python_editor.value = self._python_code
+            self._main_python_editor.set_value(self._python_code)
         ui.notify("Code reset to auto-generated version", type="info")
     
     def _execute_main_python_code(self) -> None:
@@ -1349,7 +1398,7 @@ class SQLEditorPage:
                     self._python_code = self._generate_viz_code()
                     # Update main Python editor if visible
                     if self._main_python_editor:
-                        self._main_python_editor.value = self._python_code
+                        self._main_python_editor.set_value(self._python_code)
                 
                 # Update bottom bar stats
                 if self._row_count_label:
