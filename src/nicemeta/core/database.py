@@ -118,7 +118,7 @@ async def init_db() -> None:
     
     This handles three scenarios:
     1. New database: Runs all migrations from scratch
-    2. Existing database without alembic_version: Stamps with head (baseline)
+    2. Existing database without alembic_version: Stamps with 001 (baseline), then runs pending migrations
     3. Existing database with alembic_version: Runs pending migrations
     
     Should be called once at application startup.
@@ -132,11 +132,11 @@ async def init_db() -> None:
     
     if has_tables and not has_alembic:
         # Existing database without migrations tracking
-        # Stamp it with head to establish baseline
-        logger.info("Existing database detected. Stamping with current migration version...")
-        await _stamp_database("head")
+        # Stamp with initial migration (001) as baseline, then let pending migrations run
+        logger.info("Existing database detected. Stamping with baseline migration 001...")
+        await _stamp_database("001")
     
-    # Run any pending migrations
+    # Run any pending migrations (e.g., 002, 003, etc.)
     logger.info("Running database migrations...")
     await _run_migrations()
     logger.info("Database initialization complete.")
