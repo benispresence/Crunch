@@ -8,6 +8,8 @@ from typing import Callable
 
 from nicegui import app, ui
 
+from nicemeta.ui.theme import inject_theme, apply_saved_theme, create_theme_toggle
+
 # Import database services
 from nicemeta.services.query_service import (
     QueryService,
@@ -154,6 +156,8 @@ class MetabaseSidebar:
         self.on_query_select = on_query_select
         self._drawer = None
         self._queries_container = None
+        self._search_input = None
+        self._search_term = ""
     
     def create(self) -> ui.left_drawer:
         """Create the sidebar drawer."""
@@ -172,9 +176,12 @@ class MetabaseSidebar:
                     on_click=lambda: self._drawer.toggle(),
                 ).props("flat round dense").classes("text-gray-500")
             
-            # Search in sidebar
+            # Search in sidebar (filters saved queries)
             with ui.row().classes("p-3"):
-                ui.input(placeholder="Search...").props("dense outlined").classes(
+                self._search_input = ui.input(
+                    placeholder="Search saved queries...",
+                    on_change=lambda e: self._filter_queries(e.value),
+                ).props("dense outlined clearable").classes(
                     "w-full"
                 ).style("font-size: 13px")
             
@@ -192,10 +199,19 @@ class MetabaseSidebar:
                 # Dashboards
                 self._render_section("Dashboards", "dashboard", self._render_dashboards)
             
+            # Main nav
+            with ui.column().classes("px-2 py-1"):
+                self._nav_item("/", "home", "Home")
+                self._nav_item("/sql", "code", "SQL Editor")
+                self._nav_item("/query-builder", "build", "Query Builder")
+                self._nav_item("/dashboards", "dashboard", "Dashboards")
+
             # Bottom nav
             with ui.column().classes("border-t border-gray-200 p-2"):
                 self._nav_item("/connections", "storage", "Data")
                 self._nav_item("/admin", "settings", "Settings")
+                with ui.row().classes("items-center gap-2 px-3 py-1"):
+                    create_theme_toggle()
         
         # Schedule cache refresh
         async def init_cache():
@@ -228,10 +244,13 @@ class MetabaseSidebar:
     def _render_queries_sync(self) -> None:
         """Render saved queries list (synchronous, uses cache)."""
         queries = get_saved_queries()
+        if self._search_term:
+            queries = [q for q in queries if self._search_term in q["name"].lower()]
         if not queries:
-            ui.label("No saved questions yet").classes("text-gray-400 text-sm p-2")
+            msg = "No matches" if self._search_term else "No saved questions yet"
+            ui.label(msg).classes("text-gray-400 text-sm p-2")
             return
-        
+
         for query in queries:
             with ui.row().classes(
                 "items-center gap-2 px-2 py-1 hover:bg-gray-100 rounded cursor-pointer"
@@ -245,6 +264,11 @@ class MetabaseSidebar:
             self._queries_container.clear()
             with self._queries_container:
                 self._render_queries_sync()
+
+    def _filter_queries(self, term: str) -> None:
+        """Filter displayed queries by search term."""
+        self._search_term = (term or "").strip().lower()
+        self._refresh_queries_display()
     
     def _render_dashboards(self) -> None:
         """Render dashboards list."""
@@ -266,13 +290,24 @@ class MetabaseSidebar:
                     )
     
     def _nav_item(self, path: str, icon: str, label: str) -> None:
-        """Create a navigation item."""
+        """Create a navigation item with active page highlighting."""
+        current = self._current_path()
+        is_active = current == path or (path != "/" and current.startswith(path))
+        active_cls = " nm-nav-active" if is_active else ""
         with ui.link(target=path).classes("no-underline"):
             with ui.row().classes(
-                "items-center gap-3 px-3 py-2 rounded hover:bg-gray-100 cursor-pointer"
+                f"items-center gap-3 px-3 py-2 rounded hover:bg-gray-100 cursor-pointer{active_cls}"
             ):
-                ui.icon(icon, size="sm").classes("text-gray-500")
-                ui.label(label).classes("text-sm text-gray-700")
+                ui.icon(icon, size="sm").classes("text-blue-500" if is_active else "text-gray-500")
+                ui.label(label).classes("text-sm " + ("font-semibold" if is_active else "text-gray-700"))
+
+    @staticmethod
+    def _current_path() -> str:
+        """Get the current page path."""
+        try:
+            return ui.context.client.request.url.path
+        except Exception:
+            return "/"
     
     def _select_query(self, query: dict) -> None:
         """Handle query selection."""
@@ -310,6 +345,10 @@ class MetabaseHeader:
     
     def create(self) -> ui.header:
         """Create the header."""
+        # Inject theme CSS and apply saved preference
+        inject_theme()
+        apply_saved_theme()
+
         with ui.header().classes("bg-white border-b border-gray-200 shadow-sm") as header:
             with ui.row().classes("w-full items-center px-4 py-2 gap-4"):
                 # Left section - hamburger + logo/back
@@ -369,12 +408,15 @@ class MetabaseHeader:
                                 lambda: ui.notify("Create collection coming soon"),
                             )
                     
+                    # Theme toggle
+                    create_theme_toggle()
+
                     # Settings gear
                     ui.button(
                         icon="settings",
                         on_click=lambda: ui.navigate.to("/admin"),
                     ).props("flat round").classes("text-gray-600")
-                    
+
                     # User menu
                     with ui.button(icon="account_circle").props("flat round").classes("text-gray-600"):
                         with ui.menu():
