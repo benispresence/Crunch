@@ -31,33 +31,31 @@ from nicemeta.services.dashboard_service import (
     delete_dashboard as db_delete_dashboard,
 )
 
-# Cache for queries (refreshed on demand)
-_cached_queries: list[dict] = []
-_cached_connections: list[dict] = []
-_cached_dashboards: list[dict] = []
-_cache_initialized: bool = False
-
 # Folders (still in-memory for now - can be moved to DB later)
 _folders: list[dict] = [
     {"id": "1", "name": "My Queries", "parent_id": None},
 ]
 
 
+def _store() -> dict:
+    """Get the shared storage dict (app.storage.general)."""
+    return app.storage.general
+
+
 async def refresh_cache() -> None:
     """Refresh the cached queries, connections, and dashboards from database."""
-    global _cached_queries, _cached_connections, _cached_dashboards, _cache_initialized
+    store = _store()
     try:
-        _cached_queries = await db_get_saved_queries()
-        _cached_connections = await db_get_connections()
-        _cached_dashboards = await db_get_dashboards()
-        _cache_initialized = True
+        store["nm_queries"] = await db_get_saved_queries()
+        store["nm_connections"] = await db_get_connections()
+        store["nm_dashboards"] = await db_get_dashboards()
     except Exception as e:
         print(f"Error refreshing cache: {e}")
 
 
 def get_saved_queries() -> list[dict]:
     """Get all saved queries (from cache)."""
-    return _cached_queries
+    return _store().get("nm_queries", [])
 
 
 async def get_saved_queries_async() -> list[dict]:
@@ -78,7 +76,6 @@ async def save_query(
     query_id: str | None = None,
 ) -> dict:
     """Save a query to database."""
-    global _cached_queries
     result = await db_save_query(
         name=name,
         sql=sql,
@@ -93,7 +90,6 @@ async def save_query(
 
 async def delete_query(query_id: str) -> bool:
     """Delete a query from database."""
-    global _cached_queries
     result = await db_delete_query(query_id)
     # Refresh cache after delete
     await refresh_cache()
@@ -102,7 +98,7 @@ async def delete_query(query_id: str) -> bool:
 
 def get_connections() -> list[dict]:
     """Get all connections (from cache)."""
-    return _cached_connections
+    return _store().get("nm_connections", [])
 
 
 async def get_connections_async() -> list[dict]:
@@ -122,7 +118,7 @@ def get_folders() -> list[dict]:
 
 def get_saved_dashboards() -> list[dict]:
     """Get all saved dashboards (from cache)."""
-    return _cached_dashboards
+    return _store().get("nm_dashboards", [])
 
 
 async def get_saved_dashboards_async() -> list[dict]:
