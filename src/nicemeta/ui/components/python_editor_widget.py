@@ -67,8 +67,8 @@ class PythonEditorWidget:
                 ui.space()
                 
                 with ui.row().classes("items-center gap-1"):
-                    ui.icon("code", size="xs").classes("text-gray-400")
-                    ui.label("Python").classes("text-xs text-gray-500 font-mono")
+                    ui.icon("code", size="xs").classes("text-gray-400 dark:text-gray-500")
+                    ui.label("Python").classes("text-xs text-gray-500 dark:text-gray-400 font-mono")
             
             # Editor using CodeMirror with Python mode
             self._editor = ui.codemirror(
@@ -138,11 +138,11 @@ class PythonEditorWidget:
         if self._error_container:
             self._error_container.clear()
             with self._error_container:
-                with ui.card().classes("w-full bg-red-50 border border-red-200"):
+                with ui.card().classes("w-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800"):
                     with ui.row().classes("items-start gap-2 p-2"):
                         ui.icon("error", size="sm").classes("text-red-500 mt-0.5")
                         with ui.column().classes("gap-1"):
-                            ui.label("Execution Error").classes("text-sm font-semibold text-red-700")
+                            ui.label("Execution Error").classes("text-sm font-semibold text-red-700 dark:text-red-300")
                             ui.code(error, language="text").classes("text-xs")
             self._error_container.set_visibility(True)
 
@@ -151,10 +151,10 @@ class PythonEditorWidget:
         if self._error_container:
             self._error_container.clear()
             with self._error_container:
-                with ui.card().classes("w-full bg-green-50 border border-green-200"):
+                with ui.card().classes("w-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800"):
                     with ui.row().classes("items-center gap-2 p-2"):
                         ui.icon("check_circle", size="sm").classes("text-green-500")
-                        ui.label(message).classes("text-sm text-green-700")
+                        ui.label(message).classes("text-sm text-green-700 dark:text-green-300")
             self._error_container.set_visibility(True)
 
     def set_value(self, value: str) -> None:

@@ -115,18 +115,18 @@ class FolderTree:
     def _render_item(self, item: dict, level: int = 0) -> None:
         """Render a single item (query/dashboard)."""
         item_type = item.get("type", "query")
-        icon = "description" if item_type == "query" else "dashboard"
+        icon = "article" if item_type == "query" else "space_dashboard"
         
         is_selected = self.selected_item == item["id"]
         
         with ui.row().classes(
             f"items-center gap-2 px-2 py-1 cursor-pointer rounded "
-            f"{'bg-blue-100' if is_selected else 'hover:bg-gray-100'}"
+            f"{'bg-blue-100 dark:bg-blue-900/20' if is_selected else 'hover:bg-gray-100 dark:hover:bg-[#2d2d2d]'}"
         ).style(f"margin-left: {level * 16}px") as row:
             row.on("click", lambda i=item: self._select_item(i))
             row.on("dblclick", lambda i=item: self._open_item(i))
             
-            ui.icon(icon).classes("text-gray-500")
+            ui.icon(icon).classes("text-gray-500 dark:text-gray-400")
             ui.label(item["name"]).classes("text-sm truncate flex-grow")
             
             # Item menu
@@ -195,7 +195,7 @@ class FolderTree:
         """Delete an item."""
         with ui.dialog() as dialog, ui.card():
             ui.label(f"Delete '{item['name']}'?").classes("text-lg")
-            ui.label("This action cannot be undone.").classes("text-gray-500")
+            ui.label("This action cannot be undone.").classes("text-gray-500 dark:text-gray-400")
             
             with ui.row().classes("justify-end gap-2 mt-4"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")

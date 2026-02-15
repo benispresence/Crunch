@@ -77,7 +77,7 @@ def create_app() -> FastAPI:
     ui.run_with(
         fastapi_app,
         title=settings.app.title,
-        favicon="🔷",
+        favicon="hexagon",
         dark=None,  # Controlled via theme.py (Quasar.Dark.set)
         storage_secret=settings.app.secret_key,
     )

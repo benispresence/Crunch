@@ -52,7 +52,7 @@ class ChartWidget:
     def render(self) -> None:
         """Render or re-render the chart."""
         if self.data is None or self.config is None:
-            self._chart_container.content = "<p class='text-gray-500'>No data to display</p>"
+            self._chart_container.content = "<p class='text-gray-500 dark:text-gray-400'>No data to display</p>"
             return
         
         try:
@@ -101,9 +101,9 @@ def create_chart_type_selector(
         
         for category, types in categories.items():
             ui.label(category.replace("_", " ").title()).classes(
-                "text-sm font-medium text-gray-500 mt-4 mb-2"
+                "text-sm font-medium text-gray-500 dark:text-gray-400 mt-4 mb-2"
             )
-            
+
             with ui.row().classes("flex-wrap gap-2"):
                 for ct in types:
                     is_selected = ct["id"] == selected
@@ -145,12 +145,12 @@ def create_chart_config_panel(
         ui.label("Configuration").classes("text-lg font-semibold mb-4")
         
         if not chart_def:
-            ui.label("Unknown chart type").classes("text-gray-500")
+            ui.label("Unknown chart type").classes("text-gray-500 dark:text-gray-400")
             return container
         
         # Required fields
         if chart_def.required_fields:
-            ui.label("Required").classes("text-sm font-medium text-gray-500 mb-2")
+            ui.label("Required").classes("text-sm font-medium text-gray-500 dark:text-gray-400 mb-2")
             
             for field in chart_def.required_fields:
                 with ui.row().classes("items-center gap-2 w-full"):
@@ -163,7 +163,7 @@ def create_chart_config_panel(
         
         # Optional fields
         if chart_def.optional_fields:
-            ui.label("Optional").classes("text-sm font-medium text-gray-500 mt-4 mb-2")
+            ui.label("Optional").classes("text-sm font-medium text-gray-500 dark:text-gray-400 mt-4 mb-2")
             
             for field in chart_def.optional_fields:
                 with ui.row().classes("items-center gap-2 w-full"):
@@ -175,7 +175,7 @@ def create_chart_config_panel(
                     ).classes("flex-grow")
         
         # Title
-        ui.label("Appearance").classes("text-sm font-medium text-gray-500 mt-4 mb-2")
+        ui.label("Appearance").classes("text-sm font-medium text-gray-500 dark:text-gray-400 mt-4 mb-2")
         
         ui.input(
             label="Title",

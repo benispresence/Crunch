@@ -37,7 +37,7 @@ class ConnectionsPage:
         header = MetabaseHeader(sidebar=sidebar, title="Data", show_back=True)
         header.create()
         
-        with ui.column().classes("w-full p-6 gap-6 bg-gray-50 min-h-screen"):
+        with ui.column().classes("w-full p-6 gap-6 bg-gray-50 dark:bg-[#252526] min-h-screen"):
             # Header with actions
             with ui.row().classes("items-center justify-between w-full"):
                 ui.label("Data Connections").classes("text-xl font-semibold")
@@ -75,16 +75,16 @@ class ConnectionsPage:
             # Add connection placeholder
             with ui.card().classes(
                 "w-80 h-48 flex items-center justify-center cursor-pointer "
-                "border-2 border-dashed border-gray-300 hover:border-blue-400"
+                "border-2 border-dashed border-gray-300 dark:border-[#3e3e42] hover:border-blue-400"
             ) as card:
                 card.on("click", self._add_connection)
-                with ui.column().classes("items-center gap-2 text-gray-400"):
-                    ui.icon("add_circle_outline", size="xl")
+                with ui.column().classes("items-center gap-2 text-gray-400 dark:text-gray-500"):
+                    ui.icon("add", size="xl")
                     ui.label("Add Connection")
 
     def _add_connection(self) -> None:
         """Show add connection dialog."""
-        with ui.dialog() as dialog, ui.card().classes("w-[500px]"):
+        with ui.dialog() as dialog, ui.card().classes("w-[90vw] max-w-xl"):
             ui.label("Add Connection").classes("text-lg font-semibold mb-4")
             
             # Connection type
@@ -259,7 +259,7 @@ class ConnectionsPage:
 
     def _edit_connection(self, conn: dict) -> None:
         """Edit a connection."""
-        with ui.dialog() as dialog, ui.card().classes("w-[500px]"):
+        with ui.dialog() as dialog, ui.card().classes("w-[90vw] max-w-xl"):
             ui.label("Edit Connection").classes("text-lg font-semibold mb-4")
             
             # Connection type
@@ -396,8 +396,8 @@ class ConnectionsPage:
             ui.label(
                 "This will remove the connection. Queries using this connection "
                 "will no longer work."
-            ).classes("text-gray-500")
-            
+            ).classes("text-gray-500 dark:text-gray-400")
+
             async def do_delete():
                 await self._do_delete_connection(conn, dialog)
             
@@ -431,22 +431,22 @@ def connection_card(
 ) -> ui.element:
     """Create a connection card."""
     db_icons = {
-        "postgresql": "🐘",
-        "mysql": "🐬",
-        "sqlite": "📁",
-        "sqlserver": "🪟",
+        "postgresql": "hub",
+        "mysql": "account_tree",
+        "sqlite": "folder_open",
+        "sqlserver": "window",
     }
     
     status_colors = {
-        "connected": "text-green-500",
+        "connected": "text-gray-500 dark:text-gray-400",
         "error": "text-red-500",
-        "unknown": "text-gray-400",
+        "unknown": "text-gray-400 dark:text-gray-500",
     }
     
     with ui.card().classes("w-80"):
         with ui.row().classes("items-center justify-between"):
             with ui.row().classes("items-center gap-2"):
-                ui.label(db_icons.get(db_type, "📊")).classes("text-2xl")
+                ui.icon(db_icons.get(db_type, "storage"), size="md").classes("text-gray-500 dark:text-gray-400")
                 ui.label(name).classes("font-semibold")
             
             with ui.button(icon="more_vert").props("flat round dense"):
@@ -457,17 +457,17 @@ def connection_card(
                     ui.menu_item("Delete", on_delete)
         
         with ui.column().classes("mt-2 gap-1"):
-            with ui.row().classes("items-center gap-2 text-sm text-gray-500"):
+            with ui.row().classes("items-center gap-2 text-sm text-gray-500 dark:text-gray-400"):
                 ui.icon("dns", size="xs")
                 ui.label(host)
-            
-            with ui.row().classes("items-center gap-2 text-sm text-gray-500"):
-                ui.icon("storage", size="xs")
+
+            with ui.row().classes("items-center gap-2 text-sm text-gray-500 dark:text-gray-400"):
+                ui.icon("database", size="xs")
                 ui.label(database)
         
         with ui.row().classes("items-center gap-2 mt-3"):
-            ui.icon("circle", size="xs").classes(status_colors.get(status, "text-gray-400"))
-            ui.label(status.capitalize()).classes("text-sm text-gray-500")
+            ui.icon("circle", size="xs").classes(status_colors.get(status, "text-gray-400 dark:text-gray-500"))
+            ui.label(status.capitalize()).classes("text-sm text-gray-500 dark:text-gray-400")
     
     return None
 

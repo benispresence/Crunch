@@ -66,7 +66,7 @@ class SQLEditorWidget:
 
     def create(self) -> ui.element:
         """Create the SQL editor widget."""
-        with ui.column().classes("w-full p-3 bg-white border border-gray-200") as container:
+        with ui.column().classes("w-full p-3 bg-white dark:bg-[#1e1e1e] border border-gray-200 dark:border-[#3e3e42]") as container:
             # Toolbar
             with ui.row().classes("items-center gap-2 mb-2"):
                 ui.button(
@@ -79,24 +79,24 @@ class SQLEditorWidget:
                     "Format",
                     icon="auto_fix_high",
                     on_click=self._format_sql,
-                ).props("flat dense").classes("text-gray-600")
+                ).props("flat dense").classes("text-gray-600 dark:text-gray-300")
                 
                 ui.button(
                     "Clear",
                     icon="clear",
                     on_click=self._clear,
-                ).props("flat dense").classes("text-gray-600")
+                ).props("flat dense").classes("text-gray-600 dark:text-gray-300")
                 
                 ui.space()
                 
-                ui.label("Ctrl/Cmd + Enter to run").classes("text-xs text-gray-400")
+                ui.label("Ctrl/Cmd + Enter to run").classes("text-xs text-gray-400 dark:text-gray-500")
             
             # SQL Editor with CodeMirror and syntax highlighting
             self._editor = ui.codemirror(
                 value=self.value,
                 language="sql",
                 on_change=self._handle_change,
-            ).classes("w-full border border-gray-200 rounded").style(
+            ).classes("w-full border border-gray-200 dark:border-[#3e3e42] rounded").style(
                 "min-height: 150px;"
             )
         
@@ -188,7 +188,7 @@ def create_results_table(
         # Results header
         with ui.row().classes("items-center gap-4 mb-2"):
             ui.label(f"{row_count} rows").classes("text-sm font-medium")
-            ui.label(f"{execution_time:.1f}ms").classes("text-sm text-gray-500")
+            ui.label(f"{execution_time:.1f}ms").classes("text-sm text-gray-500 dark:text-gray-400")
             
             ui.space()
             
@@ -214,7 +214,7 @@ def create_results_table(
                 pagination={"rowsPerPage": 50},
             ).classes("w-full")
         else:
-            ui.label("No results").classes("text-gray-500 p-4")
+            ui.label("No results").classes("text-gray-500 dark:text-gray-400 p-4")
     
     return container
 

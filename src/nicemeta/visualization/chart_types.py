@@ -395,7 +395,7 @@ CHART_TYPES: dict[str, ChartType] = {
         required_fields=["value"],
         optional_fields=["delta", "reference"],
         default_renderer="plotly",
-        icon="analytics",
+        icon="hexagon",
     ),
     "table": ChartType(
         id="table",

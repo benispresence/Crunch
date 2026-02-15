@@ -21,7 +21,7 @@ class AdminPage:
         header = MetabaseHeader(sidebar=sidebar, title="Settings", show_back=True)
         header.create()
         
-        with ui.column().classes("w-full p-6 gap-6 bg-gray-50 min-h-screen"):
+        with ui.column().classes("w-full p-6 gap-6 bg-gray-50 dark:bg-[#252526] min-h-screen"):
             # Tabs
             with ui.tabs().classes("w-full") as tabs:
                 users_tab = ui.tab("Users", icon="people")
@@ -115,7 +115,7 @@ class AdminPage:
                 
                 ui.label(
                     "Note: Changing the database type requires migration"
-                ).classes("text-sm text-gray-500 mt-2")
+                ).classes("text-sm text-gray-500 dark:text-gray-400 mt-2")
             
             # Save button
             ui.button(
@@ -172,7 +172,7 @@ class AdminPage:
 
     def _add_user(self) -> None:
         """Show add user dialog."""
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
+        with ui.dialog() as dialog, ui.card().classes("w-[90vw] max-w-md"):
             ui.label("Add User").classes("text-lg font-semibold mb-4")
             
             email_input = ui.input(label="Email").classes("w-full")
@@ -224,7 +224,7 @@ class AdminPage:
 def info_item(label: str, value: str) -> None:
     """Create an info item."""
     with ui.row().classes("items-center gap-2"):
-        ui.label(f"{label}:").classes("text-gray-500")
+        ui.label(f"{label}:").classes("text-gray-500 dark:text-gray-400")
         ui.label(value).classes("font-medium")
 
 
@@ -232,7 +232,7 @@ def stat_box(label: str, value: str) -> None:
     """Create a statistics box."""
     with ui.card().classes("p-4 text-center"):
         ui.label(value).classes("text-2xl font-bold")
-        ui.label(label).classes("text-sm text-gray-500")
+        ui.label(label).classes("text-sm text-gray-500 dark:text-gray-400")
 
 
 async def admin_page() -> None:

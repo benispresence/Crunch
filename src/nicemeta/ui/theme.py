@@ -31,6 +31,12 @@ body.body--dark .q-table__container {
 body.body--dark .q-field--outlined .q-field__control:before {
     border-color: #3e3e42;
 }
+body.body--dark .q-tab-panels {
+    background-color: #1e1e1e;
+}
+body.body--dark .q-tab--active {
+    color: #d4d4d4 !important;
+}
 
 /* --- Quasar light mode color overrides (light grey) --- */
 body.body--light {
@@ -70,18 +76,34 @@ body.body--dark .cm-activeLineGutter {
 
 /* --- Active nav item highlight --- */
 .nm-nav-active {
-    background-color: rgba(59, 130, 246, 0.1);
-    border-left: 3px solid var(--q-primary);
+    background-color: rgba(107, 114, 128, 0.1);
+    border-left: 3px solid #6b7280;
 }
 body.body--dark .nm-nav-active {
-    background-color: rgba(86, 156, 214, 0.15);
+    background-color: rgba(156, 163, 175, 0.12);
+    border-left-color: #9ca3af;
 }
+"""
+
+# Script to sync Quasar's body--dark class with Tailwind's html.dark class
+_DARK_SYNC_SCRIPT = """
+<script>
+(function() {
+    function syncDark() {
+        document.documentElement.classList.toggle('dark', document.body.classList.contains('body--dark'));
+    }
+    const observer = new MutationObserver(syncDark);
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    syncDark();
+})();
+</script>
 """
 
 
 def inject_theme() -> None:
-    """Inject the theme CSS. Call once per page."""
+    """Inject the theme CSS and dark-mode sync script. Call once per page."""
     ui.add_head_html(f"<style>{_THEME_CSS}</style>")
+    ui.add_head_html(_DARK_SYNC_SCRIPT)
 
 
 def set_dark_mode(dark: bool) -> None:
@@ -99,7 +121,7 @@ def create_theme_toggle() -> ui.button:
         storage["nm_dark_mode"] = new_dark
         set_dark_mode(new_dark)
 
-    btn = ui.button(icon="dark_mode", on_click=toggle).props("flat round dense")
+    btn = ui.button(icon="contrast", on_click=toggle).props("flat round dense")
     btn.tooltip("Toggle dark/light mode")
     return btn
 

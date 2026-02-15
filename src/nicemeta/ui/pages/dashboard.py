@@ -63,10 +63,10 @@ class DashboardPage:
         self._header = MetabaseHeader(sidebar=self._sidebar, title="Dashboards")
         self._header.create()
         
-        with ui.column().classes("w-full p-6 gap-6 bg-gray-50 min-h-screen"):
+        with ui.column().classes("w-full p-6 gap-6 bg-gray-50 dark:bg-[#252526] min-h-screen"):
             # Header with actions
             with ui.row().classes("items-center justify-between w-full"):
-                ui.label("All Dashboards").classes("text-xl font-semibold text-gray-800")
+                ui.label("All Dashboards").classes("text-xl font-semibold text-gray-800 dark:text-gray-100")
                 
                 ui.button(
                     "New Dashboard",
@@ -85,10 +85,10 @@ class DashboardPage:
                 # Empty state card
                 with ui.card().classes(
                     "w-72 h-48 flex items-center justify-center cursor-pointer "
-                    "border-2 border-dashed border-gray-300 hover:border-blue-400"
+                    "border-2 border-dashed border-gray-300 dark:border-[#3e3e42] hover:border-blue-400"
                 ) as card:
                     card.on("click", self._create_dashboard_dialog)
-                    with ui.column().classes("items-center gap-2 text-gray-400"):
+                    with ui.column().classes("items-center gap-2 text-gray-400 dark:text-gray-500"):
                         ui.icon("add_circle_outline", size="xl")
                         ui.label("Create Dashboard")
 
@@ -102,7 +102,7 @@ class DashboardPage:
                 "h-32 bg-gradient-to-br from-purple-50 to-indigo-100 "
                 "flex items-center justify-center relative"
             ):
-                ui.icon("dashboard", size="xl").classes("text-purple-300")
+                ui.icon("space_dashboard", size="xl").classes("text-gray-500 dark:text-gray-400")
                 widget_count = dashboard.get("widget_count", 0)
                 if widget_count > 0:
                     ui.badge(str(widget_count)).classes(
@@ -111,12 +111,12 @@ class DashboardPage:
             
             # Info
             with ui.column().classes("p-3 gap-1"):
-                ui.label(dashboard["name"]).classes("font-semibold text-gray-800")
+                ui.label(dashboard["name"]).classes("font-semibold text-gray-800 dark:text-gray-100")
                 if dashboard.get("description"):
-                    ui.label(dashboard["description"]).classes("text-sm text-gray-500 truncate")
+                    ui.label(dashboard["description"]).classes("text-sm text-gray-500 dark:text-gray-400 truncate")
                 updated = dashboard.get("updated_at", "")
                 if updated:
-                    ui.label(f"Updated {updated[:10]}").classes("text-xs text-gray-400")
+                    ui.label(f"Updated {updated[:10]}").classes("text-xs text-gray-400 dark:text-gray-500")
 
     async def _render_dashboard_view(self) -> None:
         """Render a specific dashboard with editable grid."""
@@ -127,18 +127,18 @@ class DashboardPage:
         )
         self._header.create()
         
-        with ui.column().classes("w-full bg-gray-50 min-h-screen"):
+        with ui.column().classes("w-full bg-gray-50 dark:bg-[#252526] min-h-screen"):
             # Dashboard toolbar
-            with ui.row().classes("items-center justify-between w-full px-4 py-3 bg-white border-b"):
+            with ui.row().classes("items-center justify-between w-full px-4 py-3 bg-white dark:bg-[#1e1e1e] border-b"):
                 with ui.row().classes("items-center gap-2"):
                     ui.button(
                         icon="arrow_back",
                         on_click=lambda: ui.navigate.to("/dashboards"),
                     ).props("flat round")
-                    ui.label(self.dashboard["name"]).classes("text-xl font-semibold text-gray-800")
+                    ui.label(self.dashboard["name"]).classes("text-xl font-semibold text-gray-800 dark:text-gray-100")
                     if self.dashboard.get("description"):
                         ui.label(f"· {self.dashboard['description']}").classes(
-                            "text-gray-400 ml-2"
+                            "text-gray-400 dark:text-gray-500 ml-2"
                         )
                 
                 with ui.row().classes("gap-2"):
@@ -175,11 +175,11 @@ class DashboardPage:
                         # Empty state
                         with ui.element("div").classes(
                             "col-span-12 flex items-center justify-center h-[400px] "
-                            "border-2 border-dashed border-gray-300 rounded-lg"
+                            "border-2 border-dashed border-gray-300 dark:border-[#3e3e42] rounded-lg"
                         ):
                             with ui.column().classes("items-center gap-4"):
-                                ui.icon("widgets", size="xl").classes("text-gray-300")
-                                ui.label("No widgets yet").classes("text-lg text-gray-400")
+                                ui.icon("widgets", size="xl").classes("text-gray-300 dark:text-gray-600")
+                                ui.label("No widgets yet").classes("text-lg text-gray-400 dark:text-gray-500")
                                 ui.button(
                                     "Add your first widget",
                                     icon="add",
@@ -209,13 +209,13 @@ class DashboardPage:
         ):
             # Widget header
             with ui.row().classes("items-center justify-between w-full mb-2"):
-                ui.label(title).classes("font-semibold text-gray-700")
+                ui.label(title).classes("font-semibold text-gray-700 dark:text-gray-200")
                 with ui.row().classes("gap-1"):
                     ui.button(
                         icon="refresh",
                         on_click=lambda w=widget: self._refresh_widget(w),
-                    ).props("flat round dense size=sm").classes("text-gray-400")
-                    with ui.button(icon="more_vert").props("flat round dense size=sm").classes("text-gray-400"):
+                    ).props("flat round dense size=sm").classes("text-gray-400 dark:text-gray-500")
+                    with ui.button(icon="more_vert").props("flat round dense size=sm").classes("text-gray-400 dark:text-gray-500"):
                         with ui.menu():
                             ui.menu_item("Edit", lambda w=widget: self._edit_widget(w))
                             ui.menu_item("Resize", lambda w=widget: self._resize_widget_dialog(w))
@@ -234,9 +234,9 @@ class DashboardPage:
                 else:
                     # Placeholder
                     with ui.element("div").classes(
-                        "w-full h-full bg-gray-50 rounded flex items-center justify-center"
+                        "w-full h-full bg-gray-50 dark:bg-[#252526] rounded flex items-center justify-center"
                     ):
-                        ui.label("No data").classes("text-gray-400")
+                        ui.label("No data").classes("text-gray-400 dark:text-gray-500")
 
     async def _render_widget_content(self, widget: dict, chart_type: str) -> None:
         """Render the actual widget content by running the query."""
@@ -245,7 +245,7 @@ class DashboardPage:
         connection_id = query.get("connection_id")
         
         if not sql or not connection_id:
-            ui.label("Query or connection not configured").classes("text-gray-400 p-4")
+            ui.label("Query or connection not configured").classes("text-gray-400 dark:text-gray-500 p-4")
             return
         
         # Get connection and run query
@@ -324,7 +324,7 @@ class DashboardPage:
 
     def _create_dashboard_dialog(self) -> None:
         """Create a new dashboard dialog."""
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
+        with ui.dialog() as dialog, ui.card().classes("w-[90vw] max-w-md"):
             ui.label("New Dashboard").classes("text-lg font-semibold")
             
             name_input = ui.input(label="Name", placeholder="My Dashboard").classes("w-full")
@@ -358,23 +358,23 @@ class DashboardPage:
 
     def _add_widget_dialog(self) -> None:
         """Add a widget dialog."""
-        with ui.dialog() as dialog, ui.card().classes("w-[700px] max-h-[80vh]"):
+        with ui.dialog() as dialog, ui.card().classes("w-[90vw] max-w-3xl max-h-[85vh]"):
             ui.label("Add Widget").classes("text-lg font-semibold mb-4")
             
             queries = get_saved_queries()
             
             if not queries:
                 with ui.column().classes("items-center p-8"):
-                    ui.icon("description", size="xl").classes("text-gray-300 mb-4")
-                    ui.label("No saved queries yet").classes("text-gray-500")
-                    ui.label("Create a query in the SQL editor first").classes("text-sm text-gray-400")
+                    ui.icon("article", size="xl").classes("text-gray-300 dark:text-gray-600 mb-4")
+                    ui.label("No saved queries yet").classes("text-gray-500 dark:text-gray-400")
+                    ui.label("Create a query in the SQL editor first").classes("text-sm text-gray-400 dark:text-gray-500")
                     ui.button(
                         "Go to SQL Editor",
                         on_click=lambda: (dialog.close(), ui.navigate.to("/sql")),
                     ).props("flat color=primary").classes("mt-4")
             else:
                 # Query selection using a proper select dropdown
-                ui.label("Select a question to add:").classes("text-gray-600 mb-2")
+                ui.label("Select a question to add:").classes("text-gray-600 dark:text-gray-300 mb-2")
                 
                 query_options = {q["id"]: q["name"] for q in queries}
                 query_select = ui.select(
@@ -383,7 +383,7 @@ class DashboardPage:
                     value=None,
                 ).classes("w-full")
                 
-                ui.label("Visualization type:").classes("text-gray-600 mt-4 mb-2")
+                ui.label("Visualization type:").classes("text-gray-600 dark:text-gray-300 mt-4 mb-2")
                 chart_select = ui.select(
                     options={
                         "table": "Table",
@@ -406,7 +406,7 @@ class DashboardPage:
                 query_select.on("update:model-value", on_query_change)
                 
                 # Size options
-                ui.label("Widget size:").classes("text-gray-600 mt-4 mb-2")
+                ui.label("Widget size:").classes("text-gray-600 dark:text-gray-300 mt-4 mb-2")
                 with ui.row().classes("gap-4"):
                     width_select = ui.select(
                         label="Width",
@@ -476,7 +476,7 @@ class DashboardPage:
         """Confirm widget removal."""
         with ui.dialog() as dialog, ui.card():
             ui.label("Remove widget?").classes("text-lg font-semibold")
-            ui.label("This widget will be removed from the dashboard.").classes("text-gray-500")
+            ui.label("This widget will be removed from the dashboard.").classes("text-gray-500 dark:text-gray-400")
             
             async def do_remove():
                 await self._do_remove_widget(widget["id"], dialog)
@@ -503,7 +503,7 @@ class DashboardPage:
     
     def _resize_widget_dialog(self, widget: dict) -> None:
         """Show resize widget dialog."""
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
+        with ui.dialog() as dialog, ui.card().classes("w-[90vw] max-w-md"):
             ui.label("Resize Widget").classes("text-lg font-semibold mb-4")
             
             current_width = widget.get("width", 6)
@@ -562,11 +562,11 @@ class DashboardPage:
             else:
                 with ui.element("div").classes(
                     "col-span-12 flex items-center justify-center h-[400px] "
-                    "border-2 border-dashed border-gray-300 rounded-lg"
+                    "border-2 border-dashed border-gray-300 dark:border-[#3e3e42] rounded-lg"
                 ):
                     with ui.column().classes("items-center gap-4"):
-                        ui.icon("widgets", size="xl").classes("text-gray-300")
-                        ui.label("No widgets yet").classes("text-lg text-gray-400")
+                        ui.icon("widgets", size="xl").classes("text-gray-300 dark:text-gray-600")
+                        ui.label("No widgets yet").classes("text-lg text-gray-400 dark:text-gray-500")
                         ui.button(
                             "Add your first widget",
                             icon="add",
@@ -576,7 +576,7 @@ class DashboardPage:
 
     def _rename_dashboard(self) -> None:
         """Rename the dashboard."""
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
+        with ui.dialog() as dialog, ui.card().classes("w-[90vw] max-w-md"):
             ui.label("Rename Dashboard").classes("text-lg font-semibold")
             
             name_input = ui.input(
@@ -598,7 +598,7 @@ class DashboardPage:
 
     def _duplicate_dashboard(self) -> None:
         """Duplicate the current dashboard."""
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
+        with ui.dialog() as dialog, ui.card().classes("w-[90vw] max-w-md"):
             ui.label("Duplicate Dashboard").classes("text-lg font-semibold")
             
             name_input = ui.input(
@@ -642,7 +642,7 @@ class DashboardPage:
         """Confirm dashboard deletion."""
         with ui.dialog() as dialog, ui.card():
             ui.label(f"Delete '{self.dashboard['name']}'?").classes("text-lg font-semibold")
-            ui.label("This action cannot be undone.").classes("text-gray-500")
+            ui.label("This action cannot be undone.").classes("text-gray-500 dark:text-gray-400")
             
             async def do_delete():
                 await delete_dashboard(self.dashboard_id)

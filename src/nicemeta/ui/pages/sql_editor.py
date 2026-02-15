@@ -104,7 +104,7 @@ class SQLEditorPage:
         self._create_bottom_bar()
         
         # Main content area
-        with ui.column().classes("w-full bg-gray-50").style("min-height: calc(100vh - 120px); padding-bottom: 60px;"):
+        with ui.column().classes("w-full bg-gray-50 dark:bg-[#252526]").style("min-height: calc(100vh - 120px); padding-bottom: 60px;"):
             # Editor panel with "OPEN EDITOR" toggle
             self._editors_visible = not self._is_saved_query
             self._create_editor_panel()
@@ -113,8 +113,8 @@ class SQLEditorPage:
             self._loading_container = ui.column().classes("w-full items-center justify-center p-8")
             with self._loading_container:
                 self._loading_container.set_visibility(False)
-                ui.spinner("dots", size="xl").classes("text-blue-500")
-                ui.label("Running query...").classes("text-gray-500 mt-2")
+                ui.spinner("dots", size="xl").classes("text-gray-500 dark:text-gray-400")
+                ui.label("Running query...").classes("text-gray-500 dark:text-gray-400 mt-2")
             
             # Results/Visualization area (main content)
             with ui.column().classes("flex-grow w-full overflow-hidden"):
@@ -123,8 +123,8 @@ class SQLEditorPage:
                     if self._is_saved_query:
                         # Show loading state initially
                         with ui.column().classes("w-full h-full items-center justify-center"):
-                            ui.spinner("dots", size="xl").classes("text-blue-500")
-                            ui.label("Loading query results...").classes("text-gray-500 mt-2")
+                            ui.spinner("dots", size="xl").classes("text-gray-500 dark:text-gray-400")
+                            ui.label("Loading query results...").classes("text-gray-500 dark:text-gray-400 mt-2")
                     else:
                         self._show_empty_state()
         
@@ -137,23 +137,23 @@ class SQLEditorPage:
 
     def _create_editor_header(self) -> None:
         """Create the custom header for the SQL editor."""
-        with ui.header().classes("bg-white border-b border-gray-200 shadow-sm"):
+        with ui.header().classes("bg-white dark:bg-[#1e1e1e] border-b border-gray-200 dark:border-[#3e3e42] shadow-sm"):
             with ui.row().classes("w-full items-center px-4 py-2 gap-3"):
                 # Hamburger menu
                 ui.button(
                     icon="menu",
                     on_click=lambda: self._sidebar.toggle() if self._sidebar else None,
-                ).props("flat round dense").classes("text-gray-600")
-                
+                ).props("flat round dense").classes("text-gray-600 dark:text-gray-300")
+
                 # Logo
                 with ui.link(target="/").classes("no-underline"):
-                    ui.icon("analytics", size="md").classes("text-blue-500")
+                    ui.icon("hexagon", size="md").classes("text-gray-500 dark:text-gray-400")
                 
                 # Back button
                 ui.button(
                     icon="arrow_back",
                     on_click=lambda: ui.navigate.to("/"),
-                ).props("flat round dense").classes("text-gray-600")
+                ).props("flat round dense").classes("text-gray-600 dark:text-gray-300")
                 
                 # Query name (editable)
                 self._query_name_input = ui.input(
@@ -170,8 +170,8 @@ class SQLEditorPage:
                     # Set current connection if not already set
                     if not self.current_connection:
                         self.current_connection = first_conn
-                    with ui.row().classes("items-center gap-2 ml-4 px-3 py-1 bg-blue-50 rounded-full"):
-                        ui.icon("storage", size="xs").classes("text-blue-500")
+                    with ui.row().classes("items-center gap-2 ml-4 px-3 py-1 bg-gray-100 dark:bg-[#2d2d2d] rounded-full"):
+                        ui.icon("database", size="xs").classes("text-gray-500 dark:text-gray-400")
                         self._connection_select = ui.select(
                             options=conn_options,
                             value=self.current_connection,
@@ -182,10 +182,10 @@ class SQLEditorPage:
                 else:
                     with ui.link(target="/connections").classes("no-underline"):
                         with ui.row().classes(
-                            "items-center gap-2 ml-4 px-3 py-1 bg-orange-50 rounded-full cursor-pointer"
+                            "items-center gap-2 ml-4 px-3 py-1 bg-orange-50 dark:bg-orange-900/20 rounded-full cursor-pointer"
                         ):
-                            ui.icon("warning", size="xs").classes("text-orange-500")
-                            ui.label("Add a connection").classes("text-sm text-orange-600")
+                            ui.icon("warning", size="xs").classes("text-orange-500 dark:text-orange-400")
+                            ui.label("Add a connection").classes("text-sm text-orange-600 dark:text-orange-400")
                 
                 ui.space()
                 
@@ -203,14 +203,14 @@ class SQLEditorPage:
                         "Save",
                         icon="save",
                         on_click=self._save_query_dialog,
-                    ).props("flat").classes("text-gray-600")
+                    ).props("flat").classes("text-gray-600 dark:text-gray-300")
 
                     # Delete (only if saved)
                     if self.query_id:
                         ui.button(
                             icon="delete",
                             on_click=self._delete_query,
-                        ).props("flat round").classes("text-gray-600").tooltip("Delete query")
+                        ).props("flat round").classes("text-gray-600 dark:text-gray-300").tooltip("Delete query")
 
                     # + New button
                     with ui.button("New", icon="add").props("color=primary"):
@@ -223,18 +223,18 @@ class SQLEditorPage:
                     ui.button(
                         icon="settings",
                         on_click=lambda: ui.navigate.to("/admin"),
-                    ).props("flat round").classes("text-gray-600")
+                    ).props("flat round").classes("text-gray-600 dark:text-gray-300")
 
     def _create_editor_panel(self) -> None:
         """Create the editor panel with OPEN EDITOR toggle and dual SQL/Python editors."""
         # Header row with "OPEN EDITOR" toggle
         with ui.row().classes(
-            "w-full items-center justify-between px-4 py-2 bg-white border-b border-gray-200"
+            "w-full items-center justify-between px-4 py-2 bg-white dark:bg-[#1e1e1e] border-b border-gray-200 dark:border-[#3e3e42]"
         ):
             # Left side - Query info
             with ui.row().classes("items-center gap-3"):
                 ui.label("This question is written in SQL.").classes(
-                    "text-sm text-gray-500"
+                    "text-sm text-gray-500 dark:text-gray-400"
                 )
             
             # Right side - OPEN EDITOR toggle
@@ -243,7 +243,7 @@ class SQLEditorPage:
                 icon="keyboard_arrow_down" if self._editors_visible else "keyboard_arrow_right",
                 on_click=self._toggle_editors,
             ).props("flat no-caps").classes(
-                "text-blue-600 font-medium"
+                "text-gray-600 dark:text-gray-300 font-medium"
             ).style("font-size: 13px;")
         
         # Collapsible editor panel container
@@ -285,19 +285,19 @@ class SQLEditorPage:
         with ui.column().classes("w-full gap-0"):
             # SQL Editor Card
             with ui.card().classes(
-                "w-full rounded-none border-b border-gray-200"
+                "w-full rounded-none border-b border-gray-200 dark:border-[#3e3e42]"
             ).style("box-shadow: none;"):
                 # SQL Editor header - clickable to expand/collapse
                 with ui.row().classes(
-                    "w-full items-center gap-2 px-4 py-2 bg-gray-50 border-b border-gray-200 cursor-pointer hover:bg-gray-100"
+                    "w-full items-center gap-2 px-4 py-2 bg-gray-50 dark:bg-[#252526] border-b border-gray-200 dark:border-[#3e3e42] cursor-pointer hover:bg-gray-100 dark:hover:bg-[#2d2d2d]"
                 ).on("click", self._toggle_sql_editor):
                     ui.icon(
                         "expand_more" if self._sql_editor_expanded else "chevron_right",
                         size="sm"
-                    ).classes("text-gray-400")
-                    ui.icon("code", size="sm").classes("text-blue-500")
+                    ).classes("text-gray-400 dark:text-gray-500")
+                    ui.icon("terminal", size="sm").classes("text-gray-500 dark:text-gray-400")
                     ui.label("SQL Query").classes(
-                        "text-sm font-medium text-gray-700"
+                        "text-sm font-medium text-gray-700 dark:text-gray-200"
                     )
                 
                 # SQL Editor content - collapsible
@@ -312,16 +312,16 @@ class SQLEditorPage:
             ).style("box-shadow: none;"):
                 # Python Editor header - clickable to expand/collapse
                 with ui.row().classes(
-                    "w-full items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-200 cursor-pointer hover:bg-gray-100"
+                    "w-full items-center justify-between px-4 py-2 bg-gray-50 dark:bg-[#252526] border-b border-gray-200 dark:border-[#3e3e42] cursor-pointer hover:bg-gray-100 dark:hover:bg-[#2d2d2d]"
                 ).on("click", self._toggle_python_editor):
                     with ui.row().classes("items-center gap-2"):
                         ui.icon(
                             "expand_more" if self._python_editor_expanded else "chevron_right",
                             size="sm"
-                        ).classes("text-gray-400")
-                        ui.icon("functions", size="sm").classes("text-emerald-600")
+                        ).classes("text-gray-400 dark:text-gray-500")
+                        ui.icon("functions", size="sm").classes("text-gray-500 dark:text-gray-400")
                         ui.label("Python Visualization Code").classes(
-                            "text-sm font-medium text-gray-700"
+                            "text-sm font-medium text-gray-700 dark:text-gray-200"
                         )
                     
                     # Auto-generated badge if not modified
@@ -394,7 +394,7 @@ class SQLEditorPage:
         if not self._python_code:
             self._python_code = self._generate_viz_code()
         
-        with ui.column().classes("w-full p-3 bg-white border border-gray-200"):
+        with ui.column().classes("w-full p-3 bg-white dark:bg-[#1e1e1e] border border-gray-200 dark:border-[#3e3e42]"):
             # Action buttons row
             with ui.row().classes("w-full items-center gap-2 mb-2"):
                 ui.button(
@@ -407,24 +407,24 @@ class SQLEditorPage:
                     "Validate",
                     icon="check_circle",
                     on_click=self._validate_python_code,
-                ).props("flat dense").classes("text-xs text-gray-600")
+                ).props("flat dense").classes("text-xs text-gray-600 dark:text-gray-300")
                 
                 ui.button(
                     "Reset",
                     icon="refresh",
                     on_click=self._reset_main_python_code,
-                ).props("flat dense").classes("text-xs text-gray-600")
+                ).props("flat dense").classes("text-xs text-gray-600 dark:text-gray-300")
                 
                 ui.space()
                 
-                ui.label("Ctrl+Enter to run").classes("text-xs text-gray-400")
+                ui.label("Ctrl+Enter to run").classes("text-xs text-gray-400 dark:text-gray-500")
             
             # Python code editor with syntax highlighting
             self._main_python_editor = ui.codemirror(
                 value=self._python_code,
                 language="python",
                 on_change=lambda e: self._on_main_python_code_change(e.value),
-            ).classes("w-full border border-gray-200 rounded").style(
+            ).classes("w-full border border-gray-200 dark:border-[#3e3e42] rounded").style(
                 "min-height: 180px;"
             )
     
@@ -476,7 +476,7 @@ class SQLEditorPage:
 
     def _create_bottom_bar(self) -> None:
         """Create the Metabase-style bottom bar."""
-        with ui.footer().classes("bg-white border-t border-gray-200 px-4 py-2"):
+        with ui.footer().classes("bg-white dark:bg-[#1e1e1e] border-t border-gray-200 dark:border-[#3e3e42] px-4 py-2"):
             with ui.row().classes("w-full items-center justify-between"):
                 # Left - Visualization button
                 with ui.row().classes("items-center gap-2"):
@@ -485,17 +485,17 @@ class SQLEditorPage:
                         icon="settings",
                         on_click=self._toggle_viz_options,
                     ).props("flat").classes(
-                        "text-blue-500 border border-blue-200 rounded-full px-4"
+                        "text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-[#3e3e42] rounded-full px-4"
                     )
                 
                 # Center - View toggle (table/chart)
-                with ui.row().classes("items-center gap-1 bg-gray-100 rounded-lg p-1"):
+                with ui.row().classes("items-center gap-1 bg-gray-100 dark:bg-[#2d2d2d] rounded-lg p-1"):
                     ui.button(
                         icon="table_chart",
                         on_click=lambda: self._set_view("table"),
                     ).props(
                         f"{'color=primary' if self._selected_view == 'table' else 'flat'} round dense"
-                    ).classes("" if self._selected_view == "table" else "text-gray-500")
+                    ).classes("" if self._selected_view == "table" else "text-gray-500 dark:text-gray-400")
                     
                     ui.button(
                         icon="bar_chart",
@@ -505,7 +505,7 @@ class SQLEditorPage:
                     ).classes("" if self._selected_view == "visualization" else "text-gray-500")
                 
                 # Right - Row count and timing
-                with ui.row().classes("items-center gap-4 text-sm text-gray-500"):
+                with ui.row().classes("items-center gap-4 text-sm text-gray-500 dark:text-gray-400"):
                     self._row_count_label = ui.label("No results")
                     self._timing_label = ui.label("")
                     
@@ -514,7 +514,7 @@ class SQLEditorPage:
                         icon="download",
                         on_click=self._download_results,
                     ).props("flat round dense").classes(
-                        "text-gray-400"
+                        "text-gray-400 dark:text-gray-500"
                     ).tooltip("Download results as CSV")
 
     def _download_results(self) -> None:
@@ -541,10 +541,10 @@ class SQLEditorPage:
     def _show_empty_state(self) -> None:
         """Show empty state when no query has been run."""
         with ui.column().classes("w-full h-full items-center justify-center"):
-            ui.icon("query_stats", size="xl").classes("text-gray-300 mb-4")
-            ui.label("Run a query to see results").classes("text-gray-400 text-lg")
+            ui.icon("query_stats", size="xl").classes("text-gray-300 dark:text-gray-600 mb-4")
+            ui.label("Run a query to see results").classes("text-gray-400 dark:text-gray-500 text-lg")
             ui.label("Write SQL and click Run or press Ctrl+Enter").classes(
-                "text-gray-300 text-sm"
+                "text-gray-300 dark:text-gray-600 text-sm"
             )
 
     async def _auto_run_query(self) -> None:
@@ -601,7 +601,7 @@ class SQLEditorPage:
 
     def _save_query_dialog(self) -> None:
         """Show save query dialog."""
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
+        with ui.dialog() as dialog, ui.card().classes("w-[90vw] max-w-lg"):
             ui.label("Save Question").classes("text-lg font-semibold mb-4")
             
             name_input = ui.input(
@@ -669,7 +669,7 @@ class SQLEditorPage:
         
         with ui.dialog() as dialog, ui.card():
             ui.label(f"Delete '{self.query_name}'?").classes("text-lg font-semibold")
-            ui.label("This action cannot be undone.").classes("text-gray-500")
+            ui.label("This action cannot be undone.").classes("text-gray-500 dark:text-gray-400")
             
             async def do_delete():
                 await self._do_delete_query(dialog)
@@ -726,25 +726,25 @@ class SQLEditorPage:
         self._viz_right_panel_container = None
 
         with ui.dialog().props("persistent").classes("viz-settings-dialog") as dialog:
-            with ui.card().classes("w-full").style("width: 950px; height: 700px;"):
+            with ui.card().classes("w-[90vw] max-w-5xl").style("max-height: 85vh;"):
                 # Header
-                with ui.row().classes("w-full items-center justify-between p-4 border-b bg-white"):
-                    ui.label("Visualization Settings").classes("text-xl font-bold text-gray-800")
+                with ui.row().classes("w-full items-center justify-between p-4 border-b border-gray-200 dark:border-[#3e3e42]"):
+                    ui.label("Visualization Settings").classes("text-xl font-bold text-gray-800 dark:text-gray-100")
                     ui.button(icon="close", on_click=dialog.close).props("flat round")
 
                 # Main content container (refreshable on chart type change)
-                viz_body = ui.column().classes("w-full").style("height: 550px;")
+                viz_body = ui.column().classes("w-full").style("height: calc(85vh - 160px); min-height: 400px;")
 
                 def _render_viz_body():
                     viz_body.clear()
                     with viz_body:
-                        with ui.splitter(value=30).classes("w-full").style("height: 550px;") as splitter:
+                        with ui.splitter(value=30).classes("w-full h-full") as splitter:
                             # LEFT SIDEBAR - Chart Types
                             with splitter.before:
-                                with ui.column().classes("w-full h-full bg-gray-50 p-0"):
-                                    ui.label("Chart Type").classes("text-sm font-semibold text-gray-600 p-3 border-b bg-white")
+                                with ui.column().classes("w-full h-full bg-gray-50 dark:bg-[#252526] p-0"):
+                                    ui.label("Chart Type").classes("text-sm font-semibold text-gray-600 dark:text-gray-300 p-3 border-b border-gray-200 dark:border-[#3e3e42]")
 
-                                    with ui.scroll_area().classes("w-full").style("height: 500px;"):
+                                    with ui.scroll_area().classes("w-full flex-grow"):
                                         with ui.column().classes("p-2 gap-1 w-full"):
                                             categories = {}
                                             for chart in suitable_charts:
@@ -755,7 +755,7 @@ class SQLEditorPage:
 
                                             for category, charts in categories.items():
                                                 ui.label(category.upper()).classes(
-                                                    "text-xs font-bold text-gray-400 px-2 pt-4 pb-1"
+                                                    "text-xs font-bold text-gray-400 dark:text-gray-500 px-2 pt-4 pb-1"
                                                 )
                                                 for chart in charts:
                                                     is_selected = chart["id"] == self._selected_chart_type
@@ -771,42 +771,38 @@ class SQLEditorPage:
                                                     ).classes(btn_classes):
                                                         with ui.row().classes("items-center gap-3 w-full"):
                                                             ui.icon(chart["icon"]).classes(
-                                                                "text-white" if is_selected else "text-gray-500"
+                                                                "text-white" if is_selected else "text-gray-500 dark:text-gray-400"
                                                             )
                                                             with ui.column().classes("gap-0"):
                                                                 ui.label(chart["name"]).classes(
                                                                     "text-sm font-medium " +
-                                                                    ("text-white" if is_selected else "text-gray-700")
+                                                                    ("text-white" if is_selected else "text-gray-700 dark:text-gray-200")
                                                                 )
                                                                 ui.label(lib_info.get("lib", "")).classes(
                                                                     "text-xs " +
-                                                                    ("text-blue-100" if is_selected else "text-gray-400")
+                                                                    ("text-blue-100" if is_selected else "text-gray-400 dark:text-gray-500")
                                                                 )
 
                             # RIGHT PANEL - Settings & Code Tabs
                             with splitter.after:
-                                with ui.column().classes("w-full h-full bg-white"):
-                                    with ui.tabs().classes("w-full border-b-2 border-blue-200").props(
+                                with ui.column().classes("w-full h-full"):
+                                    with ui.tabs().classes("w-full border-b border-gray-200 dark:border-[#3e3e42]").props(
                                         "dense inline-label indicator-color=primary active-color=primary"
-                                    ).style("background: #e3f2fd;") as tabs:
-                                        settings_tab = ui.tab("Settings", icon="tune").props("no-caps").style(
-                                            "color: #1565c0; font-weight: 600; font-size: 14px;"
-                                        )
-                                        code_tab = ui.tab("Python Code", icon="code").props("no-caps").style(
-                                            "color: #1565c0; font-weight: 600; font-size: 14px;"
-                                        )
+                                    ) as tabs:
+                                        settings_tab = ui.tab("Settings", icon="tune").props("no-caps")
+                                        code_tab = ui.tab("Python Code", icon="terminal").props("no-caps")
 
-                                    with ui.tab_panels(tabs, value=settings_tab).classes("w-full").style("height: 480px;"):
+                                    with ui.tab_panels(tabs, value=settings_tab).classes("w-full flex-grow"):
                                         with ui.tab_panel(settings_tab):
                                             lib_info = CHART_LIBRARIES.get(self._selected_chart_type, {})
                                             if lib_info:
-                                                with ui.row().classes("items-center gap-2 p-2 bg-gray-50 rounded mb-2"):
-                                                    ui.icon("info", size="xs").classes("text-gray-400")
+                                                with ui.row().classes("items-center gap-2 p-2 bg-gray-50 dark:bg-[#252526] rounded mb-2"):
+                                                    ui.icon("info", size="xs").classes("text-gray-400 dark:text-gray-500")
                                                     ui.label(f"{lib_info.get('lib', '')} • {lib_info.get('type', '')}").classes(
-                                                        "text-xs text-gray-500 font-mono"
+                                                        "text-xs text-gray-500 dark:text-gray-400 font-mono"
                                                     )
 
-                                            with ui.scroll_area().classes("w-full").style("height: 420px;"):
+                                            with ui.scroll_area().classes("w-full").style("height: calc(85vh - 280px); min-height: 250px;"):
                                                 with ui.column().classes("p-2 gap-4 w-full"):
                                                     self._render_viz_settings_panel(analysis)
 
@@ -816,12 +812,12 @@ class SQLEditorPage:
                 # Store refresh callback so _select_chart_type can use it
                 self._viz_settings_refresh = _render_viz_body
                 _render_viz_body()
-                
+
                 # Footer with actions
-                with ui.row().classes("w-full justify-end gap-2 p-4 border-t bg-gray-50"):
+                with ui.row().classes("w-full justify-end gap-2 p-4 border-t border-gray-200 dark:border-[#3e3e42]"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
                     ui.button(
-                        "Apply", 
+                        "Apply",
                         icon="check",
                         on_click=lambda: self._apply_viz_settings(dialog)
                     ).props("color=primary")
@@ -839,7 +835,7 @@ class SQLEditorPage:
         # DATA section
         with ui.card().classes("w-full"):
             with ui.card_section():
-                ui.label("📊 Data Mapping").classes("text-sm font-bold text-gray-700")
+                ui.label("Data Mapping").classes("text-sm font-bold text-gray-700 dark:text-gray-200")
             
             with ui.card_section().classes("pt-0"):
                 if chart_type in ["bar", "line", "area", "scatter", "histogram"]:
@@ -904,7 +900,7 @@ class SQLEditorPage:
         # DISPLAY section
         with ui.card().classes("w-full"):
             with ui.card_section():
-                ui.label("🎨 Display Options").classes("text-sm font-bold text-gray-700")
+                ui.label("Display Options").classes("text-sm font-bold text-gray-700 dark:text-gray-200")
             
             with ui.card_section().classes("pt-0"):
                 ui.input(
@@ -944,7 +940,7 @@ class SQLEditorPage:
         if chart_type in ["bar", "line", "pie", "donut", "area"]:
             with ui.card().classes("w-full"):
                 with ui.card_section():
-                    ui.label("⚙️ Style Settings").classes("text-sm font-bold text-gray-700")
+                    ui.label("Style Settings").classes("text-sm font-bold text-gray-700 dark:text-gray-200")
                 
                 with ui.card_section().classes("pt-0"):
                     ui.select(
@@ -1000,10 +996,10 @@ class SQLEditorPage:
         
         with ui.column().classes("w-full h-full gap-2"):
             # Info banner
-            with ui.row().classes("items-center gap-2 p-2 bg-blue-50 rounded"):
-                ui.icon("lightbulb", size="xs").classes("text-blue-500")
+            with ui.row().classes("items-center gap-2 p-2 bg-gray-50 dark:bg-[#252526] rounded"):
+                ui.icon("lightbulb", size="xs").classes("text-gray-500 dark:text-gray-400")
                 ui.label("Edit the Python code below to customize your visualization").classes(
-                    "text-xs text-blue-700"
+                    "text-xs text-gray-600 dark:text-gray-300"
                 )
             
             # Status indicator
@@ -1043,7 +1039,7 @@ class SQLEditorPage:
                 
                 ui.space()
                 
-                ui.label("Ctrl+Enter to run").classes("text-xs text-gray-400")
+                ui.label("Ctrl+Enter to run").classes("text-xs text-gray-400 dark:text-gray-500")
             
             # Preview container for execution results
             self._code_preview_container = ui.column().classes("w-full")
@@ -1128,8 +1124,8 @@ class SQLEditorPage:
             # Show preview in the dialog
             if self._code_preview_container and result.figure:
                 with self._code_preview_container:
-                    with ui.card().classes("w-full bg-green-50 border border-green-200 p-2"):
-                        ui.label("Preview").classes("text-xs font-semibold text-green-700")
+                    with ui.card().classes("w-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-2"):
+                        ui.label("Preview").classes("text-xs font-semibold text-green-700 dark:text-green-300")
                     # Use ui.plotly() instead of ui.html() to avoid script tag issues
                     ui.plotly(result.figure).classes("w-full").style("max-height: 300px;")
         else:
@@ -1138,11 +1134,11 @@ class SQLEditorPage:
             # Show error in preview container
             if self._code_preview_container:
                 with self._code_preview_container:
-                    with ui.card().classes("w-full bg-red-50 border border-red-200 p-2"):
+                    with ui.card().classes("w-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-2"):
                         with ui.row().classes("items-start gap-2"):
                             ui.icon("error", size="sm").classes("text-red-500")
                             with ui.column().classes("gap-1"):
-                                ui.label("Execution Error").classes("text-sm font-semibold text-red-700")
+                                ui.label("Execution Error").classes("text-sm font-semibold text-red-700 dark:text-red-300")
                                 if result.error_line:
                                     ui.label(f"Line {result.error_line}").classes("text-xs text-red-500")
                                 ui.code(result.error or "Unknown error", language="text").classes("text-xs")
@@ -1266,7 +1262,7 @@ class SQLEditorPage:
         
         if has_numeric:
             charts.append({"id": "gauge", "name": "Gauge", "icon": "speed", "category": "KPI"})
-            charts.append({"id": "indicator", "name": "Number/KPI", "icon": "analytics", "category": "KPI"})
+            charts.append({"id": "indicator", "name": "Number/KPI", "icon": "hexagon", "category": "KPI"})
         
         return charts
 
@@ -1388,9 +1384,9 @@ class SQLEditorPage:
             
         except Exception as e:
             import traceback
-            with ui.card().classes("w-full bg-red-50 p-4 border border-red-200"):
-                ui.label("Chart Error").classes("font-semibold text-red-700")
-                ui.label(str(e)).classes("text-red-600 text-sm mt-1")
+            with ui.card().classes("w-full bg-red-50 dark:bg-red-900/20 p-4 border border-red-200 dark:border-red-800"):
+                ui.label("Chart Error").classes("font-semibold text-red-700 dark:text-red-300")
+                ui.label(str(e)).classes("text-red-600 dark:text-red-400 text-sm mt-1")
                 with ui.expansion("Details").classes("mt-2"):
                     ui.code(traceback.format_exc()).classes("text-xs")
 
