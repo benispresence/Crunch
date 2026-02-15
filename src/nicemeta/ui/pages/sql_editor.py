@@ -1424,17 +1424,9 @@ class SQLEditorPage:
         
         try:
             from nicemeta.connections.manager import ConnectionManager
-            from nicemeta.config.connections import ConnectionConfig
-            
-            config = ConnectionConfig(
-                name=conn["name"],
-                type=conn["db_type"],
-                host=conn["host"],
-                port=conn["port"],
-                database=conn["database"],
-                user=conn.get("user", ""),
-                password=conn.get("password", ""),
-            )
+            from nicemeta.ui.helpers import connection_config_from_dict
+
+            config = connection_config_from_dict(conn)
             
             manager = ConnectionManager()
             adapter = manager.create_adapter(config)

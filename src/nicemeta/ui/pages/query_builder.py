@@ -111,17 +111,9 @@ class QueryBuilderPage:
 
         try:
             from nicemeta.connections.manager import ConnectionManager
-            from nicemeta.config.connections import ConnectionConfig
+            from nicemeta.ui.helpers import connection_config_from_dict
 
-            config = ConnectionConfig(
-                name=conn["name"],
-                type=conn["db_type"],
-                host=conn["host"],
-                port=conn["port"],
-                database=conn["database"],
-                user=conn.get("user", "") or conn.get("username", ""),
-                password=conn.get("password", ""),
-            )
+            config = connection_config_from_dict(conn)
 
             manager = ConnectionManager()
             adapter = manager.create_adapter(config)
@@ -183,17 +175,9 @@ class QueryBuilderPage:
 
         try:
             from nicemeta.connections.manager import ConnectionManager
-            from nicemeta.config.connections import ConnectionConfig
+            from nicemeta.ui.helpers import connection_config_from_dict
 
-            config = ConnectionConfig(
-                name=conn["name"],
-                type=conn["db_type"],
-                host=conn["host"],
-                port=conn["port"],
-                database=conn["database"],
-                user=conn.get("user", "") or conn.get("username", ""),
-                password=conn.get("password", ""),
-            )
+            config = connection_config_from_dict(conn)
 
             manager = ConnectionManager()
             adapter = manager.create_adapter(config)
