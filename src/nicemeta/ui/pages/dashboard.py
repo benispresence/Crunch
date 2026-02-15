@@ -466,8 +466,7 @@ class DashboardPage:
             if widget:
                 ui.notify("Widget added!", type="positive")
                 dialog.close()
-                # Refresh page to show new widget
-                ui.navigate.to(f"/dashboards/{self.dashboard_id}")
+                await self._refresh_dashboard()
             else:
                 ui.notify("Failed to add widget", type="negative")
         except Exception as e:
@@ -494,7 +493,7 @@ class DashboardPage:
             await remove_widget(widget_id)
             ui.notify("Widget removed", type="info")
             dialog.close()
-            ui.navigate.to(f"/dashboards/{self.dashboard_id}")
+            await self._refresh_dashboard()
         except Exception as e:
             ui.notify(f"Error: {str(e)}", type="negative")
 
@@ -533,7 +532,7 @@ class DashboardPage:
                     )
                     ui.notify("Widget resized", type="positive")
                     dialog.close()
-                    ui.navigate.to(f"/dashboards/{self.dashboard_id}")
+                    await self._refresh_dashboard()
                 except Exception as e:
                     ui.notify(f"Error resizing widget: {e}", type="negative")
             
@@ -544,14 +543,36 @@ class DashboardPage:
         dialog.open()
 
     async def _refresh_widget(self, widget: dict) -> None:
-        """Refresh a single widget."""
-        ui.notify("Refreshing widget...")
-        ui.navigate.to(f"/dashboards/{self.dashboard_id}")
+        """Refresh a single widget (re-renders all widgets in place)."""
+        await self._refresh_dashboard()
 
     async def _refresh_dashboard(self) -> None:
-        """Refresh all widgets."""
-        ui.notify("Refreshing dashboard...")
-        ui.navigate.to(f"/dashboards/{self.dashboard_id}")
+        """Refresh all widgets in place without a full page reload."""
+        if not self._widgets_container:
+            return
+        # Reload dashboard data from DB
+        self.dashboard = await get_dashboard_by_id(self.dashboard_id)
+        if self.dashboard:
+            self.widgets = self.dashboard.get("widgets", [])
+        self._widgets_container.clear()
+        with self._widgets_container:
+            if self.widgets:
+                for widget in self.widgets:
+                    await self._render_widget(widget)
+            else:
+                with ui.element("div").classes(
+                    "col-span-12 flex items-center justify-center h-[400px] "
+                    "border-2 border-dashed border-gray-300 rounded-lg"
+                ):
+                    with ui.column().classes("items-center gap-4"):
+                        ui.icon("widgets", size="xl").classes("text-gray-300")
+                        ui.label("No widgets yet").classes("text-lg text-gray-400")
+                        ui.button(
+                            "Add your first widget",
+                            icon="add",
+                            on_click=self._add_widget_dialog,
+                        ).props("color=primary")
+        ui.notify("Dashboard refreshed", type="positive")
 
     def _rename_dashboard(self) -> None:
         """Rename the dashboard."""
