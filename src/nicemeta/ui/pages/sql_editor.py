@@ -82,6 +82,7 @@ class SQLEditorPage:
         self._sidebar = None
         self._row_count_label = None
         self._timing_label = None
+        self._viz_settings_refresh = None
 
     async def render(self) -> None:
         """Render the SQL editor page with Metabase layout."""
@@ -203,37 +204,21 @@ class SQLEditorPage:
                         icon="save",
                         on_click=self._save_query_dialog,
                     ).props("flat").classes("text-gray-600")
-                    
-                    # Bookmark
-                    ui.button(
-                        icon="bookmark_border",
-                        on_click=lambda: ui.notify("Bookmark feature coming soon", type="info"),
-                    ).props("flat round").classes("text-gray-600").tooltip("Bookmark this query")
-                    
-                    # Share
-                    ui.button(
-                        icon="share",
-                        on_click=lambda: ui.notify("Share feature coming soon", type="info"),
-                    ).props("flat round").classes("text-gray-600").tooltip("Share this query")
-                    
-                    # More options
-                    with ui.button(icon="more_vert").props("flat round").classes("text-gray-600"):
-                        with ui.menu():
-                            ui.menu_item("Duplicate", lambda: ui.notify("Duplicate coming soon"))
-                            ui.menu_item("Move to collection", lambda: ui.notify("Move coming soon"))
-                            ui.separator()
-                            ui.menu_item(
-                                "Delete",
-                                lambda: self._delete_query() if self.query_id else ui.notify("Query not saved yet"),
-                            )
-                    
+
+                    # Delete (only if saved)
+                    if self.query_id:
+                        ui.button(
+                            icon="delete",
+                            on_click=self._delete_query,
+                        ).props("flat round").classes("text-gray-600").tooltip("Delete query")
+
                     # + New button
                     with ui.button("New", icon="add").props("color=primary"):
                         with ui.menu():
-                            ui.menu_item("Question", lambda: ui.navigate.to("/query-builder"))
                             ui.menu_item("SQL Query", lambda: ui.navigate.to("/sql"))
+                            ui.menu_item("Question", lambda: ui.navigate.to("/query-builder"))
                             ui.menu_item("Dashboard", lambda: ui.navigate.to("/dashboards"))
-                    
+
                     # Settings
                     ui.button(
                         icon="settings",
@@ -531,12 +516,6 @@ class SQLEditorPage:
                     ).props("flat round dense").classes(
                         "text-gray-400"
                     ).tooltip("Download results as CSV")
-                    ui.button(
-                        icon="fullscreen",
-                        on_click=lambda: ui.notify("Fullscreen mode coming soon", type="info"),
-                    ).props("flat round dense").classes(
-                        "text-gray-400"
-                    ).tooltip("Fullscreen")
 
     def _download_results(self) -> None:
         """Download query results as CSV."""
@@ -707,7 +686,6 @@ class SQLEditorPage:
         ui.notify(f"Deleted '{self.query_name}'", type="info")
         dialog.close()
         ui.navigate.to("/sql")
-        ui.navigate.to("/sql")
 
     def _set_view(self, view: str) -> None:
         """Set the current view mode."""
@@ -743,93 +721,101 @@ class SQLEditorPage:
             "table": {"lib": "NiceGUI", "type": "ui.table"},
         }
         
+        # Container refs for in-place refresh
+        self._viz_chart_list_container = None
+        self._viz_right_panel_container = None
+
         with ui.dialog().props("persistent").classes("viz-settings-dialog") as dialog:
             with ui.card().classes("w-full").style("width: 950px; height: 700px;"):
                 # Header
                 with ui.row().classes("w-full items-center justify-between p-4 border-b bg-white"):
                     ui.label("Visualization Settings").classes("text-xl font-bold text-gray-800")
                     ui.button(icon="close", on_click=dialog.close).props("flat round")
-                
-                # Main content - side by side
-                with ui.splitter(value=30).classes("w-full").style("height: 550px;") as splitter:
-                    # LEFT SIDEBAR - Chart Types
-                    with splitter.before:
-                        with ui.column().classes("w-full h-full bg-gray-50 p-0"):
-                            ui.label("Chart Type").classes("text-sm font-semibold text-gray-600 p-3 border-b bg-white")
-                            
-                            with ui.scroll_area().classes("w-full").style("height: 500px;"):
-                                with ui.column().classes("p-2 gap-1 w-full"):
-                                    # Group by category
-                                    categories = {}
-                                    for chart in suitable_charts:
-                                        cat = chart.get("category", "Other")
-                                        if cat not in categories:
-                                            categories[cat] = []
-                                        categories[cat].append(chart)
-                                    
-                                    for category, charts in categories.items():
-                                        ui.label(category.upper()).classes(
-                                            "text-xs font-bold text-gray-400 px-2 pt-4 pb-1"
-                                        )
-                                        for chart in charts:
-                                            is_selected = chart["id"] == self._selected_chart_type
-                                            lib_info = CHART_LIBRARIES.get(chart["id"], {})
-                                            
-                                            btn_classes = (
-                                                "w-full justify-start text-left " +
-                                                ("bg-blue-500 text-white" if is_selected else "")
-                                            )
-                                            
-                                            with ui.button(on_click=lambda c=chart["id"]: self._select_chart_type(c, dialog)).props(
-                                                "flat align=left no-caps"
-                                            ).classes(btn_classes):
-                                                with ui.row().classes("items-center gap-3 w-full"):
-                                                    ui.icon(chart["icon"]).classes(
-                                                        "text-white" if is_selected else "text-gray-500"
+
+                # Main content container (refreshable on chart type change)
+                viz_body = ui.column().classes("w-full").style("height: 550px;")
+
+                def _render_viz_body():
+                    viz_body.clear()
+                    with viz_body:
+                        with ui.splitter(value=30).classes("w-full").style("height: 550px;") as splitter:
+                            # LEFT SIDEBAR - Chart Types
+                            with splitter.before:
+                                with ui.column().classes("w-full h-full bg-gray-50 p-0"):
+                                    ui.label("Chart Type").classes("text-sm font-semibold text-gray-600 p-3 border-b bg-white")
+
+                                    with ui.scroll_area().classes("w-full").style("height: 500px;"):
+                                        with ui.column().classes("p-2 gap-1 w-full"):
+                                            categories = {}
+                                            for chart in suitable_charts:
+                                                cat = chart.get("category", "Other")
+                                                if cat not in categories:
+                                                    categories[cat] = []
+                                                categories[cat].append(chart)
+
+                                            for category, charts in categories.items():
+                                                ui.label(category.upper()).classes(
+                                                    "text-xs font-bold text-gray-400 px-2 pt-4 pb-1"
+                                                )
+                                                for chart in charts:
+                                                    is_selected = chart["id"] == self._selected_chart_type
+                                                    lib_info = CHART_LIBRARIES.get(chart["id"], {})
+
+                                                    btn_classes = (
+                                                        "w-full justify-start text-left " +
+                                                        ("bg-blue-500 text-white" if is_selected else "")
                                                     )
-                                                    with ui.column().classes("gap-0"):
-                                                        ui.label(chart["name"]).classes(
-                                                            "text-sm font-medium " + 
-                                                            ("text-white" if is_selected else "text-gray-700")
-                                                        )
-                                                        ui.label(lib_info.get("lib", "")).classes(
-                                                            "text-xs " +
-                                                            ("text-blue-100" if is_selected else "text-gray-400")
-                                                        )
-                    
-                    # RIGHT PANEL - Settings & Code Tabs
-                    with splitter.after:
-                        with ui.column().classes("w-full h-full bg-white"):
-                            # Tab headers - styled for clear visibility
-                            with ui.tabs().classes("w-full border-b-2 border-blue-200").props(
-                                "dense inline-label indicator-color=primary active-color=primary"
-                            ).style("background: #e3f2fd;") as tabs:
-                                settings_tab = ui.tab("Settings", icon="tune").props("no-caps").style(
-                                    "color: #1565c0; font-weight: 600; font-size: 14px;"
-                                )
-                                code_tab = ui.tab("Python Code", icon="code").props("no-caps").style(
-                                    "color: #1565c0; font-weight: 600; font-size: 14px;"
-                                )
-                            
-                            # Tab panels
-                            with ui.tab_panels(tabs, value=settings_tab).classes("w-full").style("height: 480px;"):
-                                # Settings Panel
-                                with ui.tab_panel(settings_tab):
-                                    lib_info = CHART_LIBRARIES.get(self._selected_chart_type, {})
-                                    if lib_info:
-                                        with ui.row().classes("items-center gap-2 p-2 bg-gray-50 rounded mb-2"):
-                                            ui.icon("info", size="xs").classes("text-gray-400")
-                                            ui.label(f"{lib_info.get('lib', '')} • {lib_info.get('type', '')}").classes(
-                                                "text-xs text-gray-500 font-mono"
-                                            )
-                                    
-                                    with ui.scroll_area().classes("w-full").style("height: 420px;"):
-                                        with ui.column().classes("p-2 gap-4 w-full"):
-                                            self._render_viz_settings_panel(analysis)
-                                
-                                # Python Code Panel
-                                with ui.tab_panel(code_tab):
-                                    self._render_python_code_panel(analysis, dialog)
+
+                                                    with ui.button(on_click=lambda c=chart["id"]: self._select_chart_type(c, dialog)).props(
+                                                        "flat align=left no-caps"
+                                                    ).classes(btn_classes):
+                                                        with ui.row().classes("items-center gap-3 w-full"):
+                                                            ui.icon(chart["icon"]).classes(
+                                                                "text-white" if is_selected else "text-gray-500"
+                                                            )
+                                                            with ui.column().classes("gap-0"):
+                                                                ui.label(chart["name"]).classes(
+                                                                    "text-sm font-medium " +
+                                                                    ("text-white" if is_selected else "text-gray-700")
+                                                                )
+                                                                ui.label(lib_info.get("lib", "")).classes(
+                                                                    "text-xs " +
+                                                                    ("text-blue-100" if is_selected else "text-gray-400")
+                                                                )
+
+                            # RIGHT PANEL - Settings & Code Tabs
+                            with splitter.after:
+                                with ui.column().classes("w-full h-full bg-white"):
+                                    with ui.tabs().classes("w-full border-b-2 border-blue-200").props(
+                                        "dense inline-label indicator-color=primary active-color=primary"
+                                    ).style("background: #e3f2fd;") as tabs:
+                                        settings_tab = ui.tab("Settings", icon="tune").props("no-caps").style(
+                                            "color: #1565c0; font-weight: 600; font-size: 14px;"
+                                        )
+                                        code_tab = ui.tab("Python Code", icon="code").props("no-caps").style(
+                                            "color: #1565c0; font-weight: 600; font-size: 14px;"
+                                        )
+
+                                    with ui.tab_panels(tabs, value=settings_tab).classes("w-full").style("height: 480px;"):
+                                        with ui.tab_panel(settings_tab):
+                                            lib_info = CHART_LIBRARIES.get(self._selected_chart_type, {})
+                                            if lib_info:
+                                                with ui.row().classes("items-center gap-2 p-2 bg-gray-50 rounded mb-2"):
+                                                    ui.icon("info", size="xs").classes("text-gray-400")
+                                                    ui.label(f"{lib_info.get('lib', '')} • {lib_info.get('type', '')}").classes(
+                                                        "text-xs text-gray-500 font-mono"
+                                                    )
+
+                                            with ui.scroll_area().classes("w-full").style("height: 420px;"):
+                                                with ui.column().classes("p-2 gap-4 w-full"):
+                                                    self._render_viz_settings_panel(analysis)
+
+                                        with ui.tab_panel(code_tab):
+                                            self._render_python_code_panel(analysis, dialog)
+
+                # Store refresh callback so _select_chart_type can use it
+                self._viz_settings_refresh = _render_viz_body
+                _render_viz_body()
                 
                 # Footer with actions
                 with ui.row().classes("w-full justify-end gap-2 p-4 border-t bg-gray-50"):
@@ -1168,12 +1154,14 @@ class SQLEditorPage:
         ui.notify("Preview updated", type="info")
 
     def _select_chart_type(self, chart_type: str, dialog=None) -> None:
-        """Select a chart type."""
+        """Select a chart type and refresh settings in place (no dialog flicker)."""
         self._selected_chart_type = chart_type
-        # Don't reset all config, just update type-specific defaults
-        if dialog:
+        # Refresh the settings panel container if available, avoiding close/reopen
+        if hasattr(self, '_viz_settings_refresh') and self._viz_settings_refresh:
+            self._viz_settings_refresh()
+        elif dialog:
             dialog.close()
-            self._show_viz_options_dialog()  # Reopen with new selection
+            self._show_viz_options_dialog()
 
     def _render_column_mapping_dialog(self, analysis: dict) -> None:
         """Legacy method - now using _render_viz_settings_panel."""

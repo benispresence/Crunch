@@ -391,21 +391,16 @@ class MetabaseHeader:
                     with ui.button("New", icon="add").props("color=primary"):
                         with ui.menu():
                             ui.menu_item(
-                                "Question",
-                                lambda: ui.navigate.to("/sql"),
-                            )
-                            ui.menu_item(
                                 "SQL Query",
                                 lambda: ui.navigate.to("/sql"),
                             )
                             ui.menu_item(
+                                "Question",
+                                lambda: ui.navigate.to("/query-builder"),
+                            )
+                            ui.menu_item(
                                 "Dashboard",
                                 lambda: ui.navigate.to("/dashboards"),
-                            )
-                            ui.separator()
-                            ui.menu_item(
-                                "Collection",
-                                lambda: ui.notify("Create collection coming soon"),
                             )
                     
                     # Theme toggle
