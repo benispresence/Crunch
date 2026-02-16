@@ -63,13 +63,14 @@ class SQLEditorWidget:
         self.on_change = on_change
         self.on_run = on_run
         self._editor = None
+        self.run_button = None
 
     def create(self) -> ui.element:
         """Create the SQL editor widget."""
         with ui.column().classes("w-full p-3 bg-white dark:bg-[#1e1e1e] border border-gray-200 dark:border-[#3e3e42]") as container:
             # Toolbar
             with ui.row().classes("items-center gap-2 mb-2"):
-                ui.button(
+                self.run_button = ui.button(
                     "Run",
                     icon="play_arrow",
                     on_click=self._handle_run,

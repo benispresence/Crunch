@@ -28,6 +28,7 @@ class QueryBuilderPage:
         self._builder_container = None
         self._results_container = None
         self._viz_container = None
+        self._run_btn = None
         self.result_df: pd.DataFrame | None = None
 
     async def render(self) -> None:
@@ -57,7 +58,7 @@ class QueryBuilderPage:
                             on_change=self._on_connection_change,
                         ).classes("w-64")
 
-                        ui.button(
+                        self._run_btn = ui.button(
                             "Run Query",
                             icon="play_arrow",
                             on_click=self._run_query,
@@ -171,6 +172,17 @@ class QueryBuilderPage:
             ui.notify("Connection not found", type="negative")
             return
 
+        # Show loading state on Run button
+        if self._run_btn:
+            self._run_btn.props("loading")
+
+        # Show spinner in results container
+        self._results_container.clear()
+        with self._results_container:
+            with ui.column().classes("w-full items-center justify-center p-8"):
+                ui.spinner("dots", size="xl").classes("text-gray-500 dark:text-gray-400")
+                ui.label("Running query...").classes("text-gray-500 dark:text-gray-400 mt-2")
+
         ui.notify("Executing query...", type="info")
 
         try:
@@ -210,6 +222,10 @@ class QueryBuilderPage:
             self._results_container.clear()
             with self._results_container:
                 ui.label(f"Error: {ex}").classes("text-red-500 p-4")
+        finally:
+            # Remove loading state from Run button
+            if self._run_btn:
+                self._run_btn.props(remove="loading")
 
     def _open_in_sql_editor(self) -> None:
         """Open the generated SQL in the SQL editor."""

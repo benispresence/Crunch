@@ -216,11 +216,13 @@ class ConnectionsPage:
         if not name:
             ui.notify("Please enter a connection name", type="warning")
             return
-        
+
         if not database:
             ui.notify("Please enter a database name", type="warning")
             return
-        
+
+        ui.notify("Saving connection...", type="info")
+
         try:
             # Save to database
             await create_connection(
@@ -359,11 +361,13 @@ class ConnectionsPage:
         if not name:
             ui.notify("Please enter a connection name", type="warning")
             return
-        
+
         if not database:
             ui.notify("Please enter a database name", type="warning")
             return
-        
+
+        ui.notify("Saving connection...", type="info")
+
         try:
             # Update in database
             await update_connection(
