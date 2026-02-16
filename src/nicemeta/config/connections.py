@@ -15,7 +15,7 @@ class ConnectionConfig(BaseModel):
     """Configuration for a single data source connection."""
 
     name: str
-    type: Literal["postgresql", "mysql", "sqlite", "sqlserver"]
+    type: Literal["postgresql", "mysql", "sqlite", "sqlserver", "csv", "excel"]
     host: str = "localhost"
     port: int | None = None
     database: str = ""
@@ -35,6 +35,8 @@ class ConnectionConfig(BaseModel):
             "mysql": 3306,
             "sqlite": 0,
             "sqlserver": 1433,
+            "csv": 0,
+            "excel": 0,
         }
         return ports.get(self.type, 0)
 

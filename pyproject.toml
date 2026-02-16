@@ -56,6 +56,8 @@ dependencies = [
     # Data Processing
     "pandas>=2.1.0",
     "numpy>=1.26.0",
+    "duckdb>=0.10.0",               # SQL on DataFrames (CSV/Excel)
+    "openpyxl>=3.1.0",              # Excel .xlsx support
     
     # Visualization - Comprehensive
     "plotly>=5.18.0",
