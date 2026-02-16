@@ -47,21 +47,21 @@ async def home_page() -> None:
                     "Start a new query with the visual builder",
                     "construction",
                     "/query-builder",
-                    "bg-blue-500",
+                    "border-l-4 border-l-amber-400/50",
                 )
                 quick_action_card(
                     "SQL Query",
                     "Write SQL to explore your data",
                     "terminal",
                     "/sql",
-                    "bg-purple-500",
+                    "border-l-4 border-l-blue-400/50",
                 )
                 quick_action_card(
                     "New Dashboard",
                     "Create a dashboard with multiple charts",
                     "space_dashboard",
                     "/dashboards",
-                    "bg-green-500",
+                    "border-l-4 border-l-emerald-400/50",
                 )
 
             # Recent items section
@@ -138,11 +138,11 @@ async def home_page() -> None:
 
 
 def quick_action_card(
-    title: str, description: str, icon: str, link: str, bg_class: str = "bg-blue-500"
+    title: str, description: str, icon: str, link: str, border_class: str = ""
 ) -> ui.element:
     """Create a quick action card."""
     with ui.card().classes(
-        "cursor-pointer hover:shadow-lg transition-all hover:-translate-y-1 w-72"
+        f"cursor-pointer hover:shadow-lg transition-all hover:-translate-y-1 w-72 {border_class}"
     ) as card:
         card.on("click", lambda: ui.navigate.to(link))
 
