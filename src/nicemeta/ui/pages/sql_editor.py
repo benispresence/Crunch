@@ -175,23 +175,23 @@ class SQLEditorPage:
 
     def _create_editor_header(self) -> None:
         """Create the custom header for the SQL editor."""
-        with ui.header().classes("bg-white dark:bg-[#1e1e1e] border-b border-gray-200 dark:border-[#3e3e42] shadow-sm"):
+        with ui.header().classes("shadow-sm"):
             with ui.row().classes("w-full items-center px-4 py-2 gap-3"):
                 # Hamburger menu
                 ui.button(
                     icon="menu",
                     on_click=lambda: self._sidebar.toggle() if self._sidebar else None,
-                ).props("flat round dense").classes("text-gray-600 dark:text-gray-300")
+                ).props("flat round dense")
 
                 # Logo
                 with ui.link(target="/").classes("no-underline"):
-                    ui.icon("hexagon", size="md").classes("text-gray-500 dark:text-gray-400")
-                
+                    ui.icon("hexagon", size="md").classes("nm-sidebar-icon")
+
                 # Back button
                 ui.button(
                     icon="arrow_back",
                     on_click=lambda: ui.navigate.to("/"),
-                ).props("flat round dense").classes("text-gray-600 dark:text-gray-300")
+                ).props("flat round dense")
                 
                 # Query name (editable)
                 self._query_name_input = ui.input(
@@ -214,8 +214,8 @@ class SQLEditorPage:
                     # Set current connection if not already set
                     if not self.current_connection:
                         self.current_connection = first_conn
-                    with ui.row().classes("items-center gap-2 ml-4 px-3 py-1 bg-gray-100 dark:bg-[#2d2d2d] rounded-full"):
-                        ui.icon("database", size="xs").classes("text-gray-500 dark:text-gray-400")
+                    with ui.row().classes("items-center gap-2 ml-4 px-3 py-1 nm-chip rounded-full"):
+                        ui.icon("database", size="xs").classes("nm-sidebar-icon")
                         self._connection_select = ui.select(
                             options=conn_options,
                             value=self.current_connection,

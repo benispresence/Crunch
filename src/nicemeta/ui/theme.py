@@ -14,12 +14,18 @@ body.body--dark {
     --q-dark: #1e1e1e;
     --q-dark-page: #181818;
     --q-primary: #569cd6;
+    color: #d4d4d4;
 }
 body.body--dark .q-header,
 body.body--dark .q-footer,
 body.body--dark .q-drawer {
-    background-color: #252526 !important;
+    background-color: #1e1e1e !important;
     border-color: #3e3e42 !important;
+    color: #d4d4d4 !important;
+}
+body.body--dark .q-header *,
+body.body--dark .q-drawer * {
+    color: inherit;
 }
 body.body--dark .q-card {
     background-color: #252526;
@@ -37,6 +43,16 @@ body.body--dark .q-tab-panels {
 body.body--dark .q-tab--active {
     color: #d4d4d4 !important;
 }
+body.body--dark .q-separator {
+    background-color: #3e3e42;
+}
+body.body--dark .q-field__native,
+body.body--dark .q-field__input {
+    color: #d4d4d4 !important;
+}
+body.body--dark .q-btn--flat {
+    color: #d4d4d4;
+}
 
 /* --- Quasar light mode color overrides (light grey) --- */
 body.body--light {
@@ -46,10 +62,12 @@ body.body--light .q-header,
 body.body--light .q-footer {
     background-color: #ffffff !important;
     border-bottom: 1px solid #e5e7eb;
+    color: #1f2937 !important;
 }
 body.body--light .q-drawer {
     background-color: #ffffff !important;
     border-right: 1px solid #e5e7eb;
+    color: #1f2937 !important;
 }
 body.body--light .q-page-container {
     background-color: #f5f5f5;
@@ -73,6 +91,22 @@ body.body--dark .cm-activeLine {
 body.body--dark .cm-activeLineGutter {
     background-color: #2a2d2e;
 }
+
+/* --- Sidebar/header utility classes (respond to Quasar dark mode) --- */
+.nm-sidebar-icon { color: #6b7280; }
+.nm-sidebar-muted { color: #9ca3af; }
+.nm-sidebar-hover:hover { background-color: rgba(0,0,0,0.04); }
+.nm-sidebar-border-b { border-bottom: 1px solid #e5e7eb; }
+.nm-sidebar-border-t { border-top: 1px solid #e5e7eb; }
+
+body.body--dark .nm-sidebar-icon { color: #9ca3af; }
+body.body--dark .nm-sidebar-muted { color: #6b7280; }
+body.body--dark .nm-sidebar-hover:hover { background-color: rgba(255,255,255,0.06); }
+body.body--dark .nm-sidebar-border-b { border-bottom-color: #3e3e42; }
+body.body--dark .nm-sidebar-border-t { border-top-color: #3e3e42; }
+
+.nm-chip { background-color: #f3f4f6; }
+body.body--dark .nm-chip { background-color: #2d2d2d; }
 
 /* --- Active nav item highlight --- */
 .nm-nav-active {
