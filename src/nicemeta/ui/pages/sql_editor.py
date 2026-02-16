@@ -3,7 +3,7 @@ SQL Editor page for NiceMeta - Metabase-style layout.
 """
 
 import pandas as pd
-from nicegui import ui
+from nicegui import app, ui
 
 from nicemeta.ui.components.sidebar import (
     MetabaseHeader,
@@ -83,6 +83,9 @@ class SQLEditorPage:
         self._row_count_label = None
         self._timing_label = None
         self._viz_settings_refresh = None
+        self._wizard_step = 0
+        self._dirty = False
+        self._dirty_indicator = None
 
     async def render(self) -> None:
         """Render the SQL editor page with Metabase layout."""
@@ -135,6 +138,41 @@ class SQLEditorPage:
                 await self._auto_run_query()
             ui.timer(0.5, run_saved_query, once=True)
 
+        # Pick up SQL transferred from Query Builder
+        transferred_sql = app.storage.user.pop("_nm_sql_transfer", None)
+        if transferred_sql and self.editor:
+            self.editor.set_value(transferred_sql)
+
+        # Keyboard shortcuts
+        async def _handle_key(e):
+            if e.action.keydown and (e.modifiers.ctrl or e.modifiers.meta):
+                if e.key.enter:
+                    await self._run_query()
+                elif e.key == "s":
+                    await ui.run_javascript("event.preventDefault()")
+                    self._save_query_dialog()
+
+        ui.keyboard(on_key=_handle_key)
+
+        # Unsaved-changes protection
+        ui.add_body_html("""
+        <script>
+        window.addEventListener('beforeunload', function(e) {
+            if (window.__nm_dirty) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+        </script>
+        """)
+
+    def _set_dirty(self, dirty: bool) -> None:
+        """Update dirty state and visual indicator."""
+        self._dirty = dirty
+        ui.run_javascript(f"window.__nm_dirty = {'true' if dirty else 'false'};")
+        if self._dirty_indicator:
+            self._dirty_indicator.set_visibility(dirty)
+
     def _create_editor_header(self) -> None:
         """Create the custom header for the SQL editor."""
         with ui.header().classes("bg-white dark:bg-[#1e1e1e] border-b border-gray-200 dark:border-[#3e3e42] shadow-sm"):
@@ -162,7 +200,13 @@ class SQLEditorPage:
                 ).props("dense borderless").classes(
                     "text-lg font-semibold"
                 ).style("min-width: 200px; font-size: 18px;")
-                
+
+                # Unsaved changes indicator
+                self._dirty_indicator = ui.label("*").classes(
+                    "text-lg font-bold text-orange-500"
+                ).tooltip("Unsaved changes")
+                self._dirty_indicator.set_visibility(False)
+
                 # Connection selector as chip
                 conn_options = self._get_connection_options()
                 if conn_options:
@@ -387,6 +431,7 @@ class SQLEditorPage:
     def _on_sql_change(self, value: str) -> None:
         """Handle SQL code changes - keeps _initial_sql in sync."""
         self._initial_sql = value
+        self._set_dirty(True)
     
     def _create_python_editor_content(self) -> None:
         """Create the Python visualization editor content within the panel."""
@@ -609,11 +654,14 @@ class SQLEditorPage:
                 value=self.query_name,
             ).classes("w-full")
             
-            # Folder selection (simplified)
+            # Folder selection
+            from nicemeta.ui.components.sidebar import get_folders
+            folders = get_folders()
+            folder_options = {f["id"]: f["name"] for f in folders}
             folder_select = ui.select(
                 label="Save to",
-                options={"1": "My Queries"},
-                value="1",
+                options=folder_options,
+                value=folders[0]["id"] if folders else "1",
             ).classes("w-full")
             
             async def do_save():
@@ -659,6 +707,7 @@ class SQLEditorPage:
                 python_code=self._python_code if self._python_code_modified else None,
             )
         
+        self._set_dirty(False)
         ui.notify(f"Saved '{name}'", type="positive")
         dialog.close()
 
@@ -1404,61 +1453,71 @@ class SQLEditorPage:
         if not self.current_connection:
             ui.notify("Please select a connection first", type="warning")
             return
-        
+
         if not sql.strip():
             ui.notify("Please enter a SQL query", type="warning")
             return
-        
+
         connections = get_connections()
         conn = next((c for c in connections if c["id"] == self.current_connection), None)
         if not conn:
             ui.notify("Connection not found", type="negative")
             return
-        
+
+        # Show loading state on Run button
+        if self.editor and self.editor.run_button:
+            self.editor.run_button.props("loading")
+
+        # Show spinner in results container
+        self._results_container.clear()
+        with self._results_container:
+            with ui.column().classes("w-full items-center justify-center p-8"):
+                ui.spinner("dots", size="xl").classes("text-gray-500 dark:text-gray-400")
+                ui.label("Running query...").classes("text-gray-500 dark:text-gray-400 mt-2")
+
         # Show loading state
         if self._loading_container:
             self._loading_container.set_visibility(True)
-        self._results_container.clear()
-        
+
         ui.notify(f"Executing query...", type="info")
-        
+
         try:
             from nicemeta.connections.manager import ConnectionManager
             from nicemeta.ui.helpers import connection_config_from_dict
 
             config = connection_config_from_dict(conn)
-            
+
             manager = ConnectionManager()
             adapter = manager.create_adapter(config)
             result = await adapter.execute_query(sql, limit=1000)
-            
+
             # Hide loading state
             if self._loading_container:
                 self._loading_container.set_visibility(False)
-            
+
             if result.error:
                 ui.notify(f"Query error: {result.error}", type="negative")
                 self.result_df = None
             else:
                 self.result_df = result.to_dataframe()
-                
+
                 # Regenerate Python visualization code with new data
                 if not self._python_code_modified:
                     self._python_code = self._generate_viz_code()
                     # Update main Python editor if visible
                     if self._main_python_editor:
                         self._main_python_editor.set_value(self._python_code)
-                
+
                 # Update bottom bar stats
                 if self._row_count_label:
                     self._row_count_label.text = f"Showing {result.row_count} rows"
                 if self._timing_label:
                     self._timing_label.text = f"⚡ {result.execution_time_ms:.0f}ms"
-                
+
                 ui.notify(f"✓ {result.row_count} rows returned", type="positive")
-            
+
             self._render_results()
-            
+
         except Exception as e:
             # Hide loading state on error
             if self._loading_container:
@@ -1466,6 +1525,10 @@ class SQLEditorPage:
             ui.notify(f"Error: {str(e)}", type="negative")
             self.result_df = None
             self._render_results()
+        finally:
+            # Remove loading state from Run button
+            if self.editor and self.editor.run_button:
+                self.editor.run_button.props(remove="loading")
 
 
 async def sql_editor_page() -> None:
