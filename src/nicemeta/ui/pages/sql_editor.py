@@ -78,6 +78,7 @@ class SQLEditorPage:
         self._viz_container = None
         self._viz_options_container = None
         self._bottom_bar = None
+        self._view_toggle_container = None  # re-rendered on every _set_view call
         self._query_name_input = None
         self._header = None
         self._sidebar = None
@@ -505,21 +506,10 @@ class SQLEditorPage:
                         "text-blue-500 border border-blue-200 rounded-full px-4"
                     )
                 
-                # Center - View toggle (table/chart)
+                # Center - View toggle (table/chart) — re-rendered on every view change
                 with ui.row().classes("items-center gap-1 bg-gray-100 rounded-lg p-1"):
-                    ui.button(
-                        icon="table_chart",
-                        on_click=lambda: self._set_view("table"),
-                    ).props(
-                        f"{'color=primary' if self._selected_view == 'table' else 'flat'} round dense"
-                    ).classes("" if self._selected_view == "table" else "text-gray-500")
-                    
-                    ui.button(
-                        icon="bar_chart",
-                        on_click=lambda: self._set_view("visualization"),
-                    ).props(
-                        f"{'color=primary' if self._selected_view == 'visualization' else 'flat'} round dense"
-                    ).classes("" if self._selected_view == "visualization" else "text-gray-500")
+                    self._view_toggle_container = ui.row()
+                    self._render_view_toggle()
                 
                 # Right - Row count and timing
                 with ui.row().classes("items-center gap-4 text-sm text-gray-500"):
@@ -533,6 +523,25 @@ class SQLEditorPage:
                     ).props("flat round dense").classes(
                         "text-gray-400"
                     ).tooltip("Download results as CSV")
+
+    def _render_view_toggle(self) -> None:
+        """Re-render the table/chart toggle buttons so their state is always accurate."""
+        if not self._view_toggle_container:
+            return
+        self._view_toggle_container.clear()
+        with self._view_toggle_container:
+            ui.button(
+                icon="table_chart",
+                on_click=lambda: self._set_view("table"),
+            ).props(
+                f"{'color=primary' if self._selected_view == 'table' else 'flat'} round dense"
+            ).tooltip("Table")
+            ui.button(
+                icon="bar_chart",
+                on_click=lambda: self._set_view("visualization"),
+            ).props(
+                f"{'color=primary' if self._selected_view == 'visualization' else 'flat'} round dense"
+            ).tooltip("Visualization")
 
     def _download_results(self) -> None:
         """Download query results as CSV."""
@@ -705,8 +714,9 @@ class SQLEditorPage:
         ui.navigate.to("/sql")
 
     def _set_view(self, view: str) -> None:
-        """Set the current view mode."""
+        """Set the current view mode and update toggle button visuals."""
         self._selected_view = view
+        self._render_view_toggle()
         self._render_results()
 
     def _toggle_viz_options(self) -> None:
@@ -1339,14 +1349,39 @@ class SQLEditorPage:
                 ui.plotly(fig).classes("w-full")
                 return
             
+            # Auto-detect x/y/labels/values from the DataFrame when not explicitly configured
+            all_cols = list(self.result_df.columns)
+            num_cols = [
+                c for c in all_cols
+                if pd.api.types.is_numeric_dtype(self.result_df[c])
+            ]
+
+            x_val = self._chart_config.get("x") or (all_cols[0] if all_cols else None)
+            y_val = self._chart_config.get("y")
+            if not y_val and self._selected_chart_type in ("bar", "line", "area", "scatter"):
+                candidates = [c for c in num_cols if c != x_val]
+                y_val = (candidates[0] if candidates
+                         else num_cols[0] if num_cols
+                         else all_cols[1] if len(all_cols) > 1
+                         else x_val)
+
+            labels_val = self._chart_config.get("labels")
+            values_val = self._chart_config.get("values")
+            if not labels_val and self._selected_chart_type in ("pie", "donut"):
+                labels_val = all_cols[0] if all_cols else None
+            if not values_val and self._selected_chart_type in ("pie", "donut"):
+                values_val = (num_cols[0] if num_cols
+                              else all_cols[1] if len(all_cols) > 1
+                              else None)
+
             # Build config with all options
             config = ChartConfig(
                 chart_type=self._selected_chart_type,
                 title=self._chart_config.get("title", ""),
-                x=self._chart_config.get("x"),
-                y=self._chart_config.get("y"),
-                labels=self._chart_config.get("labels"),
-                values=self._chart_config.get("values"),
+                x=x_val,
+                y=y_val,
+                labels=labels_val,
+                values=values_val,
                 color=self._chart_config.get("color") or None,
                 width=900,
                 height=500,
@@ -1377,10 +1412,8 @@ class SQLEditorPage:
             fig = ChartFactory.render_figure(self.result_df, config, options)
             
             if fig is None:
-                # Fallback to HTML rendering if figure method not available
-                html = ChartFactory.render_to_html(self.result_df, config, options)
-                # Use add_body_html for scripts
-                ui.add_body_html(html)
+                # render_figure() not supported by this renderer — fall back to table
+                self._render_table()
                 return
             
             # Show library info badge

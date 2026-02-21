@@ -2,6 +2,8 @@
 Dashboard page for NiceMeta - Full featured dashboard builder.
 """
 
+import asyncio
+
 import pandas as pd
 from nicegui import ui
 
@@ -195,56 +197,110 @@ class DashboardPage:
                                 ).props("color=primary")
 
     async def _render_widget(self, widget: dict) -> None:
-        """Render a single widget in the grid."""
-        pos_x = widget.get("position_x", 0)
-        pos_y = widget.get("position_y", 0)
+        """Render a single widget in the grid with table/chart view toggle."""
         width = widget.get("width", 6)
         height = widget.get("height", 4)
-        
-        # Get widget title
+
+        # Saved chart type for this widget
+        chart_type = "table"
+        if widget.get("visualization"):
+            chart_type = widget["visualization"].get("chart_type", "table")
+
+        # Default view: show chart when the widget has a non-table visualization
+        view_state = ["chart" if chart_type != "table" else "table"]
+
+        # Widget title
         title = widget.get("title_override") or ""
         if not title and widget.get("query"):
             title = widget["query"].get("name", "Untitled")
         if not title and widget.get("visualization"):
             title = widget["visualization"].get("name", "Untitled")
-        
-        chart_type = "table"
-        if widget.get("visualization"):
-            chart_type = widget["visualization"].get("chart_type", "table")
-        
+
         with ui.card().classes(f"col-span-{width}").style(
-            f"grid-row: span {height}; min-height: {height * 100}px;"
+            f"grid-row: span {height}; min-height: {height * 100}px; overflow: hidden;"
         ):
-            # Widget header
+            content_area: list = [None]
+            toggle_box: list = [None]
+
+            # ── helpers ──────────────────────────────────────────────────────
+
+            def _redraw_toggle() -> None:
+                if not toggle_box[0]:
+                    return
+                toggle_box[0].clear()
+                is_table = view_state[0] == "table"
+                with toggle_box[0]:
+                    ui.button(
+                        icon="table_chart",
+                        on_click=lambda: asyncio.ensure_future(_switch("table")),
+                    ).props(
+                        f"{'color=primary' if is_table else 'flat'} round dense size=sm"
+                    ).tooltip("Table")
+                    ui.button(
+                        icon="bar_chart",
+                        on_click=lambda: asyncio.ensure_future(_switch("chart")),
+                    ).props(
+                        f"{'color=primary' if not is_table else 'flat'} round dense size=sm"
+                    ).tooltip("Chart")
+
+            async def _switch(new_view: str) -> None:
+                view_state[0] = new_view
+                _redraw_toggle()
+                if content_area[0]:
+                    content_area[0].clear()
+                    with content_area[0]:
+                        if widget.get("query"):
+                            effective = chart_type if new_view == "chart" else "table"
+                            await self._render_widget_content(widget, effective)
+                        else:
+                            _placeholder()
+
+            def _placeholder() -> None:
+                with ui.element("div").classes(
+                    "w-full h-full bg-gray-50 rounded flex items-center justify-center"
+                ):
+                    ui.label("No data").classes("text-gray-400")
+
+            # ── Widget header ─────────────────────────────────────────────────
             with ui.row().classes("items-center justify-between w-full mb-2"):
-                ui.label(title).classes("font-semibold text-gray-700")
-                with ui.row().classes("gap-1"):
+                ui.label(title).classes(
+                    "font-semibold text-gray-700 truncate"
+                ).style("max-width: 55%;")
+
+                with ui.row().classes("items-center gap-1 flex-shrink-0"):
+                    # Table / Chart toggle
+                    toggle_box[0] = ui.row().classes("gap-0")
+                    _redraw_toggle()
+
                     ui.button(
                         icon="refresh",
                         on_click=lambda w=widget: self._refresh_widget(w),
                     ).props("flat round dense size=sm").classes("text-gray-400")
-                    with ui.button(icon="more_vert").props("flat round dense size=sm").classes("text-gray-400"):
+
+                    with ui.button(icon="more_vert").props(
+                        "flat round dense size=sm"
+                    ).classes("text-gray-400"):
                         with ui.menu():
                             ui.menu_item("Edit", lambda w=widget: self._edit_widget(w))
-                            ui.menu_item("Resize", lambda w=widget: self._resize_widget_dialog(w))
+                            ui.menu_item(
+                                "Resize", lambda w=widget: self._resize_widget_dialog(w)
+                            )
                             ui.separator()
-                            ui.menu_item("Remove", lambda w=widget: self._remove_widget_dialog(w))
-            
-            # Widget content
-            content_container = ui.element("div").classes(
-                "flex-grow w-full overflow-auto"
-            ).style("height: calc(100% - 40px);")
-            
-            with content_container:
-                # Try to render actual data
+                            ui.menu_item(
+                                "Remove", lambda w=widget: self._remove_widget_dialog(w)
+                            )
+
+            # ── Widget content ────────────────────────────────────────────────
+            content_area[0] = ui.element("div").classes(
+                "w-full overflow-auto"
+            ).style("height: calc(100% - 44px);")
+
+            with content_area[0]:
                 if widget.get("query"):
-                    await self._render_widget_content(widget, chart_type)
+                    effective = chart_type if view_state[0] == "chart" else "table"
+                    await self._render_widget_content(widget, effective)
                 else:
-                    # Placeholder
-                    with ui.element("div").classes(
-                        "w-full h-full bg-gray-50 rounded flex items-center justify-center"
-                    ):
-                        ui.label("No data").classes("text-gray-400")
+                    _placeholder()
 
     async def _render_widget_content(self, widget: dict, chart_type: str) -> None:
         """Render the actual widget content by running the query."""
@@ -308,25 +364,50 @@ class DashboardPage:
             ui.label(f"Error loading data: {str(e)}").classes("text-red-400 p-4 text-sm")
 
     async def _render_chart(self, df: pd.DataFrame, chart_type: str, config: dict) -> None:
-        """Render a chart visualization."""
+        """Render a chart visualization using ui.plotly()."""
         try:
             from nicemeta.visualization import ChartConfig, ChartFactory
-            
-            # Auto-detect x and y columns
-            x_col = config.get("x") or (df.columns[0] if len(df.columns) > 0 else None)
-            y_col = config.get("y") or (df.columns[1] if len(df.columns) > 1 else df.columns[0] if len(df.columns) > 0 else None)
-            
+
+            cols = list(df.columns)
+            num_cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
+
+            x_col = config.get("x") or (cols[0] if cols else None)
+            y_col = (
+                config.get("y")
+                or next((c for c in num_cols if c != x_col), None)
+                or (cols[1] if len(cols) > 1 else x_col)
+            )
+
+            labels_col = config.get("labels") or (cols[0] if cols else None)
+            values_col = (
+                config.get("values")
+                or (num_cols[0] if num_cols else (cols[1] if len(cols) > 1 else None))
+            )
+
             chart_config = ChartConfig(
                 chart_type=chart_type,
                 x=x_col,
                 y=y_col,
+                labels=labels_col if chart_type in ("pie", "donut") else None,
+                values=values_col if chart_type in ("pie", "donut") else None,
                 title="",
                 width=None,
-                height=300,
+                height=280,
             )
-            
-            html = ChartFactory.render_to_html(df, chart_config)
-            ui.html(html, sanitize=False).classes("w-full")
+
+            fig = ChartFactory.render_figure(df, chart_config, options={})
+            if fig:
+                ui.plotly(fig).classes("w-full h-full")
+            else:
+                # Renderer doesn't support render_figure — show table fallback
+                columns = [{"name": c, "label": c, "field": c} for c in df.columns]
+                rows = [
+                    {col: serialize_value(val) for col, val in row.items()}
+                    for row in df.to_dict("records")
+                ]
+                ui.table(
+                    columns=columns, rows=rows, pagination={"rowsPerPage": 10}
+                ).classes("w-full").props("dense flat")
         except Exception as e:
             ui.label(f"Chart error: {str(e)}").classes("text-red-400 text-sm")
 
