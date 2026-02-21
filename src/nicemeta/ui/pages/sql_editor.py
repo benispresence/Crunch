@@ -34,6 +34,7 @@ from nicemeta.visualization import (
     execute_visualization_code,
     validate_visualization_code,
 )
+from nicemeta.visualization.chart_types import CHART_TYPES
 
 
 class SQLEditorPage:
@@ -1042,119 +1043,243 @@ class SQLEditorPage:
         all_cols = analysis["all_cols"]
         numeric_cols = analysis["numeric_cols"]
         categorical_cols = analysis["categorical_cols"]
-        datetime_cols = analysis["datetime_cols"]
-        chart_type = self._selected_chart_type
-        
-        # DATA section
+        ct = self._selected_chart_type
+
+        # Helper shortcuts
+        _num_opts = {c: f"{c} ★" if c in numeric_cols else c for c in all_cols}
+        _cat_opts = {c: c for c in all_cols}
+        _all_opts = {c: c for c in all_cols}
+        _color_opts = {"": "None (single color)"} | {c: c for c in all_cols}
+
+        # ── DATA MAPPING ──────────────────────────────────────────────────────
         with ui.card().classes("w-full"):
             with ui.card_section():
                 ui.label("📊 Data Mapping").classes("text-sm font-bold text-gray-700")
-            
+
             with ui.card_section().classes("pt-0"):
-                if chart_type in ["bar", "line", "area", "scatter", "histogram"]:
-                    # X-Axis - allow all columns
-                    x_options = {c: c for c in all_cols}
-                    default_x = self._chart_config.get("x") or (categorical_cols[0] if categorical_cols else (all_cols[0] if all_cols else None))
-                    
+
+                # X-axis
+                if ct in ("bar", "line", "area", "scatter", "waterfall", "contour", "strip"):
                     ui.select(
-                        label="X-Axis (Categories)",
-                        options=x_options,
-                        value=default_x,
+                        label="X-Axis",
+                        options=_all_opts,
+                        value=self._chart_config.get("x") or (categorical_cols[0] if categorical_cols else (all_cols[0] if all_cols else None)),
                         on_change=lambda e: self._update_chart_config("x", e.value),
                     ).classes("w-full mb-2")
-                    
-                    if chart_type == "bar":
-                        ui.select(
-                            label="Orientation",
-                            options={"v": "Vertical", "h": "Horizontal"},
-                            value=self._chart_config.get("orientation", "v"),
-                            on_change=lambda e: self._update_chart_config("orientation", e.value),
-                        ).classes("w-full mb-2")
-                
-                if chart_type in ["bar", "line", "area", "scatter"]:
-                    # Y-Axis - prefer numeric but allow all
-                    y_options = {c: f"{c} ★" if c in numeric_cols else c for c in all_cols}
-                    default_y = self._chart_config.get("y") or (numeric_cols[0] if numeric_cols else (all_cols[1] if len(all_cols) > 1 else all_cols[0] if all_cols else None))
-                    
+                elif ct == "histogram":
                     ui.select(
-                        label="Y-Axis (Values) - ★ = numeric",
-                        options=y_options,
-                        value=default_y,
+                        label="X-Axis (numeric column)",
+                        options=_all_opts,
+                        value=self._chart_config.get("x") or (numeric_cols[0] if numeric_cols else (all_cols[0] if all_cols else None)),
+                        on_change=lambda e: self._update_chart_config("x", e.value),
+                    ).classes("w-full mb-2")
+
+                # Y-axis
+                if ct in ("bar", "line", "area", "scatter", "waterfall", "contour"):
+                    ui.select(
+                        label="Y-Axis (Values) ★=numeric",
+                        options=_num_opts,
+                        value=self._chart_config.get("y") or (numeric_cols[0] if numeric_cols else None),
                         on_change=lambda e: self._update_chart_config("y", e.value),
                     ).classes("w-full mb-2")
-                
-                if chart_type in ["pie", "donut"]:
-                    label_options = {c: c for c in all_cols}
-                    value_options = {c: f"{c} ★" if c in numeric_cols else c for c in all_cols}
-                    
+                elif ct in ("box", "violin"):
+                    ui.select(
+                        label="Y-Axis (Values) ★=numeric",
+                        options=_num_opts,
+                        value=self._chart_config.get("y") or (numeric_cols[0] if numeric_cols else None),
+                        on_change=lambda e: self._update_chart_config("y", e.value),
+                    ).classes("w-full mb-2")
+                    ui.select(
+                        label="X-Axis (Group by, optional)",
+                        options={"": "None"} | _cat_opts,
+                        value=self._chart_config.get("x") or "",
+                        on_change=lambda e: self._update_chart_config("x", e.value or None),
+                    ).classes("w-full mb-2")
+                elif ct == "strip":
+                    ui.select(
+                        label="Y-Axis (Values) ★=numeric",
+                        options=_num_opts,
+                        value=self._chart_config.get("y") or (numeric_cols[0] if numeric_cols else None),
+                        on_change=lambda e: self._update_chart_config("y", e.value),
+                    ).classes("w-full mb-2")
+
+                # Labels / Values (pie-family, funnel)
+                if ct in ("pie", "donut", "treemap", "sunburst", "funnel"):
                     ui.select(
                         label="Labels (Categories)",
-                        options=label_options,
+                        options=_cat_opts,
                         value=self._chart_config.get("labels") or (categorical_cols[0] if categorical_cols else (all_cols[0] if all_cols else None)),
                         on_change=lambda e: self._update_chart_config("labels", e.value),
                     ).classes("w-full mb-2")
-                    
                     ui.select(
-                        label="Values (Size) - ★ = numeric",
-                        options=value_options,
+                        label="Values ★=numeric",
+                        options=_num_opts,
                         value=self._chart_config.get("values") or (numeric_cols[0] if numeric_cols else None),
                         on_change=lambda e: self._update_chart_config("values", e.value),
                     ).classes("w-full mb-2")
-                
-                if chart_type in ["bar", "line", "scatter", "area"]:
-                    color_options = {"": "None (single color)"} | {c: c for c in all_cols}
+                    if ct in ("treemap", "sunburst"):
+                        ui.select(
+                            label="Parent Column (optional)",
+                            options={"": "None"} | _cat_opts,
+                            value=self._chart_config.get("parents") or "",
+                            on_change=lambda e: self._update_chart_config("parents", e.value or None),
+                        ).classes("w-full mb-2")
+
+                # Gauge / Indicator
+                if ct in ("gauge", "indicator"):
+                    ui.select(
+                        label="Value Column ★=numeric",
+                        options=_num_opts,
+                        value=self._chart_config.get("values") or (numeric_cols[0] if numeric_cols else None),
+                        on_change=lambda e: self._update_chart_config("values", e.value),
+                    ).classes("w-full mb-2")
+                    if ct == "gauge":
+                        with ui.row().classes("gap-2 w-full"):
+                            ui.number(
+                                label="Min",
+                                value=self._chart_config.get("gauge_min", 0),
+                                on_change=lambda e: self._update_chart_config("gauge_min", e.value),
+                            ).classes("flex-1")
+                            ui.number(
+                                label="Max",
+                                value=self._chart_config.get("gauge_max", 100),
+                                on_change=lambda e: self._update_chart_config("gauge_max", e.value),
+                            ).classes("flex-1")
+
+                # 3-D charts
+                if ct in ("scatter_3d", "line_3d", "surface_3d"):
+                    for axis, label_text, default in (
+                        ("x", "X-Axis ★=numeric", numeric_cols[0] if len(numeric_cols) > 0 else None),
+                        ("y", "Y-Axis ★=numeric", numeric_cols[1] if len(numeric_cols) > 1 else None),
+                        ("z", "Z-Axis ★=numeric", numeric_cols[2] if len(numeric_cols) > 2 else None),
+                    ):
+                        ui.select(
+                            label=label_text,
+                            options=_num_opts,
+                            value=self._chart_config.get(axis) or default,
+                            on_change=lambda e, a=axis: self._update_chart_config(a, e.value),
+                        ).classes("w-full mb-2")
+
+                # Histogram bins
+                if ct == "histogram":
+                    ui.number(
+                        label="Bins (0 = auto)",
+                        value=self._chart_config.get("bins", 0),
+                        min=0, step=1,
+                        on_change=lambda e: self._update_chart_config("bins", int(e.value) if e.value else 0),
+                    ).classes("w-full mb-2")
+
+                # Sankey (source / target / value cols)
+                if ct == "sankey":
+                    ui.select(
+                        label="Source Column",
+                        options=_all_opts,
+                        value=self._chart_config.get("source") or (all_cols[0] if all_cols else None),
+                        on_change=lambda e: self._update_chart_config("source", e.value),
+                    ).classes("w-full mb-2")
+                    ui.select(
+                        label="Target Column",
+                        options=_all_opts,
+                        value=self._chart_config.get("target") or (all_cols[1] if len(all_cols) > 1 else None),
+                        on_change=lambda e: self._update_chart_config("target", e.value),
+                    ).classes("w-full mb-2")
+                    ui.select(
+                        label="Value Column ★=numeric",
+                        options=_num_opts,
+                        value=self._chart_config.get("values") or (numeric_cols[0] if numeric_cols else None),
+                        on_change=lambda e: self._update_chart_config("values", e.value),
+                    ).classes("w-full mb-2")
+
+                # Financial charts
+                if ct in ("candlestick", "ohlc"):
+                    ui.select(label="Date / X Column", options=_all_opts,
+                        value=self._chart_config.get("x") or (all_cols[0] if all_cols else None),
+                        on_change=lambda e: self._update_chart_config("x", e.value)).classes("w-full mb-2")
+                    for field_key, lbl in (("open", "Open"), ("high", "High"), ("low", "Low"), ("close", "Close")):
+                        idx = {"open": 0, "high": 1, "low": 2, "close": 3}[field_key]
+                        ui.select(label=f"{lbl} Column ★=numeric", options=_num_opts,
+                            value=self._chart_config.get(field_key) or (numeric_cols[idx] if len(numeric_cols) > idx else None),
+                            on_change=lambda e, fk=field_key: self._update_chart_config(fk, e.value)).classes("w-full mb-2")
+
+                # Geo charts
+                if ct == "scatter_geo":
+                    ui.select(label="Latitude Column ★=numeric", options=_num_opts,
+                        value=self._chart_config.get("lat") or (numeric_cols[0] if numeric_cols else None),
+                        on_change=lambda e: self._update_chart_config("lat", e.value)).classes("w-full mb-2")
+                    ui.select(label="Longitude Column ★=numeric", options=_num_opts,
+                        value=self._chart_config.get("lon") or (numeric_cols[1] if len(numeric_cols) > 1 else None),
+                        on_change=lambda e: self._update_chart_config("lon", e.value)).classes("w-full mb-2")
+                if ct == "choropleth":
+                    ui.select(label="Location Column", options=_cat_opts,
+                        value=self._chart_config.get("locations") or (categorical_cols[0] if categorical_cols else (all_cols[0] if all_cols else None)),
+                        on_change=lambda e: self._update_chart_config("locations", e.value)).classes("w-full mb-2")
+                    ui.select(label="Color / Values ★=numeric", options=_num_opts,
+                        value=self._chart_config.get("values") or (numeric_cols[0] if numeric_cols else None),
+                        on_change=lambda e: self._update_chart_config("values", e.value)).classes("w-full mb-2")
+
+                # Color / Group By (for relevant chart types)
+                if ct in ("bar", "line", "scatter", "area", "strip", "box", "violin", "histogram", "scatter_3d", "line_3d"):
                     ui.select(
                         label="Color / Group By",
-                        options=color_options,
+                        options=_color_opts,
                         value=self._chart_config.get("color", ""),
-                        on_change=lambda e: self._update_chart_config("color", e.value),
+                        on_change=lambda e: self._update_chart_config("color", e.value or None),
                     ).classes("w-full")
-        
-        # DISPLAY section
+
+                # Correlation / parallel coordinates — nothing to configure; auto-uses all numeric cols
+                if ct in ("correlation", "parallel_coordinates", "radar"):
+                    ui.label("Uses all numeric columns automatically.").classes("text-xs text-gray-500 italic")
+
+        # ── DISPLAY OPTIONS ───────────────────────────────────────────────────
         with ui.card().classes("w-full"):
             with ui.card_section():
                 ui.label("🎨 Display Options").classes("text-sm font-bold text-gray-700")
-            
+
             with ui.card_section().classes("pt-0"):
                 ui.input(
                     label="Chart Title",
                     value=self._chart_config.get("title", ""),
                     on_change=lambda e: self._update_chart_config("title", e.value),
                 ).classes("w-full mb-2")
-                
-                if chart_type in ["bar", "line", "area", "scatter"]:
+
+                if ct in ("bar", "line", "area", "scatter", "waterfall", "contour", "strip", "histogram"):
                     ui.input(
                         label="X-Axis Label",
                         value=self._chart_config.get("x_label", ""),
                         on_change=lambda e: self._update_chart_config("x_label", e.value),
                     ).classes("w-full mb-2")
-                    
                     ui.input(
                         label="Y-Axis Label",
                         value=self._chart_config.get("y_label", ""),
                         on_change=lambda e: self._update_chart_config("y_label", e.value),
                     ).classes("w-full mb-2")
-                
+
                 with ui.row().classes("gap-4"):
                     ui.checkbox(
                         "Show legend",
                         value=self._chart_config.get("show_legend", True),
                         on_change=lambda e: self._update_chart_config("show_legend", e.value),
                     )
-                    
-                    if chart_type in ["bar", "line", "scatter"]:
+                    if ct in ("bar", "line", "scatter"):
                         ui.checkbox(
                             "Show values",
                             value=self._chart_config.get("show_values", False),
                             on_change=lambda e: self._update_chart_config("show_values", e.value),
                         )
-        
-        # STYLE section (for applicable charts)
-        if chart_type in ["bar", "line", "pie", "donut", "area"]:
+                    if ct in ("pie", "donut"):
+                        ui.checkbox(
+                            "Show percentages",
+                            value=self._chart_config.get("show_percent", True),
+                            on_change=lambda e: self._update_chart_config("show_percent", e.value),
+                        )
+
+        # ── STYLE SETTINGS ────────────────────────────────────────────────────
+        if ct in ("bar", "line", "pie", "donut", "area", "scatter", "histogram",
+                  "box", "violin", "strip", "treemap", "sunburst", "funnel"):
             with ui.card().classes("w-full"):
                 with ui.card_section():
                     ui.label("⚙️ Style Settings").classes("text-sm font-bold text-gray-700")
-                
+
                 with ui.card_section().classes("pt-0"):
                     ui.select(
                         label="Color Palette",
@@ -1171,35 +1296,33 @@ class SQLEditorPage:
                         value=self._chart_config.get("color_palette", "plotly"),
                         on_change=lambda e: self._update_chart_config("color_palette", e.value),
                     ).classes("w-full mb-2")
-                    
-                    if chart_type == "line":
+
+                    if ct == "line":
                         ui.select(
                             label="Line Style",
                             options={"solid": "Solid", "dash": "Dashed", "dot": "Dotted"},
                             value=self._chart_config.get("line_style", "solid"),
                             on_change=lambda e: self._update_chart_config("line_style", e.value),
                         ).classes("w-full mb-2")
-                        
                         ui.checkbox(
                             "Show markers on line",
                             value=self._chart_config.get("show_markers", False),
                             on_change=lambda e: self._update_chart_config("show_markers", e.value),
                         )
-                    
-                    if chart_type == "bar":
+
+                    if ct == "bar":
                         ui.select(
-                            label="Bar Mode (when grouped)",
+                            label="Orientation",
+                            options={"v": "Vertical", "h": "Horizontal"},
+                            value=self._chart_config.get("orientation", "v"),
+                            on_change=lambda e: self._update_chart_config("orientation", e.value),
+                        ).classes("w-full mb-2")
+                        ui.select(
+                            label="Bar Mode",
                             options={"group": "Grouped", "stack": "Stacked", "relative": "Relative"},
                             value=self._chart_config.get("bar_mode", "group"),
                             on_change=lambda e: self._update_chart_config("bar_mode", e.value),
                         ).classes("w-full")
-                    
-                    if chart_type in ["pie", "donut"]:
-                        ui.checkbox(
-                            "Show percentages",
-                            value=self._chart_config.get("show_percent", True),
-                            on_change=lambda e: self._update_chart_config("show_percent", e.value),
-                        )
 
     def _render_python_code_panel(self, analysis: dict, dialog) -> None:
         """Render the Python code editor panel."""
@@ -1444,47 +1567,74 @@ class SQLEditorPage:
         return analysis
 
     def _get_suitable_chart_types(self, analysis: dict) -> list[dict]:
-        """Get chart types suitable for the data."""
-        charts = []
-        
+        """Get chart types suitable for the data, derived from CHART_TYPES registry."""
         has_numeric = len(analysis["numeric_cols"]) > 0
-        has_categorical = len(analysis["categorical_cols"]) > 0
-        has_datetime = len(analysis["datetime_cols"]) > 0
-        has_multiple_numeric = len(analysis["numeric_cols"]) >= 2
         has_any_cols = len(analysis["all_cols"]) > 0
-        
-        # Always show table
-        charts.append({"id": "table", "name": "Table", "icon": "table_chart", "category": "Basic"})
-        
-        # Show basic charts if we have any data
-        if has_any_cols:
-            charts.append({"id": "bar", "name": "Bar Chart", "icon": "bar_chart", "category": "Basic"})
-            charts.append({"id": "line", "name": "Line Chart", "icon": "show_chart", "category": "Basic"})
-            charts.append({"id": "area", "name": "Area Chart", "icon": "area_chart", "category": "Basic"})
-        
-        if has_any_cols:
-            charts.append({"id": "pie", "name": "Pie Chart", "icon": "pie_chart", "category": "Part-to-Whole"})
-            charts.append({"id": "donut", "name": "Donut Chart", "icon": "donut_large", "category": "Part-to-Whole"})
-            charts.append({"id": "treemap", "name": "Treemap", "icon": "grid_view", "category": "Part-to-Whole"})
-        
-        if has_multiple_numeric:
-            charts.append({"id": "scatter", "name": "Scatter Plot", "icon": "scatter_plot", "category": "Correlation"})
-            charts.append({"id": "bubble", "name": "Bubble Chart", "icon": "bubble_chart", "category": "Correlation"})
-        
-        if has_numeric:
-            charts.append({"id": "histogram", "name": "Histogram", "icon": "equalizer", "category": "Distribution"})
-            charts.append({"id": "box", "name": "Box Plot", "icon": "candlestick_chart", "category": "Distribution"})
-        
-        if has_datetime and has_numeric:
-            charts.append({"id": "timeseries", "name": "Time Series", "icon": "timeline", "category": "Trend"})
-        
-        if has_multiple_numeric:
-            charts.append({"id": "heatmap", "name": "Heatmap", "icon": "grid_on", "category": "Correlation"})
-        
-        if has_numeric:
-            charts.append({"id": "gauge", "name": "Gauge", "icon": "speed", "category": "KPI"})
-            charts.append({"id": "indicator", "name": "Number/KPI", "icon": "analytics", "category": "KPI"})
-        
+        has_multiple_numeric = len(analysis["numeric_cols"]) >= 2
+        has_three_numeric = len(analysis["numeric_cols"]) >= 3
+
+        # Per-chart-type data requirements (True = show the chart)
+        criteria: dict[str, bool] = {
+            "table": True,
+            "bar": has_any_cols,
+            "line": has_any_cols,
+            "area": has_any_cols,
+            "scatter": has_multiple_numeric,
+            "pie": has_any_cols,
+            "donut": has_any_cols,
+            "treemap": has_any_cols,
+            "sunburst": has_any_cols,
+            "histogram": has_numeric,
+            "box": has_numeric,
+            "violin": has_numeric,
+            "strip": has_any_cols,
+            "heatmap": has_numeric,
+            "correlation": has_multiple_numeric,
+            "contour": has_multiple_numeric,
+            "funnel": has_any_cols,
+            "waterfall": has_any_cols,
+            "sankey": has_any_cols,
+            "candlestick": has_multiple_numeric,
+            "ohlc": has_multiple_numeric,
+            "choropleth": has_any_cols,
+            "scatter_geo": has_any_cols,
+            "scatter_3d": has_three_numeric,
+            "surface_3d": has_three_numeric,
+            "line_3d": has_three_numeric,
+            "gauge": has_numeric,
+            "indicator": has_numeric,
+            "radar": has_any_cols,
+            "parallel_coordinates": has_multiple_numeric,
+        }
+
+        # Pretty display names for categories
+        category_labels: dict[str, str] = {
+            "basic": "Basic",
+            "distribution": "Distribution",
+            "correlation": "Correlation",
+            "part_to_whole": "Part to Whole",
+            "hierarchical": "Hierarchical",
+            "flow": "Flow",
+            "geo": "Geographic",
+            "financial": "Financial",
+            "3d": "3D Charts",
+            "other": "Other",
+        }
+
+        charts = []
+        for chart_id, chart_def in CHART_TYPES.items():
+            # Only plotly-backed charts (we render via ChartFactory.render_figure)
+            if "plotly" not in chart_def.supported_renderers:
+                continue
+            if not criteria.get(chart_id, False):
+                continue
+            charts.append({
+                "id": chart_def.id,
+                "name": chart_def.name,
+                "icon": chart_def.icon,
+                "category": category_labels.get(chart_def.category.value, chart_def.category.value.title()),
+            })
+
         return charts
 
     def _render_results(self) -> None:
@@ -1539,44 +1689,95 @@ class SQLEditorPage:
                 ui.plotly(fig).classes("w-full")
                 return
             
-            # Auto-detect x/y/labels/values from the DataFrame when not explicitly configured
+            # Auto-detect column mappings from the DataFrame when not explicitly configured
             all_cols = list(self.result_df.columns)
             num_cols = [
                 c for c in all_cols
                 if pd.api.types.is_numeric_dtype(self.result_df[c])
             ]
+            cat_cols = [c for c in all_cols if c not in num_cols]
+            ct = self._selected_chart_type
 
-            x_val = self._chart_config.get("x") or (all_cols[0] if all_cols else None)
+            # ---- x / y (basic, distribution, flow charts) ----
+            x_val = self._chart_config.get("x")
             y_val = self._chart_config.get("y")
-            if not y_val and self._selected_chart_type in ("bar", "line", "area", "scatter"):
-                candidates = [c for c in num_cols if c != x_val]
-                y_val = (candidates[0] if candidates
-                         else num_cols[0] if num_cols
-                         else all_cols[1] if len(all_cols) > 1
-                         else x_val)
+            if not x_val:
+                if ct in ("bar", "line", "area", "scatter", "waterfall", "strip", "contour"):
+                    x_val = cat_cols[0] if cat_cols else all_cols[0] if all_cols else None
+                elif ct in ("histogram",):
+                    x_val = num_cols[0] if num_cols else (all_cols[0] if all_cols else None)
+                elif ct in ("scatter_3d", "line_3d", "surface_3d"):
+                    x_val = num_cols[0] if num_cols else None
+                elif ct in ("box", "violin"):
+                    x_val = cat_cols[0] if cat_cols else None  # optional grouping axis
+            if not y_val:
+                if ct in ("bar", "line", "area", "scatter", "waterfall", "contour"):
+                    candidates = [c for c in num_cols if c != x_val]
+                    y_val = candidates[0] if candidates else (num_cols[0] if num_cols else None)
+                elif ct in ("box", "violin", "strip"):
+                    y_val = num_cols[0] if num_cols else (all_cols[0] if all_cols else None)
+                elif ct in ("scatter_3d", "line_3d", "surface_3d"):
+                    y_val = num_cols[1] if len(num_cols) > 1 else None
 
+            # ---- z (3-D / surface / heatmap pivot) ----
+            z_val = self._chart_config.get("z")
+            if not z_val and ct in ("scatter_3d", "line_3d", "surface_3d"):
+                z_val = num_cols[2] if len(num_cols) > 2 else None
+
+            # ---- labels / values (pie, donut, treemap, sunburst, funnel, gauge, indicator) ----
             labels_val = self._chart_config.get("labels")
             values_val = self._chart_config.get("values")
-            if not labels_val and self._selected_chart_type in ("pie", "donut"):
-                labels_val = all_cols[0] if all_cols else None
-            if not values_val and self._selected_chart_type in ("pie", "donut"):
-                values_val = (num_cols[0] if num_cols
-                              else all_cols[1] if len(all_cols) > 1
-                              else None)
+            if ct in ("pie", "donut", "treemap", "sunburst", "funnel"):
+                if not labels_val:
+                    labels_val = cat_cols[0] if cat_cols else all_cols[0] if all_cols else None
+                if not values_val:
+                    values_val = num_cols[0] if num_cols else (all_cols[1] if len(all_cols) > 1 else None)
+            elif ct in ("gauge", "indicator"):
+                if not values_val:
+                    values_val = num_cols[0] if num_cols else (all_cols[0] if all_cols else None)
+                if not labels_val:
+                    labels_val = values_val
 
-            # Build config with all options
+            # ---- financial charts (candlestick / ohlc) ----
+            open_val = self._chart_config.get("open") or (num_cols[0] if len(num_cols) > 0 else None)
+            high_val = self._chart_config.get("high") or (num_cols[1] if len(num_cols) > 1 else None)
+            low_val = self._chart_config.get("low") or (num_cols[2] if len(num_cols) > 2 else None)
+            close_val = self._chart_config.get("close") or (num_cols[3] if len(num_cols) > 3 else None)
+
+            # ---- geo charts ----
+            lat_val = self._chart_config.get("lat") or (num_cols[0] if num_cols else None)
+            lon_val = self._chart_config.get("lon") or (num_cols[1] if len(num_cols) > 1 else None)
+            locations_val = self._chart_config.get("locations") or (cat_cols[0] if cat_cols else None)
+
+            # ---- sankey ----
+            source_val = self._chart_config.get("source") or (all_cols[0] if all_cols else None)
+            target_val = self._chart_config.get("target") or (all_cols[1] if len(all_cols) > 1 else None)
+
+            # Build config
             config = ChartConfig(
-                chart_type=self._selected_chart_type,
+                chart_type=ct,
                 title=self._chart_config.get("title", ""),
                 x=x_val,
                 y=y_val,
+                z=z_val,
                 labels=labels_val,
                 values=values_val,
                 color=self._chart_config.get("color") or None,
+                size=self._chart_config.get("size") or None,
+                parents=self._chart_config.get("parents") or None,
+                source=source_val,
+                target=target_val,
+                open=open_val,
+                high=high_val,
+                low=low_val,
+                close=close_val,
+                lat=lat_val,
+                lon=lon_val,
+                locations=locations_val,
                 width=900,
                 height=500,
             )
-            
+
             # Build additional options dict for advanced settings
             options = {
                 "show_legend": self._chart_config.get("show_legend", True),
@@ -1585,18 +1786,29 @@ class SQLEditorPage:
                 "x_label": self._chart_config.get("x_label", ""),
                 "y_label": self._chart_config.get("y_label", ""),
             }
-            
+
             # Chart-specific options
-            if self._selected_chart_type == "bar":
+            if ct == "bar":
                 options["orientation"] = self._chart_config.get("orientation", "v")
                 options["bar_mode"] = self._chart_config.get("bar_mode", "group")
-            
-            if self._selected_chart_type == "line":
+            elif ct == "line":
                 options["line_style"] = self._chart_config.get("line_style", "solid")
                 options["show_markers"] = self._chart_config.get("show_markers", False)
-            
-            if self._selected_chart_type in ["pie", "donut"]:
+            elif ct in ("pie", "donut"):
                 options["show_percent"] = self._chart_config.get("show_percent", True)
+            elif ct == "histogram":
+                if self._chart_config.get("bins"):
+                    options["bins"] = self._chart_config["bins"]
+            elif ct == "gauge":
+                options["min"] = self._chart_config.get("gauge_min", 0)
+                options["max"] = self._chart_config.get("gauge_max", 100)
+            elif ct == "indicator":
+                options["delta"] = self._chart_config.get("show_delta", False)
+                options["reference"] = self._chart_config.get("reference")
+            elif ct == "waterfall":
+                options["measure"] = self._chart_config.get("measure", [])
+            elif ct == "parallel_coordinates":
+                options["dimensions"] = self._chart_config.get("dimensions") or num_cols or None
             
             # Render chart figure directly (not HTML)
             fig = ChartFactory.render_figure(self.result_df, config, options)
@@ -1611,15 +1823,35 @@ class SQLEditorPage:
                 "bar": "Plotly Express • Bar Chart",
                 "line": "Plotly Express • Line Chart",
                 "area": "Plotly Express • Area Chart",
+                "scatter": "Plotly Express • Scatter Plot",
                 "pie": "Plotly Express • Pie Chart",
                 "donut": "Plotly Express • Donut Chart",
-                "scatter": "Plotly Express • Scatter Plot",
+                "treemap": "Plotly Express • Treemap",
+                "sunburst": "Plotly Express • Sunburst",
                 "histogram": "Plotly Express • Histogram",
-                "heatmap": "Plotly Express • Heatmap",
                 "box": "Plotly Express • Box Plot",
+                "violin": "Plotly Express • Violin Plot",
+                "strip": "Plotly Express • Strip Plot",
+                "heatmap": "Plotly Express • Heatmap",
+                "correlation": "Plotly Express • Correlation Matrix",
+                "contour": "Plotly Express • Contour Plot",
+                "funnel": "Plotly Express • Funnel Chart",
+                "waterfall": "Plotly Graph Objects • Waterfall",
+                "sankey": "Plotly Graph Objects • Sankey",
+                "candlestick": "Plotly Graph Objects • Candlestick",
+                "ohlc": "Plotly Graph Objects • OHLC",
+                "choropleth": "Plotly Express • Choropleth",
+                "scatter_geo": "Plotly Express • Scatter Map",
+                "scatter_3d": "Plotly Express • 3D Scatter",
+                "surface_3d": "Plotly Graph Objects • 3D Surface",
+                "line_3d": "Plotly Express • 3D Line",
+                "gauge": "Plotly Graph Objects • Gauge",
+                "indicator": "Plotly Graph Objects • Indicator",
+                "radar": "Plotly Graph Objects • Radar",
+                "parallel_coordinates": "Plotly Express • Parallel Coordinates",
             }
-            
-            lib_info = CHART_LIBRARIES.get(self._selected_chart_type, "")
+
+            lib_info = CHART_LIBRARIES.get(ct, "")
             if lib_info:
                 with ui.row().classes("items-center gap-2 mb-2"):
                     ui.badge(lib_info).props("color=grey-7 outline")
