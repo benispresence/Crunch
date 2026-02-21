@@ -79,6 +79,9 @@ class SQLEditorPage:
         self._viz_options_container = None
         self._bottom_bar = None
         self._view_toggle_container = None  # re-rendered on every _set_view call
+        self._viz_sidebar = None            # viz picker panel (2nd sidebar)
+        self._viz_chart_type_grid_container = None
+        self._viz_settings_inline_container = None
         self._query_name_input = None
         self._header = None
         self._sidebar = None
@@ -120,24 +123,42 @@ class SQLEditorPage:
             self._editors_visible = not self._is_saved_query
             self._create_editor_panel()
             
-            # Loading indicator (shown when running query)
-            self._loading_container = ui.column().classes("w-full items-center justify-center p-8")
-            with self._loading_container:
-                self._loading_container.set_visibility(False)
-                ui.spinner("dots", size="xl").classes("text-blue-500")
-                ui.label("Running query...").classes("text-gray-500 mt-2")
-            
-            # Results/Visualization area (main content)
-            with ui.column().classes("flex-grow w-full overflow-hidden"):
-                self._results_container = ui.column().classes("w-full h-full p-4")
-                with self._results_container:
-                    if self._is_saved_query:
-                        # Show loading state initially
-                        with ui.column().classes("w-full h-full items-center justify-center"):
-                            ui.spinner("dots", size="xl").classes("text-blue-500")
-                            ui.label("Loading query results...").classes("text-gray-500 mt-2")
-                    else:
-                        self._show_empty_state()
+            # Viz picker sidebar + Results (horizontal, like a double sidebar)
+            with ui.row().classes("flex-grow w-full overflow-hidden flex-nowrap gap-0"):
+
+                # ── Visualization picker panel (2nd sidebar) ──────────────────
+                self._viz_sidebar = ui.column().classes(
+                    "flex-shrink-0 bg-white border-r border-gray-200 overflow-hidden"
+                ).style("width: 300px; min-height: 100%;")
+                self._viz_sidebar.set_visibility(False)
+                with self._viz_sidebar:
+                    self._create_viz_panel_content()
+
+                # ── Results column ────────────────────────────────────────────
+                with ui.column().classes("flex-grow min-w-0 overflow-hidden"):
+                    # Loading indicator (shown when running query)
+                    self._loading_container = ui.column().classes(
+                        "w-full items-center justify-center p-8"
+                    )
+                    with self._loading_container:
+                        self._loading_container.set_visibility(False)
+                        ui.spinner("dots", size="xl").classes("text-blue-500")
+                        ui.label("Running query...").classes("text-gray-500 mt-2")
+
+                    # Results/Visualization area
+                    with ui.column().classes("flex-grow w-full overflow-hidden"):
+                        self._results_container = ui.column().classes("w-full h-full p-4")
+                        with self._results_container:
+                            if self._is_saved_query:
+                                with ui.column().classes(
+                                    "w-full h-full items-center justify-center"
+                                ):
+                                    ui.spinner("dots", size="xl").classes("text-blue-500")
+                                    ui.label("Loading query results...").classes(
+                                        "text-gray-500 mt-2"
+                                    )
+                            else:
+                                self._show_empty_state()
         
         # Auto-run query if loading a saved query
         if self._is_saved_query and self.current_connection:
@@ -720,11 +741,172 @@ class SQLEditorPage:
         self._render_results()
 
     def _toggle_viz_options(self) -> None:
-        """Toggle visualization options panel."""
+        """Toggle the visualization picker sidebar (2nd sidebar)."""
         if self.result_df is None or self.result_df.empty:
             ui.notify("Run a query first to configure visualization", type="info")
             return
-        self._show_viz_options_dialog()
+        if self._viz_sidebar is None:
+            return
+        is_open = self._viz_sidebar.visible
+        self._viz_sidebar.set_visibility(not is_open)
+        if not is_open:
+            self._refresh_viz_panel()
+
+    # ── Visualization picker sidebar ───────────────────────────────────────────
+
+    def _create_viz_panel_content(self) -> None:
+        """Build the viz picker sidebar structure (called once at render time)."""
+        with ui.column().classes("w-full h-full overflow-hidden"):
+
+            # Header
+            with ui.row().classes(
+                "items-center justify-between px-4 py-3 border-b border-gray-200 "
+                "bg-white flex-shrink-0"
+            ):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("bar_chart", size="sm").classes("text-blue-500")
+                    ui.label("Visualization").classes("font-semibold text-gray-800")
+                ui.button(
+                    icon="close",
+                    on_click=lambda: self._viz_sidebar.set_visibility(False),
+                ).props("flat round dense size=sm")
+
+            # Scrollable body
+            with ui.scroll_area().classes("flex-grow w-full").style(
+                "height: calc(100vh - 200px);"
+            ):
+                with ui.column().classes("w-full p-3 gap-3"):
+
+                    # ── Chart type section ────────────────────────────────────
+                    ui.label("CHART TYPE").classes(
+                        "text-xs font-bold tracking-wider text-gray-400"
+                    )
+                    self._viz_chart_type_grid_container = ui.element("div").classes("w-full")
+
+                    ui.separator().classes("my-1")
+
+                    # ── Settings section ──────────────────────────────────────
+                    ui.label("SETTINGS").classes(
+                        "text-xs font-bold tracking-wider text-gray-400"
+                    )
+                    self._viz_settings_inline_container = ui.column().classes("w-full gap-2")
+
+                    ui.separator().classes("my-1")
+
+                    # Python editor link
+                    with ui.row().classes(
+                        "items-center gap-2 p-3 bg-emerald-50 rounded-lg cursor-pointer "
+                        "hover:bg-emerald-100 border border-emerald-200"
+                    ).on("click", lambda: self._ensure_python_editor_visible()):
+                        ui.icon("code", size="xs").classes("text-emerald-600 flex-shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Custom Python Code").classes(
+                                "text-sm font-medium text-emerald-800"
+                            )
+                            ui.label("Edit visualization in the editor above").classes(
+                                "text-xs text-emerald-600"
+                            )
+
+            # Apply footer
+            with ui.row().classes(
+                "px-4 py-3 border-t border-gray-200 bg-white flex-shrink-0"
+            ):
+                ui.button(
+                    "Apply & Update Chart",
+                    icon="check",
+                    on_click=self._apply_viz_settings_panel,
+                ).props("color=primary dense").classes("w-full")
+
+    def _render_chart_type_grid(self) -> None:
+        """Render the chart type selector grid inside the viz panel."""
+        if self.result_df is not None:
+            analysis = self._analyze_columns(self.result_df)
+            chart_types = self._get_suitable_chart_types(analysis)
+        else:
+            chart_types = [
+                {"id": "table",   "name": "Table",   "icon": "table_chart",  "category": "Basic"},
+                {"id": "bar",     "name": "Bar",     "icon": "bar_chart",    "category": "Basic"},
+                {"id": "line",    "name": "Line",    "icon": "show_chart",   "category": "Basic"},
+                {"id": "area",    "name": "Area",    "icon": "area_chart",   "category": "Basic"},
+                {"id": "pie",     "name": "Pie",     "icon": "pie_chart",    "category": "Part-to-Whole"},
+                {"id": "scatter", "name": "Scatter", "icon": "scatter_plot", "category": "Correlation"},
+            ]
+
+        # Group by category
+        categories: dict[str, list] = {}
+        for chart in chart_types:
+            categories.setdefault(chart.get("category", "Other"), []).append(chart)
+
+        with ui.column().classes("w-full gap-3"):
+            for category, charts in categories.items():
+                ui.label(category).classes("text-xs text-gray-400 font-semibold uppercase tracking-wide")
+                with ui.element("div").classes("grid grid-cols-3 gap-1 w-full"):
+                    for chart in charts:
+                        is_sel = chart["id"] == self._selected_chart_type
+
+                        def _mk_click(cid=chart["id"]):
+                            return lambda: self._select_chart_type_panel(cid)
+
+                        with ui.element("div").classes(
+                            "flex flex-col items-center justify-center gap-1 p-2 "
+                            "rounded-lg cursor-pointer select-none "
+                            + ("bg-blue-500" if is_sel else "bg-gray-100 hover:bg-gray-200")
+                        ).on("click", _mk_click()):
+                            ui.icon(chart["icon"]).classes(
+                                "text-white" if is_sel else "text-gray-500"
+                            ).style("font-size: 20px;")
+                            ui.label(chart["name"]).classes(
+                                "text-xs leading-tight text-center "
+                                + ("text-white font-semibold" if is_sel else "text-gray-600")
+                            )
+
+    def _render_viz_settings_inline(self) -> None:
+        """Render settings for the current chart type in the viz panel."""
+        if self.result_df is None:
+            with ui.row().classes(
+                "items-center gap-2 p-3 bg-amber-50 rounded border border-amber-200"
+            ):
+                ui.icon("info", size="xs").classes("text-amber-500 flex-shrink-0")
+                ui.label("Run a query first to see settings").classes(
+                    "text-sm text-amber-700"
+                )
+            return
+        analysis = self._analyze_columns(self.result_df)
+        self._render_viz_settings_panel(analysis)
+
+    def _refresh_viz_panel(self) -> None:
+        """Refresh the chart type grid and settings inside the viz sidebar."""
+        if self._viz_chart_type_grid_container:
+            self._viz_chart_type_grid_container.clear()
+            with self._viz_chart_type_grid_container:
+                self._render_chart_type_grid()
+        if self._viz_settings_inline_container:
+            self._viz_settings_inline_container.clear()
+            with self._viz_settings_inline_container:
+                self._render_viz_settings_inline()
+
+    def _select_chart_type_panel(self, chart_type: str) -> None:
+        """Select a chart type in the panel — immediately previews the chart."""
+        self._selected_chart_type = chart_type
+        self._refresh_viz_panel()
+        # Live preview
+        if chart_type == "table":
+            self._set_view("table")
+        else:
+            self._set_view("visualization")
+
+    def _apply_viz_settings_panel(self) -> None:
+        """Apply current settings and re-render the chart."""
+        if self._selected_chart_type == "table":
+            self._set_view("table")
+        else:
+            self._set_view("visualization")
+        ui.notify("Visualization updated", type="positive")
+
+    def _ensure_python_editor_visible(self) -> None:
+        """Open the editor panel (to reveal the Python editor) if it is closed."""
+        if not self._editors_visible:
+            self._toggle_editors()
 
     def _show_viz_options_dialog(self) -> None:
         """Show Metabase-style visualization settings dialog."""
@@ -1181,10 +1363,11 @@ class SQLEditorPage:
         ui.notify("Preview updated", type="info")
 
     def _select_chart_type(self, chart_type: str, dialog=None) -> None:
-        """Select a chart type and refresh settings in place (no dialog flicker)."""
+        """Select a chart type; refreshes the viz panel if open."""
         self._selected_chart_type = chart_type
-        # Refresh the settings panel container if available, avoiding close/reopen
-        if hasattr(self, '_viz_settings_refresh') and self._viz_settings_refresh:
+        if self._viz_sidebar and self._viz_sidebar.visible:
+            self._refresh_viz_panel()
+        elif hasattr(self, '_viz_settings_refresh') and self._viz_settings_refresh:
             self._viz_settings_refresh()
         elif dialog:
             dialog.close()
@@ -1195,8 +1378,15 @@ class SQLEditorPage:
         self._render_viz_settings_panel(analysis)
 
     def _update_chart_config(self, key: str, value) -> None:
-        """Update chart configuration."""
+        """Update chart configuration; live-previews when the viz panel is open."""
         self._chart_config[key] = value
+        if (
+            self._viz_sidebar
+            and self._viz_sidebar.visible
+            and self._selected_view == "visualization"
+            and self.result_df is not None
+        ):
+            self._render_results()
 
     def _apply_viz_settings(self, dialog) -> None:
         """Apply visualization settings and render."""
