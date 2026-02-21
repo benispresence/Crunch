@@ -5,6 +5,7 @@ SQL Editor page for NiceMeta - Metabase-style layout.
 import pandas as pd
 from nicegui import ui
 
+from nicemeta.ui.components.agent_panel import AgentPanel
 from nicemeta.ui.components.sidebar import (
     MetabaseHeader,
     MetabaseSidebar,
@@ -83,6 +84,7 @@ class SQLEditorPage:
         self._row_count_label = None
         self._timing_label = None
         self._viz_settings_refresh = None
+        self._agent_panel: AgentPanel | None = None
 
     async def render(self) -> None:
         """Render the SQL editor page with Metabase layout."""
@@ -96,7 +98,15 @@ class SQLEditorPage:
         # Create Metabase-style sidebar (top-level)
         self._sidebar = MetabaseSidebar(on_query_select=self._on_query_selected)
         self._sidebar.create()
-        
+
+        # Create AI agent panel (right drawer, top-level)
+        self._agent_panel = AgentPanel(
+            on_apply_sql=self._apply_agent_sql,
+            on_apply_python=self._apply_agent_python,
+            get_context=self._get_agent_context,
+        )
+        self._agent_panel.create()
+
         # Create custom header for SQL editor (top-level)
         self._create_editor_header()
         
@@ -218,6 +228,13 @@ class SQLEditorPage:
                             ui.menu_item("SQL Query", lambda: ui.navigate.to("/sql"))
                             ui.menu_item("Question", lambda: ui.navigate.to("/query-builder"))
                             ui.menu_item("Dashboard", lambda: ui.navigate.to("/dashboards"))
+
+                    # AI Agent toggle
+                    _ap = self._agent_panel
+                    ui.button(
+                        icon="smart_toy",
+                        on_click=lambda: _ap.toggle() if _ap else None,
+                    ).props("flat round").classes("text-gray-600").tooltip("AI Agent")
 
                     # Settings
                     ui.button(
@@ -1402,6 +1419,42 @@ class SQLEditorPage:
         self._python_code = ""
         self._render_results()
         ui.notify("Reset to auto-generated chart", type="info")
+
+    # ── Agent integration ─────────────────────────────────────────────────────
+
+    def _get_agent_context(self) -> dict:
+        """Return page context so the agent knows what's in the editors."""
+        return {
+            "current_sql": self.editor.get_value() if self.editor else self._initial_sql,
+            "current_python": (
+                self._main_python_editor.value
+                if self._main_python_editor
+                else self._python_code
+            ),
+            "current_connection_id": self.current_connection,
+            "query_name": self.query_name,
+        }
+
+    def _apply_agent_sql(self, new_sql: str) -> None:
+        """Apply SQL proposed by the agent (accept diff)."""
+        self._initial_sql = new_sql
+        if self.editor:
+            self.editor.set_value(new_sql)
+        else:
+            # Editor not visible – make it visible first
+            if not self._editors_visible:
+                self._toggle_editors()
+
+    def _apply_agent_python(self, new_code: str) -> None:
+        """Apply Python visualization code proposed by the agent (accept diff)."""
+        self._python_code = new_code
+        self._python_code_modified = True
+        if self._main_python_editor:
+            self._main_python_editor.set_value(new_code)
+        elif not self._editors_visible:
+            self._toggle_editors()
+
+    # ── Query execution ───────────────────────────────────────────────────────
 
     async def _run_query(self, sql: str) -> None:
         """Execute the SQL query."""

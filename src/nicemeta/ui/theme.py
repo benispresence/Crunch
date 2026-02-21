@@ -163,6 +163,65 @@ body.nm-resizing .q-page-container {
 #nm-rh:hover {
     background: rgba(86, 156, 214, 0.4) !important;
 }
+
+/* ── AI Agent panel (right drawer) ─────────────────────────────────────── */
+
+/* Right drawer: clip content, no horizontal scroll */
+.q-drawer--right {
+    overflow: hidden !important;
+}
+.q-drawer--right .q-scrollarea__content {
+    overflow-x: hidden !important;
+    min-width: 0 !important;
+}
+
+/* Markdown inside agent bubbles */
+.q-drawer--right .q-markdown p { margin: 0.3em 0; }
+.q-drawer--right .q-markdown pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: 6px;
+    padding: 10px 14px;
+    overflow-x: auto;
+    font-size: 12px;
+}
+.q-drawer--right .q-markdown code {
+    background: rgba(0,0,0,0.08);
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-size: 12px;
+}
+body.body--dark .q-drawer--right .q-markdown code {
+    background: rgba(255,255,255,0.1);
+}
+
+/* Diff viewer (dark, monospace) */
+.nm-diff {
+    font-family: 'JetBrains Mono', 'Fira Mono', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    border-radius: 6px;
+    overflow: auto;
+    max-height: 340px;
+    background: #1e1e1e;
+    border: 1px solid #3e3e42;
+}
+.nm-diff-line {
+    display: block;
+    padding: 0 10px;
+    white-space: pre;
+}
+.nm-diff-add  { background: #1a3a1a; color: #4ec94e; }
+.nm-diff-del  { background: #3a1a1a; color: #f97583; }
+.nm-diff-hunk { background: #1a1f2e; color: #7a8aaa;
+                padding: 2px 10px; font-size: 11px; }
+.nm-diff-ctx  { color: #888; }
+
+/* Agent button active state when panel is open */
+.nm-agent-btn-active {
+    background: rgba(59, 130, 246, 0.12) !important;
+    color: var(--q-primary) !important;
+}
 """
 
 

@@ -4,6 +4,7 @@ Connections management page for NiceMeta.
 
 from nicegui import ui
 
+from nicemeta.ui.components.agent_panel import AgentPanel
 from nicemeta.ui.components.sidebar import (
     MetabaseHeader,
     MetabaseSidebar,
@@ -33,8 +34,11 @@ class ConnectionsPage:
         # Metabase-style layout
         sidebar = MetabaseSidebar()
         sidebar.create()
-        
-        header = MetabaseHeader(sidebar=sidebar, title="Data", show_back=True)
+
+        agent = AgentPanel()
+        agent.create()
+
+        header = MetabaseHeader(sidebar=sidebar, title="Data", show_back=True, agent=agent)
         header.create()
         
         with ui.column().classes("w-full p-6 gap-6 bg-gray-50 min-h-screen"):

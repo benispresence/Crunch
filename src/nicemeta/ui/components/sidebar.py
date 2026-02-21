@@ -408,11 +408,13 @@ class MetabaseHeader:
         title: str = "",
         show_back: bool = False,
         on_save: Callable | None = None,
+        agent=None,  # AgentPanel | None  (avoid circular import with type hint)
     ):
         self.sidebar = sidebar
         self.title = title
         self.show_back = show_back
         self.on_save = on_save
+        self.agent = agent
         self._title_label = None
 
     def create(self) -> ui.header:
@@ -456,6 +458,13 @@ class MetabaseHeader:
                             ui.menu_item("Question", lambda: ui.navigate.to("/query-builder"))
                             ui.menu_item("Dashboard", lambda: ui.navigate.to("/dashboards"))
 
+                    # AI Agent toggle button
+                    _agent = self.agent
+                    ui.button(
+                        icon="smart_toy",
+                        on_click=lambda: _agent.toggle() if _agent else None,
+                    ).props("flat round").classes("text-gray-600").tooltip("AI Agent")
+
                     create_theme_toggle()
 
                     ui.button(
@@ -482,15 +491,23 @@ def create_metabase_layout(
     title: str = "",
     show_back: bool = False,
     on_query_select: Callable[[dict], None] | None = None,
-) -> tuple[MetabaseSidebar, MetabaseHeader]:
-    """Create the full Metabase-style layout with sidebar and header."""
+) -> tuple:
+    """
+    Create the full Metabase-style layout: sidebar + header + agent panel.
+    Returns (MetabaseSidebar, MetabaseHeader, AgentPanel).
+    """
+    from nicemeta.ui.components.agent_panel import AgentPanel
+
     sidebar = MetabaseSidebar(on_query_select=on_query_select)
     sidebar.create()
 
-    header = MetabaseHeader(sidebar=sidebar, title=title, show_back=show_back)
+    agent = AgentPanel()
+    agent.create()
+
+    header = MetabaseHeader(sidebar=sidebar, title=title, show_back=show_back, agent=agent)
     header.create()
 
-    return sidebar, header
+    return sidebar, header, agent
 
 
 # Backward-compat stubs

@@ -5,6 +5,7 @@ Dashboard page for NiceMeta - Full featured dashboard builder.
 import pandas as pd
 from nicegui import ui
 
+from nicemeta.ui.components.agent_panel import AgentPanel
 from nicemeta.ui.components.sidebar import (
     MetabaseHeader,
     MetabaseSidebar,
@@ -60,7 +61,10 @@ class DashboardPage:
 
     async def _render_dashboard_list(self) -> None:
         """Render the dashboard list view."""
-        self._header = MetabaseHeader(sidebar=self._sidebar, title="Dashboards")
+        agent = AgentPanel()
+        agent.create()
+
+        self._header = MetabaseHeader(sidebar=self._sidebar, title="Dashboards", agent=agent)
         self._header.create()
         
         with ui.column().classes("w-full p-6 gap-6 bg-gray-50 min-h-screen"):
@@ -120,10 +124,14 @@ class DashboardPage:
 
     async def _render_dashboard_view(self) -> None:
         """Render a specific dashboard with editable grid."""
+        agent = AgentPanel()
+        agent.create()
+
         self._header = MetabaseHeader(
             sidebar=self._sidebar, 
             title=self.dashboard["name"], 
-            show_back=True
+            show_back=True,
+            agent=agent
         )
         self._header.create()
         

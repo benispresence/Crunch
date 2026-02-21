@@ -2,9 +2,17 @@
 Admin page for NiceMeta.
 """
 
-from nicegui import ui
+from nicegui import app, ui
 
 from nicemeta.ui.components.sidebar import MetabaseHeader, MetabaseSidebar
+from nicemeta.ui.components.agent_panel import (
+    AgentPanel,
+    _KEY_ANTHROPIC,
+    _KEY_OPENAI,
+    _KEY_PROVIDER,
+    _KEY_MODEL,
+)
+from nicemeta.services.agent_service import ALL_MODELS, ANTHROPIC_MODELS
 
 
 class AdminPage:
@@ -17,24 +25,31 @@ class AdminPage:
         """Render the admin page."""
         sidebar = MetabaseSidebar()
         sidebar.create()
-        
-        header = MetabaseHeader(sidebar=sidebar, title="Settings", show_back=True)
+
+        agent = AgentPanel()
+        agent.create()
+
+        header = MetabaseHeader(sidebar=sidebar, title="Settings", show_back=True, agent=agent)
         header.create()
-        
+
         with ui.column().classes("w-full p-6 gap-6 bg-gray-50 min-h-screen"):
             # Tabs
             with ui.tabs().classes("w-full") as tabs:
                 users_tab = ui.tab("Users", icon="people")
                 settings_tab = ui.tab("Settings", icon="settings")
+                ai_tab = ui.tab("AI", icon="smart_toy")
                 system_tab = ui.tab("System", icon="computer")
-            
+
             with ui.tab_panels(tabs, value=users_tab).classes("w-full"):
                 with ui.tab_panel(users_tab):
                     await self._render_users_panel()
-                
+
                 with ui.tab_panel(settings_tab):
                     await self._render_settings_panel()
-                
+
+                with ui.tab_panel(ai_tab):
+                    self._render_ai_panel()
+
                 with ui.tab_panel(system_tab):
                     await self._render_system_panel()
 
@@ -215,6 +230,112 @@ class AdminPage:
         # In production, create user via FastAPI Users
         ui.notify(f"User {email} created", type="positive")
         dialog.close()
+
+    def _render_ai_panel(self) -> None:
+        """Render the AI agent settings panel."""
+        storage = app.storage.user
+
+        with ui.column().classes("w-full gap-6 max-w-2xl"):
+            # ── Info banner ──────────────────────────────────────────────
+            with ui.card().classes("w-full bg-blue-50 border border-blue-200"):
+                with ui.row().classes("items-start gap-3 p-4"):
+                    ui.icon("info", size="sm").classes("text-blue-500 mt-1 flex-shrink-0")
+                    with ui.column().classes("gap-1"):
+                        ui.label("AI Agent Setup").classes("font-semibold text-blue-800")
+                        ui.label(
+                            "Keys are stored encrypted in your user profile (app.storage.user). "
+                            "They never leave your server and are only used for direct API calls "
+                            "to Anthropic or OpenAI."
+                        ).classes("text-sm text-blue-700")
+
+            # ── Anthropic ─────────────────────────────────────────────────
+            with ui.card().classes("w-full"):
+                ui.label("Anthropic (Claude)").classes("text-lg font-semibold mb-4")
+
+                with ui.column().classes("gap-3"):
+                    ant_key_input = ui.input(
+                        label="API Key",
+                        value=storage.get(_KEY_ANTHROPIC, ""),
+                        password=True,
+                        password_toggle_button=True,
+                        placeholder="sk-ant-...",
+                    ).classes("w-full")
+
+                    ui.label(
+                        "Get your key at console.anthropic.com"
+                    ).classes("text-xs text-gray-400")
+
+                    def _save_anthropic():
+                        storage[_KEY_ANTHROPIC] = ant_key_input.value.strip()
+                        ui.notify("Anthropic key saved", type="positive")
+
+                    ui.button(
+                        "Save Anthropic Key", icon="save", on_click=_save_anthropic
+                    ).props("color=primary dense")
+
+            # ── OpenAI ────────────────────────────────────────────────────
+            with ui.card().classes("w-full"):
+                ui.label("OpenAI (GPT)").classes("text-lg font-semibold mb-4")
+
+                with ui.column().classes("gap-3"):
+                    oai_key_input = ui.input(
+                        label="API Key",
+                        value=storage.get(_KEY_OPENAI, ""),
+                        password=True,
+                        password_toggle_button=True,
+                        placeholder="sk-...",
+                    ).classes("w-full")
+
+                    ui.label(
+                        "Get your key at platform.openai.com"
+                    ).classes("text-xs text-gray-400")
+
+                    def _save_openai():
+                        storage[_KEY_OPENAI] = oai_key_input.value.strip()
+                        ui.notify("OpenAI key saved", type="positive")
+
+                    ui.button(
+                        "Save OpenAI Key", icon="save", on_click=_save_openai
+                    ).props("color=primary dense")
+
+            # ── Defaults ──────────────────────────────────────────────────
+            with ui.card().classes("w-full"):
+                ui.label("Default Model").classes("text-lg font-semibold mb-4")
+
+                cur_provider = storage.get(_KEY_PROVIDER, "anthropic")
+                cur_model = storage.get(_KEY_MODEL, "claude-sonnet-4-6")
+
+                provider_sel = ui.select(
+                    label="Provider",
+                    options={"anthropic": "Anthropic (Claude)", "openai": "OpenAI (GPT)"},
+                    value=cur_provider,
+                ).classes("w-full")
+
+                models_now = ALL_MODELS.get(cur_provider, ANTHROPIC_MODELS)
+                if cur_model not in models_now:
+                    cur_model = next(iter(models_now))
+
+                model_sel = ui.select(
+                    label="Model",
+                    options=models_now,
+                    value=cur_model,
+                ).classes("w-full")
+
+                def _on_provider_change(e) -> None:
+                    models = ALL_MODELS.get(e.value, ANTHROPIC_MODELS)
+                    model_sel.options = models
+                    model_sel.value = next(iter(models))
+
+                provider_sel.on("update:model-value", _on_provider_change)
+
+                def _save_defaults():
+                    storage[_KEY_PROVIDER] = provider_sel.value
+                    storage[_KEY_MODEL] = model_sel.value
+                    ui.notify("Default model saved", type="positive")
+
+                ui.button(
+                    "Save Defaults", icon="save", on_click=_save_defaults
+                ).props("color=primary dense")
 
     def _save_settings(self) -> None:
         """Save settings."""
