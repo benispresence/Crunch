@@ -37,10 +37,94 @@ _cached_connections: list[dict] = []
 _cached_dashboards: list[dict] = []
 _cache_initialized: bool = False
 
-# Folders (still in-memory for now - can be moved to DB later)
+# Folders (still in-memory for now)
 _folders: list[dict] = [
     {"id": "1", "name": "My Queries", "parent_id": None},
 ]
+
+# JavaScript for drag-to-resize sidebar, with localStorage persistence.
+# Text clips at the resize line because the drawer has overflow:hidden.
+_RESIZE_JS = """
+(function() {
+  var KEY = 'nm_sw';
+  var MIN = 44;
+  var MAX = 500;
+
+  function applyWidth(w) {
+    var styleEl = document.getElementById('nm-w-override');
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = 'nm-w-override';
+      document.head.appendChild(styleEl);
+    }
+    styleEl.textContent =
+      '.q-drawer--left{width:' + w + 'px!important;min-width:0!important}';
+    var pc = document.querySelector('.q-page-container');
+    if (pc) pc.style.setProperty('padding-left', w + 'px', 'important');
+  }
+
+  function init() {
+    var drawer = document.querySelector('.q-drawer--left');
+    if (!drawer || document.getElementById('nm-rh')) return;
+
+    // Re-apply saved width whenever drawer style changes (e.g. after toggle)
+    var obs = new MutationObserver(function() {
+      var saved = parseInt(localStorage.getItem(KEY) || '0', 10);
+      if (saved >= MIN && saved <= MAX) setTimeout(function(){ applyWidth(saved); }, 30);
+    });
+    obs.observe(drawer, { attributes: true, attributeFilter: ['style'] });
+
+    var rh = document.createElement('div');
+    rh.id = 'nm-rh';
+    rh.style.cssText = [
+      'position:absolute', 'right:0', 'top:0',
+      'width:5px', 'height:100%', 'cursor:col-resize',
+      'z-index:9999', 'user-select:none', 'border-radius:0 2px 2px 0'
+    ].join(';');
+    drawer.appendChild(rh);
+
+    rh.addEventListener('mouseenter', function() {
+      rh.style.background = 'rgba(86,156,214,0.45)';
+    });
+    rh.addEventListener('mouseleave', function() {
+      if (!rh._d) rh.style.background = '';
+    });
+
+    rh.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      rh._d = true;
+      rh.style.background = 'rgba(86,156,214,0.7)';
+      document.body.classList.add('nm-resizing');
+      var x0 = e.clientX;
+      var w0 = drawer.offsetWidth;
+
+      function mv(e) {
+        applyWidth(Math.max(MIN, Math.min(MAX, w0 + e.clientX - x0)));
+      }
+      function up() {
+        rh._d = false;
+        rh.style.background = '';
+        document.body.classList.remove('nm-resizing');
+        localStorage.setItem(KEY, drawer.offsetWidth);
+        window.removeEventListener('mousemove', mv);
+        window.removeEventListener('mouseup', up);
+      }
+      window.addEventListener('mousemove', mv);
+      window.addEventListener('mouseup', up);
+    });
+
+    var saved = parseInt(localStorage.getItem(KEY) || '0', 10);
+    if (saved >= MIN && saved <= MAX) applyWidth(saved);
+  }
+
+  var n = 0;
+  var iv = setInterval(function() {
+    n++;
+    if (n > 50) { clearInterval(iv); return; }
+    if (document.querySelector('.q-drawer--left')) { clearInterval(iv); setTimeout(init, 80); }
+  }, 100);
+})();
+"""
 
 
 async def refresh_cache() -> None:
@@ -56,17 +140,14 @@ async def refresh_cache() -> None:
 
 
 def get_saved_queries() -> list[dict]:
-    """Get all saved queries (from cache)."""
     return _cached_queries
 
 
 async def get_saved_queries_async() -> list[dict]:
-    """Get all saved queries from database."""
     return await db_get_saved_queries()
 
 
 async def get_query_by_id(query_id: str) -> dict | None:
-    """Get a query by ID from database."""
     return await db_get_query_by_id(query_id)
 
 
@@ -77,259 +158,250 @@ async def save_query(
     folder_id: str | None = None,
     query_id: str | None = None,
 ) -> dict:
-    """Save a query to database."""
     global _cached_queries
     result = await db_save_query(
-        name=name,
-        sql=sql,
-        connection_id=connection_id,
-        folder_id=folder_id,
-        query_id=query_id,
+        name=name, sql=sql, connection_id=connection_id,
+        folder_id=folder_id, query_id=query_id,
     )
-    # Refresh cache after save
     await refresh_cache()
     return result
 
 
 async def delete_query(query_id: str) -> bool:
-    """Delete a query from database."""
     global _cached_queries
     result = await db_delete_query(query_id)
-    # Refresh cache after delete
     await refresh_cache()
     return result
 
 
 def get_connections() -> list[dict]:
-    """Get all connections (from cache)."""
     return _cached_connections
 
 
 async def get_connections_async() -> list[dict]:
-    """Get all connections from database."""
     return await db_get_connections()
 
 
 async def get_connection_by_id(connection_id: str) -> dict | None:
-    """Get a connection by ID from database."""
     return await db_get_connection_by_id(connection_id)
 
 
 def get_folders() -> list[dict]:
-    """Get all folders."""
     return _folders
 
 
 def get_saved_dashboards() -> list[dict]:
-    """Get all saved dashboards (from cache)."""
     return _cached_dashboards
 
 
 async def get_saved_dashboards_async() -> list[dict]:
-    """Get all saved dashboards from database."""
     return await db_get_dashboards()
 
 
 async def get_dashboard_by_id(dashboard_id: str) -> dict | None:
-    """Get a dashboard by ID from database."""
     return await db_get_dashboard_by_id(dashboard_id)
 
 
 async def create_dashboard(name: str, description: str | None = None) -> dict:
-    """Create a new dashboard."""
     result = await db_create_dashboard(name=name, description=description)
     await refresh_cache()
     return result
 
 
 async def delete_dashboard(dashboard_id: str) -> bool:
-    """Delete a dashboard."""
     result = await db_delete_dashboard(dashboard_id)
     await refresh_cache()
     return result
 
 
 class MetabaseSidebar:
-    """Collapsible sidebar with saved items like Metabase."""
-    
+    """
+    Persistent left sidebar.
+    - Single scrollable area (all items scroll together).
+    - Drag the right edge to resize; text clips at the resize line.
+    - Width is saved to localStorage and restored on next load.
+    """
+
     def __init__(self, on_query_select: Callable[[dict], None] | None = None):
         self.on_query_select = on_query_select
         self._drawer = None
         self._queries_container = None
         self._search_input = None
         self._search_term = ""
-    
+
     def create(self) -> ui.left_drawer:
         """Create the sidebar drawer."""
-        self._drawer = ui.left_drawer(value=False).classes(
-            "bg-white border-r border-gray-200"
-        ).style("width: 280px")
-        
-        with self._drawer:
-            # Header
-            with ui.row().classes("items-center justify-between p-4 border-b border-gray-200"):
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("analytics", size="md").classes("text-blue-500")
-                    ui.label("NiceMeta").classes("text-lg font-bold text-gray-800")
-                ui.button(
-                    icon="close",
-                    on_click=lambda: self._drawer.toggle(),
-                ).props("flat round dense").classes("text-gray-500")
-            
-            # Search in sidebar (filters saved queries)
-            with ui.row().classes("p-3"):
-                self._search_input = ui.input(
-                    placeholder="Search saved queries...",
-                    on_change=lambda e: self._filter_queries(e.value),
-                ).props("dense outlined clearable").classes(
-                    "w-full"
-                ).style("font-size: 13px")
-            
-            # Navigation sections
-            with ui.scroll_area().classes("flex-grow"):
-                # Collections / Folders
-                self._render_section("Collections", "folder", self._render_folders)
-                
-                # Saved Queries
-                with ui.expansion("Saved Questions", icon="description").classes("w-full").props("dense"):
-                    self._queries_container = ui.column().classes("w-full")
-                    with self._queries_container:
-                        self._render_queries_sync()
-                
-                # Dashboards
-                self._render_section("Dashboards", "dashboard", self._render_dashboards)
-            
-            # Main nav
-            with ui.column().classes("px-2 py-1"):
-                self._nav_item("/", "home", "Home")
-                self._nav_item("/sql", "code", "SQL Editor")
-                self._nav_item("/query-builder", "build", "Query Builder")
-                self._nav_item("/dashboards", "dashboard", "Dashboards")
+        # behavior=desktop → persistent on desktop, overlay on mobile
+        self._drawer = ui.left_drawer(value=True).props(
+            "behavior=desktop bordered"
+        ).style("width: 240px; min-width: 0; overflow: hidden;")
 
-            # Bottom nav
-            with ui.column().classes("border-t border-gray-200 p-2"):
-                self._nav_item("/connections", "storage", "Data")
-                self._nav_item("/admin", "settings", "Settings")
-                with ui.row().classes("items-center gap-2 px-3 py-1"):
-                    create_theme_toggle()
-        
-        # Schedule cache refresh
-        async def init_cache():
+        with self._drawer:
+            # One scroll area for everything — no separate fixed sections
+            with ui.scroll_area().style("height: 100%; overflow-x: hidden;").classes("w-full"):
+                with ui.column().classes("w-full gap-0").style("min-width: 0;"):
+
+                    # ── Logo ─────────────────────────────────────────
+                    with ui.link(target="/").classes("no-underline w-full"):
+                        with ui.row().classes(
+                            "items-center gap-2 px-4 py-3 nm-sidebar-row"
+                        ):
+                            ui.icon("analytics", size="sm").classes(
+                                "text-blue-500 flex-shrink-0"
+                            )
+                            ui.label("NiceMeta").classes(
+                                "text-base font-bold nm-sidebar-label"
+                            )
+
+                    # ── Search ────────────────────────────────────────
+                    with ui.row().classes("px-3 py-2 w-full").style("min-width:0"):
+                        self._search_input = ui.input(
+                            placeholder="Search...",
+                            on_change=lambda e: self._filter_queries(e.value),
+                        ).props("dense outlined clearable").classes("w-full").style(
+                            "font-size:13px"
+                        )
+
+                    ui.separator().classes("nm-sidebar-sep")
+
+                    # ── Primary navigation ────────────────────────────
+                    with ui.column().classes("w-full gap-0 px-2 py-1"):
+                        self._nav_item("/", "home", "Home")
+                        self._nav_item("/sql", "code", "SQL Editor")
+                        self._nav_item("/query-builder", "build", "Query Builder")
+                        self._nav_item("/dashboards", "dashboard", "Dashboards")
+
+                    ui.separator().classes("nm-sidebar-sep")
+
+                    # ── Browse label ──────────────────────────────────
+                    ui.label("Browse").classes("nm-sidebar-section-label")
+
+                    # ── Collections ───────────────────────────────────
+                    with ui.expansion("Collections", icon="folder").classes(
+                        "w-full nm-sidebar-expansion"
+                    ).props("dense"):
+                        self._render_folders()
+
+                    # ── Saved Questions ───────────────────────────────
+                    with ui.expansion("Saved Questions", icon="description").classes(
+                        "w-full nm-sidebar-expansion"
+                    ).props("dense"):
+                        self._queries_container = ui.column().classes("w-full gap-0")
+                        with self._queries_container:
+                            self._render_queries_sync()
+
+                    # ── Dashboards ────────────────────────────────────
+                    with ui.expansion("Our Dashboards", icon="dashboard").classes(
+                        "w-full nm-sidebar-expansion"
+                    ).props("dense"):
+                        self._render_dashboards()
+
+                    ui.separator().classes("nm-sidebar-sep")
+
+                    # ── Utility nav ───────────────────────────────────
+                    with ui.column().classes("w-full gap-0 px-2 py-1"):
+                        self._nav_item("/connections", "storage", "Data")
+                        self._nav_item("/admin", "settings", "Settings")
+
+                    # ── Theme toggle ──────────────────────────────────
+                    with ui.row().classes("nm-sidebar-row px-4 py-2 gap-2"):
+                        create_theme_toggle()
+                        ui.label("Theme").classes("text-sm nm-sidebar-label")
+
+        # Init cache then inject resize JS
+        async def _init():
             await refresh_cache()
             self._refresh_queries_display()
-        
-        ui.timer(0.1, init_cache, once=True)
-        
+            ui.run_javascript(_RESIZE_JS)
+
+        ui.timer(0.1, _init, once=True)
         return self._drawer
-    
-    def _render_section(self, title: str, icon: str, render_fn: Callable) -> None:
-        """Render a collapsible section."""
-        with ui.expansion(title, icon=icon).classes("w-full").props("dense"):
-            render_fn()
-    
+
+    # ── Rendering helpers ─────────────────────────────────────────────────────
+
     def _render_folders(self) -> None:
-        """Render folders list."""
         folders = get_folders()
         if not folders:
-            ui.label("No folders yet").classes("text-gray-400 text-sm p-2")
+            ui.label("No collections yet").classes("text-gray-400 text-sm px-3 py-1")
             return
-        
         for folder in folders:
-            with ui.row().classes(
-                "items-center gap-2 px-2 py-1 hover:bg-gray-100 rounded cursor-pointer"
-            ):
-                ui.icon("folder", size="sm").classes("text-yellow-500")
-                ui.label(folder["name"]).classes("text-sm text-gray-700")
-    
+            with ui.row().classes("nm-sidebar-row nm-sidebar-child hover:bg-gray-100 rounded cursor-pointer"):
+                ui.icon("folder", size="xs").classes("text-yellow-500 flex-shrink-0")
+                ui.label(folder["name"]).classes("text-sm nm-sidebar-label")
+
     def _render_queries_sync(self) -> None:
-        """Render saved queries list (synchronous, uses cache)."""
         queries = get_saved_queries()
         if self._search_term:
             queries = [q for q in queries if self._search_term in q["name"].lower()]
         if not queries:
             msg = "No matches" if self._search_term else "No saved questions yet"
-            ui.label(msg).classes("text-gray-400 text-sm p-2")
+            ui.label(msg).classes("text-gray-400 text-sm px-3 py-1")
             return
-
         for query in queries:
             with ui.row().classes(
-                "items-center gap-2 px-2 py-1 hover:bg-gray-100 rounded cursor-pointer"
+                "nm-sidebar-row nm-sidebar-child hover:bg-gray-100 rounded cursor-pointer"
             ).on("click", lambda q=query: self._select_query(q)):
-                ui.icon("code", size="sm").classes("text-blue-500")
-                ui.label(query["name"]).classes("text-sm text-gray-700 truncate")
-    
+                ui.icon("code", size="xs").classes("text-blue-500 flex-shrink-0")
+                ui.label(query["name"]).classes("text-sm nm-sidebar-label")
+
+    def _render_dashboards(self) -> None:
+        dashboards = get_saved_dashboards()
+        if not dashboards:
+            ui.label("No dashboards yet").classes("text-gray-400 text-sm px-3 py-1")
+            return
+        for dashboard in dashboards:
+            with ui.row().classes(
+                "nm-sidebar-row nm-sidebar-child hover:bg-gray-100 rounded cursor-pointer"
+            ).on("click", lambda d=dashboard: ui.navigate.to(f"/dashboards/{d['id']}")):
+                ui.icon("dashboard", size="xs").classes("text-purple-500 flex-shrink-0")
+                ui.label(dashboard["name"]).classes("text-sm nm-sidebar-label")
+
     def _refresh_queries_display(self) -> None:
-        """Refresh the queries display after cache update."""
         if self._queries_container:
             self._queries_container.clear()
             with self._queries_container:
                 self._render_queries_sync()
 
     def _filter_queries(self, term: str) -> None:
-        """Filter displayed queries by search term."""
         self._search_term = (term or "").strip().lower()
         self._refresh_queries_display()
-    
-    def _render_dashboards(self) -> None:
-        """Render dashboards list."""
-        dashboards = get_saved_dashboards()
-        if not dashboards:
-            ui.label("No dashboards yet").classes("text-gray-400 text-sm p-2")
-            return
-        
-        for dashboard in dashboards:
-            with ui.row().classes(
-                "items-center gap-2 px-2 py-1 hover:bg-gray-100 rounded cursor-pointer"
-            ).on("click", lambda d=dashboard: ui.navigate.to(f"/dashboards/{d['id']}")):
-                ui.icon("dashboard", size="sm").classes("text-purple-500")
-                with ui.column().classes("gap-0 flex-grow"):
-                    ui.label(dashboard["name"]).classes("text-sm text-gray-700 truncate")
-                    widget_count = dashboard.get("widget_count", 0)
-                    ui.label(f"{widget_count} widget{'s' if widget_count != 1 else ''}").classes(
-                        "text-xs text-gray-400"
-                    )
-    
+
     def _nav_item(self, path: str, icon: str, label: str) -> None:
-        """Create a navigation item with active page highlighting."""
         current = self._current_path()
         is_active = current == path or (path != "/" and current.startswith(path))
         active_cls = " nm-nav-active" if is_active else ""
-        with ui.link(target=path).classes("no-underline"):
-            with ui.row().classes(
-                f"items-center gap-3 px-3 py-2 rounded hover:bg-gray-100 cursor-pointer{active_cls}"
-            ):
-                ui.icon(icon, size="sm").classes("text-blue-500" if is_active else "text-gray-500")
-                ui.label(label).classes("text-sm " + ("font-semibold" if is_active else "text-gray-700"))
+        icon_cls = "text-blue-500 flex-shrink-0" if is_active else "text-gray-500 flex-shrink-0"
+        lbl_cls = "text-sm font-semibold nm-sidebar-label" if is_active else "text-sm nm-sidebar-label"
+
+        with ui.link(target=path).classes("no-underline w-full"):
+            with ui.row().classes(f"nm-sidebar-row rounded cursor-pointer{active_cls}"):
+                ui.icon(icon, size="xs").classes(icon_cls)
+                ui.label(label).classes(lbl_cls)
 
     @staticmethod
     def _current_path() -> str:
-        """Get the current page path."""
         try:
             return ui.context.client.request.url.path
         except Exception:
             return "/"
-    
+
     def _select_query(self, query: dict) -> None:
-        """Handle query selection."""
         if self.on_query_select:
             self.on_query_select(query)
-        # Navigate to SQL editor with query
         ui.navigate.to(f"/sql?query_id={query['id']}")
-    
+
     def toggle(self) -> None:
-        """Toggle the drawer."""
         if self._drawer:
             self._drawer.toggle()
-    
+
     async def refresh(self) -> None:
-        """Refresh the sidebar content."""
         await refresh_cache()
         self._refresh_queries_display()
 
 
 class MetabaseHeader:
     """Metabase-style header bar."""
-    
+
     def __init__(
         self,
         sidebar: MetabaseSidebar | None = None,
@@ -342,88 +414,65 @@ class MetabaseHeader:
         self.show_back = show_back
         self.on_save = on_save
         self._title_label = None
-    
+
     def create(self) -> ui.header:
-        """Create the header."""
-        # Inject theme CSS and apply saved preference
         inject_theme()
         apply_saved_theme()
 
         with ui.header().classes("bg-white border-b border-gray-200 shadow-sm") as header:
             with ui.row().classes("w-full items-center px-4 py-2 gap-4"):
-                # Left section - hamburger + logo/back
                 with ui.row().classes("items-center gap-2"):
-                    # Hamburger menu
                     ui.button(
                         icon="menu",
                         on_click=lambda: self.sidebar.toggle() if self.sidebar else None,
                     ).props("flat round dense").classes("text-gray-600")
-                    
-                    # Logo
+
                     with ui.link(target="/").classes("no-underline"):
-                        with ui.row().classes("items-center gap-1"):
-                            ui.icon("analytics", size="md").classes("text-blue-500")
-                    
+                        ui.icon("analytics", size="md").classes("text-blue-500")
+
                     if self.show_back:
                         ui.button(
                             icon="arrow_back",
                             on_click=lambda: ui.navigate.to("/"),
                         ).props("flat round dense").classes("text-gray-600")
-                    
-                    # Title (editable if in editor)
+
                     if self.title:
                         self._title_label = ui.label(self.title).classes(
                             "text-lg font-semibold text-gray-800 ml-2"
                         )
-                
+
                 ui.space()
-                
-                # Center section - Search
+
                 ui.input(placeholder="Search...").props("dense outlined").classes(
                     "w-80"
                 ).style("font-size: 14px")
-                
+
                 ui.space()
-                
-                # Right section - New button + Settings + User
+
                 with ui.row().classes("items-center gap-2"):
-                    # + New button
                     with ui.button("New", icon="add").props("color=primary"):
                         with ui.menu():
-                            ui.menu_item(
-                                "SQL Query",
-                                lambda: ui.navigate.to("/sql"),
-                            )
-                            ui.menu_item(
-                                "Question",
-                                lambda: ui.navigate.to("/query-builder"),
-                            )
-                            ui.menu_item(
-                                "Dashboard",
-                                lambda: ui.navigate.to("/dashboards"),
-                            )
-                    
-                    # Theme toggle
+                            ui.menu_item("SQL Query", lambda: ui.navigate.to("/sql"))
+                            ui.menu_item("Question", lambda: ui.navigate.to("/query-builder"))
+                            ui.menu_item("Dashboard", lambda: ui.navigate.to("/dashboards"))
+
                     create_theme_toggle()
 
-                    # Settings gear
                     ui.button(
                         icon="settings",
                         on_click=lambda: ui.navigate.to("/admin"),
                     ).props("flat round").classes("text-gray-600")
 
-                    # User menu
                     with ui.button(icon="account_circle").props("flat round").classes("text-gray-600"):
                         with ui.menu():
                             ui.menu_item("Profile")
                             ui.menu_item("Account Settings")
                             ui.separator()
                             ui.menu_item("Sign Out")
-        
+
         return header
-    
+
     def set_title(self, title: str) -> None:
-        """Update the header title."""
         self.title = title
         if self._title_label:
             self._title_label.text = title
@@ -437,21 +486,17 @@ def create_metabase_layout(
     """Create the full Metabase-style layout with sidebar and header."""
     sidebar = MetabaseSidebar(on_query_select=on_query_select)
     sidebar.create()
-    
+
     header = MetabaseHeader(sidebar=sidebar, title=title, show_back=show_back)
     header.create()
-    
+
     return sidebar, header
 
 
-# Keep old functions for backward compatibility
+# Backward-compat stubs
 def create_sidebar() -> None:
-    """Create sidebar - deprecated, use MetabaseSidebar."""
-    sidebar = MetabaseSidebar()
-    sidebar.create()
+    MetabaseSidebar().create()
 
 
 def create_header(title: str) -> None:
-    """Create header - deprecated, use MetabaseHeader."""
-    header = MetabaseHeader(title=title)
-    header.create()
+    MetabaseHeader(title=title).create()

@@ -76,6 +76,93 @@ body.body--dark .cm-activeLineGutter {
 body.body--dark .nm-nav-active {
     background-color: rgba(86, 156, 214, 0.15);
 }
+
+/* ── Sidebar: single-scroll, text-clips-at-resize-line ─────────────────── */
+
+/* The drawer clips everything at its right edge */
+.q-drawer--left {
+    overflow: hidden !important;
+}
+
+/* Scrollarea content: no horizontal scroll, text just vanishes at the line */
+.q-drawer--left .q-scrollarea__content {
+    overflow-x: hidden !important;
+    min-width: 0 !important;
+}
+
+/* Every sidebar row: one line, no wrap, clips at drawer edge */
+.nm-sidebar-row {
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+    min-width: 0;
+    padding: 6px 12px;
+    border-radius: 6px;
+    transition: background 0.12s;
+}
+.nm-sidebar-row:hover {
+    background: rgba(0, 0, 0, 0.05);
+}
+body.body--dark .nm-sidebar-row:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+/* Child rows inside expansions get smaller indent */
+.nm-sidebar-child {
+    padding: 4px 12px 4px 20px;
+}
+
+/* Labels inside rows clip too */
+.nm-sidebar-label {
+    overflow: hidden;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+}
+
+/* Section dividers */
+.nm-sidebar-sep {
+    margin: 4px 0 !important;
+    opacity: 0.15;
+}
+
+/* Section group header ("Browse", etc.) */
+.nm-sidebar-section-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 10px 16px 2px;
+    opacity: 0.45;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+/* Expansion items: clip header label at drawer edge */
+.nm-sidebar-expansion .q-item {
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    flex-wrap: nowrap !important;
+    min-width: 0 !important;
+    padding: 4px 12px !important;
+}
+.nm-sidebar-expansion .q-item__label {
+    overflow: hidden !important;
+    white-space: nowrap !important;
+}
+
+/* Suppress transitions during drag resize */
+body.nm-resizing .q-drawer--left,
+body.nm-resizing .q-page-container {
+    transition: none !important;
+}
+
+/* Resize handle hover highlight (rendered by JS) */
+#nm-rh:hover {
+    background: rgba(86, 156, 214, 0.4) !important;
+}
 """
 
 
