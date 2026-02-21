@@ -30,6 +30,7 @@ from nicemeta.services.dashboard_service import (
     create_dashboard as db_create_dashboard,
     delete_dashboard as db_delete_dashboard,
 )
+from nicemeta.services.git_service import get_git_service
 
 # Cache for queries (refreshed on demand)
 _cached_queries: list[dict] = []
@@ -164,13 +165,17 @@ async def save_query(
         folder_id=folder_id, query_id=query_id,
     )
     await refresh_cache()
+    asyncio.ensure_future(get_git_service().sync_query(result))
     return result
 
 
 async def delete_query(query_id: str) -> bool:
     global _cached_queries
+    item = await db_get_query_by_id(query_id)
     result = await db_delete_query(query_id)
     await refresh_cache()
+    if result and item:
+        asyncio.ensure_future(get_git_service().sync_query(item, deleted=True))
     return result
 
 
@@ -205,12 +210,16 @@ async def get_dashboard_by_id(dashboard_id: str) -> dict | None:
 async def create_dashboard(name: str, description: str | None = None) -> dict:
     result = await db_create_dashboard(name=name, description=description)
     await refresh_cache()
+    asyncio.ensure_future(get_git_service().sync_dashboard(result))
     return result
 
 
 async def delete_dashboard(dashboard_id: str) -> bool:
+    item = await db_get_dashboard_by_id(dashboard_id)
     result = await db_delete_dashboard(dashboard_id)
     await refresh_cache()
+    if result and item:
+        asyncio.ensure_future(get_git_service().sync_dashboard(item, deleted=True))
     return result
 
 

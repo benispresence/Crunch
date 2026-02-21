@@ -201,6 +201,41 @@ TOOLS: list[dict] = [
             "required": ["path"],
         },
     },
+    {
+        "name": "git_status",
+        "description": (
+            "Get the current git workspace status: branch name, whether it is clean or "
+            "has uncommitted changes, and the remote origin URL. Use this to answer "
+            "questions about the version history state."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "git_sync_all",
+        "description": (
+            "Export all NiceMeta content (queries, dashboards, connection configs) to the "
+            "git workspace files and create a commit. Use when the user wants to snapshot "
+            "the current state or before pushing to a remote."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "git_push",
+        "description": (
+            "Push the local git workspace commits to the configured remote origin. "
+            "The remote must be set first (Admin → Git → Set Remote)."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "git_pull",
+        "description": (
+            "Pull the latest commits from the remote git origin and import any new or "
+            "updated queries and dashboards into NiceMeta. Use when the user wants to "
+            "refresh from a shared remote workspace."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 
@@ -446,6 +481,14 @@ class AgentService:
                 action = {"type": "navigation", "path": inputs["path"]}
                 ui_actions.append(action)
                 return {"status": "navigating", "path": inputs["path"]}
+            elif name == "git_status":
+                return await self._tool_git_status()
+            elif name == "git_sync_all":
+                return await self._tool_git_sync_all()
+            elif name == "git_push":
+                return await self._tool_git_push()
+            elif name == "git_pull":
+                return await self._tool_git_pull()
             else:
                 return {"error": f"Unknown tool: {name}"}
         except Exception as exc:
@@ -577,3 +620,36 @@ class AgentService:
                 for d in dashboards
             ]
         }
+
+    async def _tool_git_status(self) -> dict:
+        from nicemeta.services.git_service import get_git_service
+
+        git = get_git_service()
+        return {
+            "short_status": git.get_short_status(),
+            "full_status": git.get_status(),
+            "remote": git.get_remote(),
+            "branch": git.get_current_branch(),
+            "initialized": git.is_initialized(),
+        }
+
+    async def _tool_git_sync_all(self) -> dict:
+        from nicemeta.services.git_service import get_git_service
+
+        git = get_git_service()
+        summary = await git.sync_all()
+        return {"result": summary}
+
+    async def _tool_git_push(self) -> dict:
+        from nicemeta.services.git_service import get_git_service
+
+        git = get_git_service()
+        ok, msg = await git.push()
+        return {"success": ok, "message": msg}
+
+    async def _tool_git_pull(self) -> dict:
+        from nicemeta.services.git_service import get_git_service
+
+        git = get_git_service()
+        ok, msg = await git.pull()
+        return {"success": ok, "message": msg}
