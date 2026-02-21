@@ -180,6 +180,38 @@ class ChartFactory:
         return r.render_to_html(data, config, options)
 
     @classmethod
+    def render_figure(
+        cls,
+        data: pd.DataFrame,
+        config: ChartConfig,
+        options: dict | None = None,
+        renderer: str | None = None,
+    ):
+        """
+        Render and return a Plotly figure object.
+        
+        This is useful for NiceGUI's ui.plotly() component.
+        
+        Args:
+            data: DataFrame containing chart data
+            config: Chart configuration
+            options: Optional additional chart options
+            renderer: Optional renderer name
+            
+        Returns:
+            Plotly Figure object or None
+        """
+        if renderer:
+            r = cls.get_renderer(renderer)
+        else:
+            r = cls.get_best_renderer(config.chart_type)
+        
+        # Check if renderer has render_figure method
+        if hasattr(r, 'render_figure'):
+            return r.render_figure(data, config, options)
+        return None
+
+    @classmethod
     def get_chart_types(cls, category: str | None = None) -> list[dict]:
         """
         Get all available chart types.

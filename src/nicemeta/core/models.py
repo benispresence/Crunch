@@ -248,6 +248,10 @@ class Visualization(Base, TimestampMixin):
     # Contains axis mappings, colors, labels, aggregations, etc.
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     
+    # Custom Python code for visualization (optional)
+    # When set, this code is executed to generate the visualization
+    python_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
     # Source query
     query_id: Mapped[str] = mapped_column(
         String(36),

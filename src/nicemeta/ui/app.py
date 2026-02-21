@@ -78,7 +78,7 @@ def create_app() -> FastAPI:
         fastapi_app,
         title=settings.app.title,
         favicon="🔷",
-        dark=False,  # Force light mode for consistent Metabase-like UI
+        dark=None,  # Controlled via theme.py (Quasar.Dark.set)
         storage_secret=settings.app.secret_key,
     )
 

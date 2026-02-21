@@ -22,6 +22,7 @@ from nicemeta.services.dashboard_service import (
     update_widget_position,
     remove_widget,
 )
+from nicemeta.services.visualization_service import get_visualization_by_query_id
 from nicemeta.ui.components.sql_editor_widget import serialize_value
 
 
@@ -156,7 +157,7 @@ class DashboardPage:
                     with ui.button(icon="more_vert").props("flat round"):
                         with ui.menu():
                             ui.menu_item("Rename", self._rename_dashboard)
-                            ui.menu_item("Duplicate")
+                            ui.menu_item("Duplicate", self._duplicate_dashboard)
                             ui.separator()
                             ui.menu_item("Delete", self._delete_dashboard_dialog)
             
@@ -217,7 +218,7 @@ class DashboardPage:
                     with ui.button(icon="more_vert").props("flat round dense size=sm").classes("text-gray-400"):
                         with ui.menu():
                             ui.menu_item("Edit", lambda w=widget: self._edit_widget(w))
-                            ui.menu_item("Resize")
+                            ui.menu_item("Resize", lambda w=widget: self._resize_widget_dialog(w))
                             ui.separator()
                             ui.menu_item("Remove", lambda w=widget: self._remove_widget_dialog(w))
             
@@ -391,8 +392,18 @@ class DashboardPage:
                         "pie": "Pie Chart",
                         "area": "Area Chart",
                     },
-                    value="table",
+                    value="bar",  # Default to bar chart instead of table
                 ).classes("w-full")
+                
+                # When a query is selected, load its saved visualization settings
+                async def on_query_change(e):
+                    if e.value:
+                        viz = await get_visualization_by_query_id(e.value)
+                        if viz and viz.get("chart_type"):
+                            # Update chart type to match saved visualization
+                            chart_select.value = viz["chart_type"]
+                
+                query_select.on("update:model-value", on_query_change)
                 
                 # Size options
                 ui.label("Widget size:").classes("text-gray-600 mt-4 mb-2")
@@ -455,8 +466,7 @@ class DashboardPage:
             if widget:
                 ui.notify("Widget added!", type="positive")
                 dialog.close()
-                # Refresh page to show new widget
-                ui.navigate.to(f"/dashboards/{self.dashboard_id}")
+                await self._refresh_dashboard()
             else:
                 ui.notify("Failed to add widget", type="negative")
         except Exception as e:
@@ -483,23 +493,86 @@ class DashboardPage:
             await remove_widget(widget_id)
             ui.notify("Widget removed", type="info")
             dialog.close()
-            ui.navigate.to(f"/dashboards/{self.dashboard_id}")
+            await self._refresh_dashboard()
         except Exception as e:
             ui.notify(f"Error: {str(e)}", type="negative")
 
     def _edit_widget(self, widget: dict) -> None:
         """Edit widget settings."""
-        ui.notify("Edit widget coming soon!")
+        ui.notify("Edit widget coming soon!", type="info")
+    
+    def _resize_widget_dialog(self, widget: dict) -> None:
+        """Show resize widget dialog."""
+        with ui.dialog() as dialog, ui.card().classes("w-96"):
+            ui.label("Resize Widget").classes("text-lg font-semibold mb-4")
+            
+            current_width = widget.get("width", 6)
+            current_height = widget.get("height", 3)
+            
+            width_select = ui.select(
+                label="Width (columns)",
+                options={3: "Small (3)", 4: "Medium (4)", 6: "Large (6)", 12: "Full (12)"},
+                value=current_width,
+            ).classes("w-full")
+            
+            height_select = ui.select(
+                label="Height (rows)",
+                options={2: "Small (2)", 3: "Medium (3)", 4: "Large (4)", 6: "Tall (6)"},
+                value=current_height,
+            ).classes("w-full")
+            
+            async def do_resize():
+                try:
+                    await update_widget_position(
+                        widget_id=widget["id"],
+                        position_x=widget.get("position_x", 0),
+                        position_y=widget.get("position_y", 0),
+                        width=width_select.value,
+                        height=height_select.value,
+                    )
+                    ui.notify("Widget resized", type="positive")
+                    dialog.close()
+                    await self._refresh_dashboard()
+                except Exception as e:
+                    ui.notify(f"Error resizing widget: {e}", type="negative")
+            
+            with ui.row().classes("justify-end gap-2 mt-4"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Apply", on_click=do_resize).props("color=primary")
+        
+        dialog.open()
 
     async def _refresh_widget(self, widget: dict) -> None:
-        """Refresh a single widget."""
-        ui.notify("Refreshing widget...")
-        ui.navigate.to(f"/dashboards/{self.dashboard_id}")
+        """Refresh a single widget (re-renders all widgets in place)."""
+        await self._refresh_dashboard()
 
     async def _refresh_dashboard(self) -> None:
-        """Refresh all widgets."""
-        ui.notify("Refreshing dashboard...")
-        ui.navigate.to(f"/dashboards/{self.dashboard_id}")
+        """Refresh all widgets in place without a full page reload."""
+        if not self._widgets_container:
+            return
+        # Reload dashboard data from DB
+        self.dashboard = await get_dashboard_by_id(self.dashboard_id)
+        if self.dashboard:
+            self.widgets = self.dashboard.get("widgets", [])
+        self._widgets_container.clear()
+        with self._widgets_container:
+            if self.widgets:
+                for widget in self.widgets:
+                    await self._render_widget(widget)
+            else:
+                with ui.element("div").classes(
+                    "col-span-12 flex items-center justify-center h-[400px] "
+                    "border-2 border-dashed border-gray-300 rounded-lg"
+                ):
+                    with ui.column().classes("items-center gap-4"):
+                        ui.icon("widgets", size="xl").classes("text-gray-300")
+                        ui.label("No widgets yet").classes("text-lg text-gray-400")
+                        ui.button(
+                            "Add your first widget",
+                            icon="add",
+                            on_click=self._add_widget_dialog,
+                        ).props("color=primary")
+        ui.notify("Dashboard refreshed", type="positive")
 
     def _rename_dashboard(self) -> None:
         """Rename the dashboard."""
@@ -520,6 +593,48 @@ class DashboardPage:
             with ui.row().classes("justify-end gap-2 mt-4"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
                 ui.button("Save", on_click=do_rename).props("color=primary")
+        
+        dialog.open()
+
+    def _duplicate_dashboard(self) -> None:
+        """Duplicate the current dashboard."""
+        with ui.dialog() as dialog, ui.card().classes("w-96"):
+            ui.label("Duplicate Dashboard").classes("text-lg font-semibold")
+            
+            name_input = ui.input(
+                label="Name", 
+                value=f"{self.dashboard['name']} (Copy)",
+            ).classes("w-full")
+            
+            async def do_duplicate():
+                try:
+                    # Create a new dashboard with the same name
+                    new_dashboard = await create_dashboard(
+                        name=name_input.value,
+                        description=self.dashboard.get("description", ""),
+                    )
+                    
+                    # Copy widgets to the new dashboard
+                    for widget in self.widgets:
+                        await add_widget_to_dashboard(
+                            dashboard_id=new_dashboard["id"],
+                            query_id=widget.get("query", {}).get("id") if widget.get("query") else None,
+                            chart_type=widget.get("visualization", {}).get("chart_type", "table"),
+                            position_x=widget.get("position_x", 0),
+                            position_y=widget.get("position_y", 0),
+                            width=widget.get("width", 6),
+                            height=widget.get("height", 3),
+                        )
+                    
+                    ui.notify(f"Dashboard duplicated as '{name_input.value}'", type="positive")
+                    dialog.close()
+                    ui.navigate.to(f"/dashboards/{new_dashboard['id']}")
+                except Exception as e:
+                    ui.notify(f"Error duplicating dashboard: {e}", type="negative")
+            
+            with ui.row().classes("justify-end gap-2 mt-4"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Duplicate", on_click=do_duplicate).props("color=primary")
         
         dialog.open()
 

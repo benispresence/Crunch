@@ -5,14 +5,19 @@ Provides async SQLAlchemy session management for the internal database
 that stores users, queries, dashboards, and other application data.
 """
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from nicemeta.config.settings import get_settings
 from nicemeta.core.models import Base
+
+logger = logging.getLogger(__name__)
 
 # Global engine and session factory (initialized lazily)
 _engine = None
@@ -109,10 +114,118 @@ async def get_session_context() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """
-    Initialize the database by creating all tables.
+    Initialize the database using Alembic migrations.
+    
+    This handles three scenarios:
+    1. New database: Runs all migrations from scratch
+    2. Existing database without alembic_version: Stamps with 001 (baseline), then runs pending migrations
+    3. Existing database with alembic_version: Runs pending migrations
     
     Should be called once at application startup.
     """
+    engine = get_engine()
+    
+    # Check if alembic_version table exists
+    async with engine.connect() as conn:
+        has_alembic = await conn.run_sync(_check_alembic_version_exists)
+        has_tables = await conn.run_sync(_check_tables_exist)
+    
+    if has_tables and not has_alembic:
+        # Existing database without migrations tracking
+        # Stamp with initial migration (001) as baseline, then let pending migrations run
+        logger.info("Existing database detected. Stamping with baseline migration 001...")
+        await _stamp_database("001")
+    
+    # Run any pending migrations (e.g., 002, 003, etc.)
+    logger.info("Running database migrations...")
+    await _run_migrations()
+    logger.info("Database initialization complete.")
+
+
+def _check_alembic_version_exists(conn) -> bool:
+    """Check if the alembic_version table exists (sync function for run_sync)."""
+    from sqlalchemy import inspect
+    inspector = inspect(conn)
+    return "alembic_version" in inspector.get_table_names()
+
+
+def _check_tables_exist(conn) -> bool:
+    """Check if any application tables exist (sync function for run_sync)."""
+    from sqlalchemy import inspect
+    inspector = inspect(conn)
+    tables = inspector.get_table_names()
+    # Check for known application tables
+    app_tables = {"users", "queries", "dashboards", "connections"}
+    return bool(app_tables & set(tables))
+
+
+async def _run_migrations() -> None:
+    """Run Alembic migrations programmatically."""
+    import asyncio
+    
+    def run_upgrade():
+        from alembic import command
+        from alembic.config import Config
+        
+        # Find alembic.ini
+        alembic_ini = _find_alembic_ini()
+        if alembic_ini is None:
+            logger.warning("alembic.ini not found. Falling back to create_all().")
+            return False
+        
+        try:
+            config = Config(str(alembic_ini))
+            command.upgrade(config, "head")
+            return True
+        except Exception as e:
+            logger.error(f"Migration failed: {e}")
+            return False
+    
+    # Run in thread to avoid blocking the event loop
+    result = await asyncio.to_thread(run_upgrade)
+    if not result:
+        # Fallback to create_all if migrations failed
+        await _fallback_create_all_async()
+
+
+async def _stamp_database(revision: str) -> None:
+    """Stamp the database with a revision without running migrations."""
+    import asyncio
+    
+    def run_stamp():
+        from alembic import command
+        from alembic.config import Config
+        
+        alembic_ini = _find_alembic_ini()
+        if alembic_ini is None:
+            return
+        
+        try:
+            config = Config(str(alembic_ini))
+            command.stamp(config, revision)
+        except Exception as e:
+            logger.error(f"Stamp failed: {e}")
+    
+    await asyncio.to_thread(run_stamp)
+
+
+def _find_alembic_ini() -> Path | None:
+    """Find the alembic.ini configuration file."""
+    # Try common locations
+    candidates = [
+        Path.cwd() / "alembic.ini",
+        Path(__file__).parent.parent.parent.parent / "alembic.ini",
+    ]
+    
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    
+    return None
+
+
+async def _fallback_create_all_async() -> None:
+    """Fallback to create_all if Alembic is not configured (async version)."""
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

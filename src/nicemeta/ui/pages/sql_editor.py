@@ -16,10 +16,22 @@ from nicemeta.ui.components.sidebar import (
     get_connections_async,
     refresh_cache,
 )
+from nicemeta.services.visualization_service import (
+    get_visualization_by_query_id,
+    save_visualization,
+)
 from nicemeta.ui.components.sql_editor_widget import (
     SQLEditorWidget,
     create_results_table,
     serialize_value,
+)
+from nicemeta.ui.components.python_editor_widget import PythonEditorWidget
+from nicemeta.visualization import (
+    ChartConfig,
+    ChartFactory,
+    generate_visualization_code,
+    execute_visualization_code,
+    validate_visualization_code,
 )
 
 
@@ -41,6 +53,24 @@ class SQLEditorPage:
         self._editor_expansion = None
         self._loading_container = None
         
+        # Python code editor state
+        self._python_code: str = ""
+        self._python_code_modified: bool = False  # True if user manually edited code
+        self._python_editor: PythonEditorWidget | None = None
+        self._code_preview_container = None
+        
+        # Editor panel state
+        self._editors_visible: bool = True  # Toggle for showing/hiding editors
+        self._editor_panel_container = None
+        self._main_python_editor = None  # Python editor in main view
+        self._editor_toggle_btn = None  # Toggle button reference
+        
+        # Individual editor expansion state
+        self._sql_editor_expanded: bool = True
+        self._python_editor_expanded: bool = True
+        self._sql_editor_container = None
+        self._python_editor_container = None
+        
         # UI references
         self._connection_select = None
         self._results_container = None
@@ -52,6 +82,7 @@ class SQLEditorPage:
         self._sidebar = None
         self._row_count_label = None
         self._timing_label = None
+        self._viz_settings_refresh = None
 
     async def render(self) -> None:
         """Render the SQL editor page with Metabase layout."""
@@ -74,15 +105,9 @@ class SQLEditorPage:
         
         # Main content area
         with ui.column().classes("w-full bg-gray-50").style("min-height: calc(100vh - 120px); padding-bottom: 60px;"):
-            # Editor section (collapsible) - collapsed if loading saved query
-            self._editor_expansion = ui.expansion(
-                "SQL Editor", 
-                icon="code", 
-                value=not self._is_saved_query  # Collapsed if saved query
-            ).classes("w-full bg-white").props("dense")
-            
-            with self._editor_expansion:
-                self._create_editor_section()
+            # Editor panel with "OPEN EDITOR" toggle
+            self._editors_visible = not self._is_saved_query
+            self._create_editor_panel()
             
             # Loading indicator (shown when running query)
             self._loading_container = ui.column().classes("w-full items-center justify-center p-8")
@@ -179,43 +204,268 @@ class SQLEditorPage:
                         icon="save",
                         on_click=self._save_query_dialog,
                     ).props("flat").classes("text-gray-600")
-                    
-                    # Bookmark
-                    ui.button(
-                        icon="bookmark_border",
-                    ).props("flat round").classes("text-gray-600")
-                    
-                    # Share
-                    ui.button(
-                        icon="share",
-                    ).props("flat round").classes("text-gray-600")
-                    
-                    # More options
-                    with ui.button(icon="more_vert").props("flat round").classes("text-gray-600"):
-                        with ui.menu():
-                            ui.menu_item("Duplicate", lambda: ui.notify("Duplicate coming soon"))
-                            ui.menu_item("Move to collection", lambda: ui.notify("Move coming soon"))
-                            ui.separator()
-                            ui.menu_item(
-                                "Delete",
-                                lambda: self._delete_query() if self.query_id else ui.notify("Query not saved yet"),
-                            )
-                    
+
+                    # Delete (only if saved)
+                    if self.query_id:
+                        ui.button(
+                            icon="delete",
+                            on_click=self._delete_query,
+                        ).props("flat round").classes("text-gray-600").tooltip("Delete query")
+
                     # + New button
                     with ui.button("New", icon="add").props("color=primary"):
                         with ui.menu():
-                            ui.menu_item("Question", lambda: ui.navigate.to("/query-builder"))
                             ui.menu_item("SQL Query", lambda: ui.navigate.to("/sql"))
+                            ui.menu_item("Question", lambda: ui.navigate.to("/query-builder"))
                             ui.menu_item("Dashboard", lambda: ui.navigate.to("/dashboards"))
-                    
+
                     # Settings
                     ui.button(
                         icon="settings",
                         on_click=lambda: ui.navigate.to("/admin"),
                     ).props("flat round").classes("text-gray-600")
 
+    def _create_editor_panel(self) -> None:
+        """Create the editor panel with OPEN EDITOR toggle and dual SQL/Python editors."""
+        # Header row with "OPEN EDITOR" toggle
+        with ui.row().classes(
+            "w-full items-center justify-between px-4 py-2 bg-white border-b border-gray-200"
+        ):
+            # Left side - Query info
+            with ui.row().classes("items-center gap-3"):
+                ui.label("This question is written in SQL.").classes(
+                    "text-sm text-gray-500"
+                )
+            
+            # Right side - OPEN EDITOR toggle
+            self._editor_toggle_btn = ui.button(
+                "OPEN EDITOR" if not self._editors_visible else "CLOSE EDITOR",
+                icon="keyboard_arrow_down" if self._editors_visible else "keyboard_arrow_right",
+                on_click=self._toggle_editors,
+            ).props("flat no-caps").classes(
+                "text-blue-600 font-medium"
+            ).style("font-size: 13px;")
+        
+        # Collapsible editor panel container
+        self._editor_panel_container = ui.column().classes("w-full")
+        with self._editor_panel_container:
+            if self._editors_visible:
+                self._render_editor_panels()
+    
+    def _toggle_editors(self) -> None:
+        """Toggle the visibility of the editor panels."""
+        # Save current editor values before toggling to prevent state loss
+        if self.editor:
+            self._initial_sql = self.editor.value
+        if self._main_python_editor:
+            self._python_code = self._main_python_editor.value
+        
+        self._editors_visible = not self._editors_visible
+        
+        # Update button text and icon
+        if self._editor_toggle_btn:
+            if self._editors_visible:
+                self._editor_toggle_btn.text = "CLOSE EDITOR"
+                self._editor_toggle_btn.props(remove="icon=keyboard_arrow_right")
+                self._editor_toggle_btn.props(add="icon=keyboard_arrow_down")
+            else:
+                self._editor_toggle_btn.text = "OPEN EDITOR"
+                self._editor_toggle_btn.props(remove="icon=keyboard_arrow_down")
+                self._editor_toggle_btn.props(add="icon=keyboard_arrow_right")
+        
+        # Re-render editor panels
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                if self._editors_visible:
+                    self._render_editor_panels()
+    
+    def _render_editor_panels(self) -> None:
+        """Render both SQL and Python editor panels."""
+        with ui.column().classes("w-full gap-0"):
+            # SQL Editor Card
+            with ui.card().classes(
+                "w-full rounded-none border-b border-gray-200"
+            ).style("box-shadow: none;"):
+                # SQL Editor header - clickable to expand/collapse
+                with ui.row().classes(
+                    "w-full items-center gap-2 px-4 py-2 bg-gray-50 border-b border-gray-200 cursor-pointer hover:bg-gray-100"
+                ).on("click", self._toggle_sql_editor):
+                    ui.icon(
+                        "expand_more" if self._sql_editor_expanded else "chevron_right",
+                        size="sm"
+                    ).classes("text-gray-400")
+                    ui.icon("code", size="sm").classes("text-blue-500")
+                    ui.label("SQL Query").classes(
+                        "text-sm font-medium text-gray-700"
+                    )
+                
+                # SQL Editor content - collapsible
+                self._sql_editor_container = ui.column().classes("w-full")
+                with self._sql_editor_container:
+                    if self._sql_editor_expanded:
+                        self._create_sql_editor_content()
+            
+            # Python Visualization Editor Card
+            with ui.card().classes(
+                "w-full rounded-none"
+            ).style("box-shadow: none;"):
+                # Python Editor header - clickable to expand/collapse
+                with ui.row().classes(
+                    "w-full items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-200 cursor-pointer hover:bg-gray-100"
+                ).on("click", self._toggle_python_editor):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.icon(
+                            "expand_more" if self._python_editor_expanded else "chevron_right",
+                            size="sm"
+                        ).classes("text-gray-400")
+                        ui.icon("functions", size="sm").classes("text-emerald-600")
+                        ui.label("Python Visualization Code").classes(
+                            "text-sm font-medium text-gray-700"
+                        )
+                    
+                    # Auto-generated badge if not modified
+                    if not self._python_code_modified:
+                        ui.badge("Auto-generated").props("color=grey-6 outline").classes(
+                            "text-xs"
+                        )
+                
+                # Python Editor content - collapsible
+                self._python_editor_container = ui.column().classes("w-full")
+                with self._python_editor_container:
+                    if self._python_editor_expanded:
+                        self._create_python_editor_content()
+    
+    def _toggle_sql_editor(self) -> None:
+        """Toggle SQL editor visibility."""
+        # Save current SQL value before toggling to prevent state loss
+        if self.editor:
+            self._initial_sql = self.editor.value
+        
+        self._sql_editor_expanded = not self._sql_editor_expanded
+        if self._sql_editor_container:
+            self._sql_editor_container.clear()
+            with self._sql_editor_container:
+                if self._sql_editor_expanded:
+                    self._create_sql_editor_content()
+        # Re-render the whole panel to update the icon
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                if self._editors_visible:
+                    self._render_editor_panels()
+    
+    def _toggle_python_editor(self) -> None:
+        """Toggle Python editor visibility."""
+        # Save current Python code before toggling to prevent state loss
+        if self._main_python_editor:
+            self._python_code = self._main_python_editor.value
+        
+        self._python_editor_expanded = not self._python_editor_expanded
+        if self._python_editor_container:
+            self._python_editor_container.clear()
+            with self._python_editor_container:
+                if self._python_editor_expanded:
+                    self._create_python_editor_content()
+        # Re-render the whole panel to update the icon
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                if self._editors_visible:
+                    self._render_editor_panels()
+    
+    def _create_sql_editor_content(self) -> None:
+        """Create the SQL editor content within the panel."""
+        # SQL Editor - use _initial_sql which may have been set by _load_query
+        self.editor = SQLEditorWidget(
+            value=self._initial_sql,
+            on_change=self._on_sql_change,
+            on_run=self._run_query,
+        )
+        self.editor.create()
+    
+    def _on_sql_change(self, value: str) -> None:
+        """Handle SQL code changes - keeps _initial_sql in sync."""
+        self._initial_sql = value
+    
+    def _create_python_editor_content(self) -> None:
+        """Create the Python visualization editor content within the panel."""
+        # Generate code if not already set
+        if not self._python_code:
+            self._python_code = self._generate_viz_code()
+        
+        with ui.column().classes("w-full p-3 bg-white border border-gray-200"):
+            # Action buttons row
+            with ui.row().classes("w-full items-center gap-2 mb-2"):
+                ui.button(
+                    "Run Code",
+                    icon="play_arrow",
+                    on_click=lambda: self._execute_main_python_code(),
+                ).props("color=primary dense").classes("text-xs")
+                
+                ui.button(
+                    "Validate",
+                    icon="check_circle",
+                    on_click=self._validate_python_code,
+                ).props("flat dense").classes("text-xs text-gray-600")
+                
+                ui.button(
+                    "Reset",
+                    icon="refresh",
+                    on_click=self._reset_main_python_code,
+                ).props("flat dense").classes("text-xs text-gray-600")
+                
+                ui.space()
+                
+                ui.label("Ctrl+Enter to run").classes("text-xs text-gray-400")
+            
+            # Python code editor with syntax highlighting
+            self._main_python_editor = ui.codemirror(
+                value=self._python_code,
+                language="python",
+                on_change=lambda e: self._on_main_python_code_change(e.value),
+            ).classes("w-full border border-gray-200 rounded").style(
+                "min-height: 180px;"
+            )
+    
+    def _on_main_python_code_change(self, value: str) -> None:
+        """Handle Python code changes in main editor."""
+        if value != self._python_code:
+            self._python_code = value
+            self._python_code_modified = True
+    
+    def _reset_main_python_code(self) -> None:
+        """Reset Python code to auto-generated version."""
+        self._python_code_modified = False
+        self._python_code = self._generate_viz_code()
+        if self._main_python_editor:
+            self._main_python_editor.set_value(self._python_code)
+        ui.notify("Code reset to auto-generated version", type="info")
+    
+    def _execute_main_python_code(self) -> None:
+        """Execute the Python code from main editor."""
+        if self.result_df is None:
+            ui.notify("No data available. Run the SQL query first.", type="warning")
+            return
+        
+        # Execute the code
+        result = execute_visualization_code(self._python_code, self.result_df)
+        
+        if result.success:
+            ui.notify("Code executed successfully", type="positive")
+            
+            # Store the figure for rendering
+            self._chart_config["_custom_figure"] = result.figure
+            self._chart_config["_use_custom_code"] = True
+            
+            # Switch to visualization view and refresh
+            self._selected_view = "visualization"
+            self._render_results()
+        else:
+            ui.notify(f"Execution error: {result.error}", type="negative")
+
     def _create_editor_section(self) -> None:
-        """Create the SQL editor section."""
+        """Create the SQL editor section (legacy method for compatibility)."""
         with ui.column().classes("w-full p-4 gap-2"):
             # SQL Editor - use _initial_sql which may have been set by _load_query
             self.editor = SQLEditorWidget(
@@ -260,13 +510,34 @@ class SQLEditorPage:
                     self._timing_label = ui.label("")
                     
                     # Export buttons
-                    ui.button(icon="download").props("flat round dense").classes(
+                    ui.button(
+                        icon="download",
+                        on_click=self._download_results,
+                    ).props("flat round dense").classes(
                         "text-gray-400"
-                    ).tooltip("Download results")
-                    ui.button(icon="fullscreen").props("flat round dense").classes(
-                        "text-gray-400"
-                    ).tooltip("Fullscreen")
+                    ).tooltip("Download results as CSV")
 
+    def _download_results(self) -> None:
+        """Download query results as CSV."""
+        if self.result_df is None or self.result_df.empty:
+            ui.notify("No results to download. Run a query first.", type="warning")
+            return
+        
+        try:
+            import io
+            csv_buffer = io.StringIO()
+            self.result_df.to_csv(csv_buffer, index=False)
+            csv_data = csv_buffer.getvalue()
+            
+            # Generate filename
+            filename = f"{self.query_name.replace(' ', '_')}_results.csv"
+            
+            # Trigger download using NiceGUI's download functionality
+            ui.download(csv_data.encode('utf-8'), filename)
+            ui.notify(f"Downloading {filename}", type="positive")
+        except Exception as e:
+            ui.notify(f"Error downloading results: {e}", type="negative")
+    
     def _show_empty_state(self) -> None:
         """Show empty state when no query has been run."""
         with ui.column().classes("w-full h-full items-center justify-center"):
@@ -297,7 +568,7 @@ class SQLEditorPage:
         self.query_name = name
 
     async def _load_query(self, query_id: str) -> None:
-        """Load a saved query from database."""
+        """Load a saved query and visualization settings from database."""
         query = await get_query_by_id(query_id)
         if query:
             self.query_id = query["id"]
@@ -311,6 +582,17 @@ class SQLEditorPage:
                 self._query_name_input.value = query["name"]
             if self._connection_select and self.current_connection:
                 self._connection_select.value = self.current_connection
+            
+            # Load visualization settings if they exist
+            viz = await get_visualization_by_query_id(query_id)
+            if viz:
+                self._selected_chart_type = viz.get("chart_type", "bar")
+                self._chart_config = viz.get("config", {})
+                if viz.get("python_code"):
+                    self._python_code = viz["python_code"]
+                    self._python_code_modified = True
+                # Set view to visualization if we have saved viz settings
+                self._selected_view = "visualization"
 
     def _on_query_selected(self, query: dict) -> None:
         """Handle query selection from sidebar."""
@@ -344,7 +626,7 @@ class SQLEditorPage:
         dialog.open()
 
     async def _do_save_query(self, name: str, folder_id: str, dialog) -> None:
-        """Actually save the query to database."""
+        """Actually save the query and visualization settings to database."""
         if not name:
             ui.notify("Please enter a name", type="warning")
             return
@@ -354,6 +636,7 @@ class SQLEditorPage:
             ui.notify("Please enter a SQL query", type="warning")
             return
         
+        # Save the query
         saved = await save_query(
             name=name,
             sql=sql,
@@ -366,6 +649,15 @@ class SQLEditorPage:
         self.query_name = name
         if self._query_name_input:
             self._query_name_input.value = name
+        
+        # Save visualization settings if configured
+        if self._selected_chart_type:
+            await save_visualization(
+                query_id=self.query_id,
+                chart_type=self._selected_chart_type,
+                config=self._chart_config,
+                python_code=self._python_code if self._python_code_modified else None,
+            )
         
         ui.notify(f"Saved '{name}'", type="positive")
         dialog.close()
@@ -393,7 +685,6 @@ class SQLEditorPage:
         await delete_query(self.query_id)
         ui.notify(f"Deleted '{self.query_name}'", type="info")
         dialog.close()
-        ui.navigate.to("/sql")
         ui.navigate.to("/sql")
 
     def _set_view(self, view: str) -> None:
@@ -430,77 +721,101 @@ class SQLEditorPage:
             "table": {"lib": "NiceGUI", "type": "ui.table"},
         }
         
-        with ui.dialog().props("maximized") as dialog:
-            with ui.card().classes("w-full h-full").style("max-width: 900px; max-height: 650px; margin: auto;"):
+        # Container refs for in-place refresh
+        self._viz_chart_list_container = None
+        self._viz_right_panel_container = None
+
+        with ui.dialog().props("persistent").classes("viz-settings-dialog") as dialog:
+            with ui.card().classes("w-full").style("width: 950px; height: 700px;"):
                 # Header
-                with ui.row().classes("w-full items-center justify-between p-4 border-b"):
-                    ui.label("Visualization Settings").classes("text-xl font-bold")
+                with ui.row().classes("w-full items-center justify-between p-4 border-b bg-white"):
+                    ui.label("Visualization Settings").classes("text-xl font-bold text-gray-800")
                     ui.button(icon="close", on_click=dialog.close).props("flat round")
-                
-                # Main content - side by side
-                with ui.splitter(value=35).classes("w-full").style("height: 500px;") as splitter:
-                    # LEFT SIDEBAR - Chart Types
-                    with splitter.before:
-                        with ui.column().classes("w-full h-full bg-gray-50 p-0"):
-                            ui.label("Chart Type").classes("text-sm font-semibold text-gray-600 p-3 border-b bg-white")
-                            
-                            with ui.scroll_area().classes("w-full").style("height: 450px;"):
-                                with ui.column().classes("p-2 gap-1 w-full"):
-                                    # Group by category
-                                    categories = {}
-                                    for chart in suitable_charts:
-                                        cat = chart.get("category", "Other")
-                                        if cat not in categories:
-                                            categories[cat] = []
-                                        categories[cat].append(chart)
-                                    
-                                    for category, charts in categories.items():
-                                        ui.label(category.upper()).classes(
-                                            "text-xs font-bold text-gray-400 px-2 pt-4 pb-1"
-                                        )
-                                        for chart in charts:
-                                            is_selected = chart["id"] == self._selected_chart_type
-                                            lib_info = CHART_LIBRARIES.get(chart["id"], {})
-                                            
-                                            btn_classes = (
-                                                "w-full justify-start text-left " +
-                                                ("bg-blue-500 text-white" if is_selected else "")
-                                            )
-                                            
-                                            with ui.button(on_click=lambda c=chart["id"]: self._select_chart_type(c, dialog)).props(
-                                                "flat align=left no-caps"
-                                            ).classes(btn_classes):
-                                                with ui.row().classes("items-center gap-3 w-full"):
-                                                    ui.icon(chart["icon"]).classes(
-                                                        "text-white" if is_selected else "text-gray-500"
+
+                # Main content container (refreshable on chart type change)
+                viz_body = ui.column().classes("w-full").style("height: 550px;")
+
+                def _render_viz_body():
+                    viz_body.clear()
+                    with viz_body:
+                        with ui.splitter(value=30).classes("w-full").style("height: 550px;") as splitter:
+                            # LEFT SIDEBAR - Chart Types
+                            with splitter.before:
+                                with ui.column().classes("w-full h-full bg-gray-50 p-0"):
+                                    ui.label("Chart Type").classes("text-sm font-semibold text-gray-600 p-3 border-b bg-white")
+
+                                    with ui.scroll_area().classes("w-full").style("height: 500px;"):
+                                        with ui.column().classes("p-2 gap-1 w-full"):
+                                            categories = {}
+                                            for chart in suitable_charts:
+                                                cat = chart.get("category", "Other")
+                                                if cat not in categories:
+                                                    categories[cat] = []
+                                                categories[cat].append(chart)
+
+                                            for category, charts in categories.items():
+                                                ui.label(category.upper()).classes(
+                                                    "text-xs font-bold text-gray-400 px-2 pt-4 pb-1"
+                                                )
+                                                for chart in charts:
+                                                    is_selected = chart["id"] == self._selected_chart_type
+                                                    lib_info = CHART_LIBRARIES.get(chart["id"], {})
+
+                                                    btn_classes = (
+                                                        "w-full justify-start text-left " +
+                                                        ("bg-blue-500 text-white" if is_selected else "")
                                                     )
-                                                    with ui.column().classes("gap-0"):
-                                                        ui.label(chart["name"]).classes(
-                                                            "text-sm font-medium " + 
-                                                            ("text-white" if is_selected else "text-gray-700")
-                                                        )
-                                                        ui.label(lib_info.get("lib", "")).classes(
-                                                            "text-xs " +
-                                                            ("text-blue-100" if is_selected else "text-gray-400")
-                                                        )
-                    
-                    # RIGHT PANEL - Settings
-                    with splitter.after:
-                        with ui.column().classes("w-full h-full"):
-                            # Settings header
-                            lib_info = CHART_LIBRARIES.get(self._selected_chart_type, {})
-                            with ui.row().classes("w-full items-center justify-between p-3 border-b bg-white"):
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Settings").classes("text-sm font-semibold text-gray-600")
-                                    if lib_info:
-                                        ui.label(f"{lib_info.get('lib', '')} • {lib_info.get('type', '')}").classes(
-                                            "text-xs text-gray-400 font-mono"
+
+                                                    with ui.button(on_click=lambda c=chart["id"]: self._select_chart_type(c, dialog)).props(
+                                                        "flat align=left no-caps"
+                                                    ).classes(btn_classes):
+                                                        with ui.row().classes("items-center gap-3 w-full"):
+                                                            ui.icon(chart["icon"]).classes(
+                                                                "text-white" if is_selected else "text-gray-500"
+                                                            )
+                                                            with ui.column().classes("gap-0"):
+                                                                ui.label(chart["name"]).classes(
+                                                                    "text-sm font-medium " +
+                                                                    ("text-white" if is_selected else "text-gray-700")
+                                                                )
+                                                                ui.label(lib_info.get("lib", "")).classes(
+                                                                    "text-xs " +
+                                                                    ("text-blue-100" if is_selected else "text-gray-400")
+                                                                )
+
+                            # RIGHT PANEL - Settings & Code Tabs
+                            with splitter.after:
+                                with ui.column().classes("w-full h-full bg-white"):
+                                    with ui.tabs().classes("w-full border-b-2 border-blue-200").props(
+                                        "dense inline-label indicator-color=primary active-color=primary"
+                                    ).style("background: #e3f2fd;") as tabs:
+                                        settings_tab = ui.tab("Settings", icon="tune").props("no-caps").style(
+                                            "color: #1565c0; font-weight: 600; font-size: 14px;"
                                         )
-                            
-                            # Settings content
-                            with ui.scroll_area().classes("w-full").style("height: 400px;"):
-                                with ui.column().classes("p-4 gap-4 w-full"):
-                                    self._render_viz_settings_panel(analysis)
+                                        code_tab = ui.tab("Python Code", icon="code").props("no-caps").style(
+                                            "color: #1565c0; font-weight: 600; font-size: 14px;"
+                                        )
+
+                                    with ui.tab_panels(tabs, value=settings_tab).classes("w-full").style("height: 480px;"):
+                                        with ui.tab_panel(settings_tab):
+                                            lib_info = CHART_LIBRARIES.get(self._selected_chart_type, {})
+                                            if lib_info:
+                                                with ui.row().classes("items-center gap-2 p-2 bg-gray-50 rounded mb-2"):
+                                                    ui.icon("info", size="xs").classes("text-gray-400")
+                                                    ui.label(f"{lib_info.get('lib', '')} • {lib_info.get('type', '')}").classes(
+                                                        "text-xs text-gray-500 font-mono"
+                                                    )
+
+                                            with ui.scroll_area().classes("w-full").style("height: 420px;"):
+                                                with ui.column().classes("p-2 gap-4 w-full"):
+                                                    self._render_viz_settings_panel(analysis)
+
+                                        with ui.tab_panel(code_tab):
+                                            self._render_python_code_panel(analysis, dialog)
+
+                # Store refresh callback so _select_chart_type can use it
+                self._viz_settings_refresh = _render_viz_body
+                _render_viz_body()
                 
                 # Footer with actions
                 with ui.row().classes("w-full justify-end gap-2 p-4 border-t bg-gray-50"):
@@ -677,6 +992,161 @@ class SQLEditorPage:
                             on_change=lambda e: self._update_chart_config("show_percent", e.value),
                         )
 
+    def _render_python_code_panel(self, analysis: dict, dialog) -> None:
+        """Render the Python code editor panel."""
+        # Generate code if not modified or empty
+        if not self._python_code_modified or not self._python_code:
+            self._python_code = self._generate_viz_code()
+        
+        with ui.column().classes("w-full h-full gap-2"):
+            # Info banner
+            with ui.row().classes("items-center gap-2 p-2 bg-blue-50 rounded"):
+                ui.icon("lightbulb", size="xs").classes("text-blue-500")
+                ui.label("Edit the Python code below to customize your visualization").classes(
+                    "text-xs text-blue-700"
+                )
+            
+            # Status indicator
+            with ui.row().classes("items-center gap-2"):
+                if self._python_code_modified:
+                    ui.badge("Modified", color="orange").props("outline")
+                    ui.button(
+                        "Reset to Generated",
+                        icon="refresh",
+                        on_click=lambda: self._reset_python_code(dialog),
+                    ).props("flat dense size=sm")
+                else:
+                    ui.badge("Auto-generated", color="green").props("outline")
+            
+            # Code editor
+            self._python_editor = ui.codemirror(
+                value=self._python_code,
+                language="Python",
+                on_change=self._on_python_code_change,
+            ).classes("w-full border rounded").style(
+                "height: 280px; font-size: 12px;"
+            )
+            
+            # Action buttons
+            with ui.row().classes("items-center gap-2"):
+                ui.button(
+                    "Run Code",
+                    icon="play_arrow",
+                    on_click=lambda: self._execute_python_code(dialog),
+                ).props("color=primary dense")
+                
+                ui.button(
+                    "Validate",
+                    icon="check_circle",
+                    on_click=self._validate_python_code,
+                ).props("flat dense")
+                
+                ui.space()
+                
+                ui.label("Ctrl+Enter to run").classes("text-xs text-gray-400")
+            
+            # Preview container for execution results
+            self._code_preview_container = ui.column().classes("w-full")
+
+    def _generate_viz_code(self) -> str:
+        """Generate Python visualization code from current config."""
+        if self.result_df is None:
+            return "# No data available. Run a query first."
+        
+        # Build ChartConfig from current settings
+        config = ChartConfig(
+            chart_type=self._selected_chart_type,
+            title=self._chart_config.get("title", ""),
+            x=self._chart_config.get("x"),
+            y=self._chart_config.get("y"),
+            labels=self._chart_config.get("labels"),
+            values=self._chart_config.get("values"),
+            color=self._chart_config.get("color") or None,
+            x_label=self._chart_config.get("x_label", ""),
+            y_label=self._chart_config.get("y_label", ""),
+            width=900,
+            height=500,
+        )
+        
+        # Build options
+        options = {
+            "show_legend": self._chart_config.get("show_legend", True),
+            "show_values": self._chart_config.get("show_values", False),
+            "color_palette": self._chart_config.get("color_palette", "plotly"),
+            "orientation": self._chart_config.get("orientation", "v"),
+            "bar_mode": self._chart_config.get("bar_mode", "group"),
+            "line_style": self._chart_config.get("line_style", "solid"),
+            "show_markers": self._chart_config.get("show_markers", False),
+            "show_percent": self._chart_config.get("show_percent", True),
+        }
+        
+        return generate_visualization_code(config, self.result_df, options)
+
+    def _on_python_code_change(self, e) -> None:
+        """Handle Python code changes."""
+        new_code = e.value
+        if new_code != self._python_code:
+            self._python_code = new_code
+            self._python_code_modified = True
+
+    def _reset_python_code(self, dialog) -> None:
+        """Reset Python code to auto-generated version."""
+        self._python_code_modified = False
+        self._python_code = self._generate_viz_code()
+        if self._python_editor:
+            self._python_editor.value = self._python_code
+        ui.notify("Code reset to generated version", type="info")
+
+    def _validate_python_code(self) -> None:
+        """Validate the Python code without executing."""
+        errors = validate_visualization_code(self._python_code)
+        if errors:
+            ui.notify(f"Validation errors: {'; '.join(errors)}", type="negative")
+        else:
+            ui.notify("Code is valid", type="positive")
+
+    def _execute_python_code(self, dialog) -> None:
+        """Execute the Python code and show the result."""
+        if self.result_df is None:
+            ui.notify("No data available. Run a query first.", type="warning")
+            return
+        
+        # Clear preview container
+        if self._code_preview_container:
+            self._code_preview_container.clear()
+        
+        # Execute the code
+        result = execute_visualization_code(self._python_code, self.result_df)
+        
+        if result.success:
+            ui.notify("Code executed successfully", type="positive")
+            
+            # Store the figure for rendering (not HTML)
+            self._chart_config["_custom_figure"] = result.figure
+            self._chart_config["_use_custom_code"] = True
+            
+            # Show preview in the dialog
+            if self._code_preview_container and result.figure:
+                with self._code_preview_container:
+                    with ui.card().classes("w-full bg-green-50 border border-green-200 p-2"):
+                        ui.label("Preview").classes("text-xs font-semibold text-green-700")
+                    # Use ui.plotly() instead of ui.html() to avoid script tag issues
+                    ui.plotly(result.figure).classes("w-full").style("max-height: 300px;")
+        else:
+            ui.notify(f"Execution error: {result.error}", type="negative")
+            
+            # Show error in preview container
+            if self._code_preview_container:
+                with self._code_preview_container:
+                    with ui.card().classes("w-full bg-red-50 border border-red-200 p-2"):
+                        with ui.row().classes("items-start gap-2"):
+                            ui.icon("error", size="sm").classes("text-red-500")
+                            with ui.column().classes("gap-1"):
+                                ui.label("Execution Error").classes("text-sm font-semibold text-red-700")
+                                if result.error_line:
+                                    ui.label(f"Line {result.error_line}").classes("text-xs text-red-500")
+                                ui.code(result.error or "Unknown error", language="text").classes("text-xs")
+
     def _preview_chart(self, dialog) -> None:
         """Preview the chart with current settings."""
         self._selected_view = "visualization"
@@ -684,12 +1154,14 @@ class SQLEditorPage:
         ui.notify("Preview updated", type="info")
 
     def _select_chart_type(self, chart_type: str, dialog=None) -> None:
-        """Select a chart type."""
+        """Select a chart type and refresh settings in place (no dialog flicker)."""
         self._selected_chart_type = chart_type
-        # Don't reset all config, just update type-specific defaults
-        if dialog:
+        # Refresh the settings panel container if available, avoiding close/reopen
+        if hasattr(self, '_viz_settings_refresh') and self._viz_settings_refresh:
+            self._viz_settings_refresh()
+        elif dialog:
             dialog.close()
-            self._show_viz_options_dialog()  # Reopen with new selection
+            self._show_viz_options_dialog()
 
     def _render_column_mapping_dialog(self, analysis: dict) -> None:
         """Legacy method - now using _render_viz_settings_panel."""
@@ -834,7 +1306,21 @@ class SQLEditorPage:
             return
         
         try:
-            from nicemeta.visualization import ChartConfig, ChartFactory
+            # Check if we should use custom code figure
+            if self._chart_config.get("_use_custom_code") and self._chart_config.get("_custom_figure"):
+                fig = self._chart_config["_custom_figure"]
+                
+                # Show custom code badge
+                with ui.row().classes("items-center gap-2 mb-2"):
+                    ui.badge("Custom Python Code").props("color=orange outline")
+                    ui.button(
+                        "Reset to Auto",
+                        icon="refresh",
+                        on_click=self._reset_to_auto_chart,
+                    ).props("flat dense size=sm")
+                
+                ui.plotly(fig).classes("w-full")
+                return
             
             # Build config with all options
             config = ChartConfig(
@@ -870,8 +1356,15 @@ class SQLEditorPage:
             if self._selected_chart_type in ["pie", "donut"]:
                 options["show_percent"] = self._chart_config.get("show_percent", True)
             
-            # Render chart with options
-            html = ChartFactory.render_to_html(self.result_df, config, options)
+            # Render chart figure directly (not HTML)
+            fig = ChartFactory.render_figure(self.result_df, config, options)
+            
+            if fig is None:
+                # Fallback to HTML rendering if figure method not available
+                html = ChartFactory.render_to_html(self.result_df, config, options)
+                # Use add_body_html for scripts
+                ui.add_body_html(html)
+                return
             
             # Show library info badge
             CHART_LIBRARIES = {
@@ -891,7 +1384,7 @@ class SQLEditorPage:
                 with ui.row().classes("items-center gap-2 mb-2"):
                     ui.badge(lib_info).props("color=grey-7 outline")
             
-            ui.html(html, sanitize=False).classes("w-full")
+            ui.plotly(fig).classes("w-full")
             
         except Exception as e:
             import traceback
@@ -900,6 +1393,15 @@ class SQLEditorPage:
                 ui.label(str(e)).classes("text-red-600 text-sm mt-1")
                 with ui.expansion("Details").classes("mt-2"):
                     ui.code(traceback.format_exc()).classes("text-xs")
+
+    def _reset_to_auto_chart(self) -> None:
+        """Reset chart to use auto-generated visualization instead of custom code."""
+        self._chart_config["_use_custom_code"] = False
+        self._chart_config["_custom_figure"] = None
+        self._python_code_modified = False
+        self._python_code = ""
+        self._render_results()
+        ui.notify("Reset to auto-generated chart", type="info")
 
     async def _run_query(self, sql: str) -> None:
         """Execute the SQL query."""
@@ -951,6 +1453,13 @@ class SQLEditorPage:
                 self.result_df = None
             else:
                 self.result_df = result.to_dataframe()
+                
+                # Regenerate Python visualization code with new data
+                if not self._python_code_modified:
+                    self._python_code = self._generate_viz_code()
+                    # Update main Python editor if visible
+                    if self._main_python_editor:
+                        self._main_python_editor.set_value(self._python_code)
                 
                 # Update bottom bar stats
                 if self._row_count_label:

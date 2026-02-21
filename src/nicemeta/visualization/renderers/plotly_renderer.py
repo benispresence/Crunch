@@ -88,6 +88,50 @@ class PlotlyRenderer(ChartRenderer):
             return result.html or ""
         return f"<div class='error'>Error: {result.error}</div>"
 
+    def render_figure(
+        self, data: pd.DataFrame, config: ChartConfig, options: dict | None = None
+    ) -> go.Figure | None:
+        """Render and return the Plotly figure object directly.
+        
+        This is useful for NiceGUI's ui.plotly() component.
+        
+        Args:
+            data: DataFrame containing chart data
+            config: Chart configuration
+            options: Optional additional chart options
+            
+        Returns:
+            Plotly Figure object or None on error
+        """
+        # Merge options into config
+        if options:
+            for key, value in options.items():
+                config.options[key] = value
+        
+        # Auto-detect columns if not specified
+        if data is not None and len(data.columns) > 0:
+            columns = list(data.columns)
+            numeric_cols = data.select_dtypes(include=['number']).columns.tolist()
+            non_numeric_cols = [c for c in columns if c not in numeric_cols]
+            
+            # Set defaults for x/y if not specified
+            if not config.x:
+                config.x = non_numeric_cols[0] if non_numeric_cols else columns[0]
+            if not config.y:
+                config.y = numeric_cols[0] if numeric_cols else (columns[1] if len(columns) > 1 else columns[0])
+            # Set defaults for pie/donut charts
+            if not config.labels:
+                config.labels = non_numeric_cols[0] if non_numeric_cols else columns[0]
+            if not config.values:
+                config.values = numeric_cols[0] if numeric_cols else (columns[1] if len(columns) > 1 else columns[0])
+        
+        try:
+            fig = self._create_figure(data, config)
+            self._apply_layout(fig, config)
+            return fig
+        except Exception:
+            return None
+
     def _create_figure(self, data: pd.DataFrame, config: ChartConfig) -> go.Figure:
         """Create the appropriate Plotly figure based on chart type."""
         chart_type = config.chart_type
