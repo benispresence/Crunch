@@ -3,8 +3,11 @@ Metabase-style sidebar and header components.
 """
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 from nicegui import app, ui
 
@@ -30,6 +33,7 @@ from nicemeta.services.dashboard_service import (
     create_dashboard as db_create_dashboard,
     delete_dashboard as db_delete_dashboard,
 )
+from nicemeta.services.git_service import get_git_service
 
 # Cache for queries (refreshed on demand)
 _cached_queries: list[dict] = []
@@ -136,7 +140,7 @@ async def refresh_cache() -> None:
         _cached_dashboards = await db_get_dashboards()
         _cache_initialized = True
     except Exception as e:
-        print(f"Error refreshing cache: {e}")
+        logger.exception("Error refreshing cache")
 
 
 def get_saved_queries() -> list[dict]:
@@ -164,13 +168,17 @@ async def save_query(
         folder_id=folder_id, query_id=query_id,
     )
     await refresh_cache()
+    asyncio.ensure_future(get_git_service().sync_query(result))
     return result
 
 
 async def delete_query(query_id: str) -> bool:
     global _cached_queries
+    item = await db_get_query_by_id(query_id)
     result = await db_delete_query(query_id)
     await refresh_cache()
+    if result and item:
+        asyncio.ensure_future(get_git_service().sync_query(item, deleted=True))
     return result
 
 
@@ -205,12 +213,16 @@ async def get_dashboard_by_id(dashboard_id: str) -> dict | None:
 async def create_dashboard(name: str, description: str | None = None) -> dict:
     result = await db_create_dashboard(name=name, description=description)
     await refresh_cache()
+    asyncio.ensure_future(get_git_service().sync_dashboard(result))
     return result
 
 
 async def delete_dashboard(dashboard_id: str) -> bool:
+    item = await db_get_dashboard_by_id(dashboard_id)
     result = await db_delete_dashboard(dashboard_id)
     await refresh_cache()
+    if result and item:
+        asyncio.ensure_future(get_git_service().sync_dashboard(item, deleted=True))
     return result
 
 
@@ -408,11 +420,13 @@ class MetabaseHeader:
         title: str = "",
         show_back: bool = False,
         on_save: Callable | None = None,
+        agent=None,  # AgentPanel | None  (avoid circular import with type hint)
     ):
         self.sidebar = sidebar
         self.title = title
         self.show_back = show_back
         self.on_save = on_save
+        self.agent = agent
         self._title_label = None
 
     def create(self) -> ui.header:
@@ -456,6 +470,13 @@ class MetabaseHeader:
                             ui.menu_item("Question", lambda: ui.navigate.to("/query-builder"))
                             ui.menu_item("Dashboard", lambda: ui.navigate.to("/dashboards"))
 
+                    # AI Agent toggle button
+                    _agent = self.agent
+                    ui.button(
+                        icon="smart_toy",
+                        on_click=lambda: _agent.toggle() if _agent else None,
+                    ).props("flat round").classes("text-gray-600").tooltip("AI Agent")
+
                     create_theme_toggle()
 
                     ui.button(
@@ -482,15 +503,23 @@ def create_metabase_layout(
     title: str = "",
     show_back: bool = False,
     on_query_select: Callable[[dict], None] | None = None,
-) -> tuple[MetabaseSidebar, MetabaseHeader]:
-    """Create the full Metabase-style layout with sidebar and header."""
+) -> tuple:
+    """
+    Create the full Metabase-style layout: sidebar + header + agent panel.
+    Returns (MetabaseSidebar, MetabaseHeader, AgentPanel).
+    """
+    from nicemeta.ui.components.agent_panel import AgentPanel
+
     sidebar = MetabaseSidebar(on_query_select=on_query_select)
     sidebar.create()
 
-    header = MetabaseHeader(sidebar=sidebar, title=title, show_back=show_back)
+    agent = AgentPanel()
+    agent.create()
+
+    header = MetabaseHeader(sidebar=sidebar, title=title, show_back=show_back, agent=agent)
     header.create()
 
-    return sidebar, header
+    return sidebar, header, agent
 
 
 # Backward-compat stubs

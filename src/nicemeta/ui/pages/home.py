@@ -4,6 +4,7 @@ Home page for NiceMeta - Metabase-style landing page.
 
 from nicegui import ui
 
+from nicemeta.ui.components.agent_panel import AgentPanel
 from nicemeta.ui.components.sidebar import (
     MetabaseHeader,
     MetabaseSidebar,
@@ -23,8 +24,11 @@ async def home_page() -> None:
     # Create Metabase-style layout
     sidebar = MetabaseSidebar()
     sidebar.create()
-    
-    header = MetabaseHeader(sidebar=sidebar, title="")
+
+    agent = AgentPanel()
+    agent.create()
+
+    header = MetabaseHeader(sidebar=sidebar, title="", agent=agent)
     header.create()
     
     with ui.column().classes("w-full min-h-screen bg-gray-50 p-8"):

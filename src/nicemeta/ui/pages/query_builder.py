@@ -5,6 +5,7 @@ Query Builder page for NiceMeta.
 import pandas as pd
 from nicegui import ui
 
+from nicemeta.ui.components.agent_panel import AgentPanel
 from nicemeta.ui.components.sidebar import (
     MetabaseHeader,
     MetabaseSidebar,
@@ -37,7 +38,10 @@ class QueryBuilderPage:
         sidebar = MetabaseSidebar()
         sidebar.create()
 
-        header = MetabaseHeader(sidebar=sidebar, title="New Question", show_back=True)
+        agent = AgentPanel()
+        agent.create()
+
+        header = MetabaseHeader(sidebar=sidebar, title="New Question", show_back=True, agent=agent)
         header.create()
 
         # Build connection options
