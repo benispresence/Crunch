@@ -10,11 +10,20 @@ Uses httpx (already a project dependency) – no extra packages required.
 
 from __future__ import annotations
 
-import html
 import json
+import logging
+import re
 from typing import Any, Callable
 
 import httpx
+
+logger = logging.getLogger(__name__)
+
+# SQL statements that are NOT allowed via the AI agent
+_UNSAFE_SQL_PATTERN = re.compile(
+    r"^\s*(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|MERGE)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 # ── Available models ──────────────────────────────────────────────────────────
@@ -421,8 +430,18 @@ class AgentService:
                 # Process tool calls
                 for tc in msg["tool_calls"]:
                     name = tc["function"]["name"]
-                    inputs = json.loads(tc["function"]["arguments"] or "{}")
                     tc_id = tc["id"]
+                    try:
+                        inputs = json.loads(tc["function"]["arguments"] or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        oai_messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc_id,
+                                "content": json.dumps({"error": "Failed to parse tool arguments"}),
+                            }
+                        )
+                        continue
 
                     if on_tool_start:
                         on_tool_start(name, inputs)
@@ -478,9 +497,12 @@ class AgentService:
             elif name == "list_dashboards":
                 return await self._tool_list_dashboards()
             elif name == "navigate_to":
-                action = {"type": "navigation", "path": inputs["path"]}
+                path = inputs["path"]
+                if not path.startswith("/") or "//" in path:
+                    return {"error": "Invalid navigation path"}
+                action = {"type": "navigation", "path": path}
                 ui_actions.append(action)
-                return {"status": "navigating", "path": inputs["path"]}
+                return {"status": "navigating", "path": path}
             elif name == "git_status":
                 return await self._tool_git_status()
             elif name == "git_sync_all":
@@ -492,9 +514,33 @@ class AgentService:
             else:
                 return {"error": f"Unknown tool: {name}"}
         except Exception as exc:
-            return {"error": str(exc)}
+            logger.exception("Tool execution error in '%s'", name)
+            return {"error": "An internal error occurred while executing the tool."}
 
     # ── Tool implementations ──────────────────────────────────────────────────
+
+    async def _get_adapter(self, connection_id: str):
+        """Look up a connection and return (adapter, None) or (None, error_dict)."""
+        from nicemeta.services.connection_service import get_connection_by_id
+        from nicemeta.connections.manager import ConnectionManager
+        from nicemeta.config.connections import ConnectionConfig
+
+        conn = await get_connection_by_id(connection_id)
+        if not conn:
+            return None, {"error": f"Connection '{connection_id}' not found"}
+
+        config = ConnectionConfig(
+            name=conn["name"],
+            type=conn["db_type"],
+            host=conn.get("host", "localhost"),
+            port=conn.get("port"),
+            database=conn.get("database", ""),
+            user=conn.get("user", conn.get("username", "")),
+            password=conn.get("password", ""),
+        )
+        manager = ConnectionManager()
+        adapter = manager.create_adapter(config)
+        return adapter, None
 
     async def _tool_list_connections(self) -> dict:
         from nicemeta.services.connection_service import get_connections
@@ -508,25 +554,9 @@ class AgentService:
         }
 
     async def _tool_get_schema(self, connection_id: str) -> dict:
-        from nicemeta.services.connection_service import get_connection_by_id
-        from nicemeta.connections.manager import ConnectionManager
-        from nicemeta.config.connections import ConnectionConfig
-
-        conn = await get_connection_by_id(connection_id)
-        if not conn:
-            return {"error": f"Connection '{connection_id}' not found"}
-
-        config = ConnectionConfig(
-            name=conn["name"],
-            type=conn["db_type"],
-            host=conn.get("host", "localhost"),
-            port=conn.get("port"),
-            database=conn.get("database", ""),
-            user=conn.get("user", conn.get("username", "")),
-            password=conn.get("password", ""),
-        )
-        manager = ConnectionManager()
-        adapter = manager.create_adapter(config)
+        adapter, err = await self._get_adapter(connection_id)
+        if err:
+            return err
 
         try:
             tables = await adapter.get_tables()
@@ -545,33 +575,22 @@ class AgentService:
                     }
                     for c in cols
                 ]
-            return {"connection": conn["name"], "schema": schema}
+            return {"connection": connection_id, "schema": schema}
         finally:
             await adapter.close()
 
     async def _tool_execute_sql(
         self, connection_id: str, sql: str, limit: int = 50
     ) -> dict:
-        from nicemeta.services.connection_service import get_connection_by_id
-        from nicemeta.connections.manager import ConnectionManager
-        from nicemeta.config.connections import ConnectionConfig
-
         limit = min(limit, 500)
-        conn = await get_connection_by_id(connection_id)
-        if not conn:
-            return {"error": f"Connection '{connection_id}' not found"}
 
-        config = ConnectionConfig(
-            name=conn["name"],
-            type=conn["db_type"],
-            host=conn.get("host", "localhost"),
-            port=conn.get("port"),
-            database=conn.get("database", ""),
-            user=conn.get("user", conn.get("username", "")),
-            password=conn.get("password", ""),
-        )
-        manager = ConnectionManager()
-        adapter = manager.create_adapter(config)
+        # Restrict to read-only queries
+        if _UNSAFE_SQL_PATTERN.search(sql):
+            return {"error": "Only SELECT queries are allowed via the AI agent."}
+
+        adapter, err = await self._get_adapter(connection_id)
+        if err:
+            return err
 
         try:
             result = await adapter.execute_query(sql, limit=limit)

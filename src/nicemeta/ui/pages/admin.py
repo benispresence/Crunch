@@ -248,7 +248,7 @@ class AdminPage:
                     with ui.column().classes("gap-1"):
                         ui.label("AI Agent Setup").classes("font-semibold text-blue-800")
                         ui.label(
-                            "Keys are stored encrypted in your user profile (app.storage.user). "
+                            "Keys are stored in your user profile on the server. "
                             "They never leave your server and are only used for direct API calls "
                             "to Anthropic or OpenAI."
                         ).classes("text-sm text-blue-700")
@@ -391,9 +391,14 @@ class AdminPage:
                     if not new_path:
                         ui.notify("Path cannot be empty", type="warning")
                         return
-                    storage["git_workspace_path"] = new_path
-                    git = reset_git_service(new_path)
-                    ui.notify(f"Workspace set to: {new_path}", type="positive")
+                    from pathlib import Path
+                    resolved = Path(new_path).resolve()
+                    if ".." in Path(new_path).parts:
+                        ui.notify("Path must not contain '..'", type="negative")
+                        return
+                    storage["git_workspace_path"] = str(resolved)
+                    git = reset_git_service(str(resolved))
+                    ui.notify(f"Workspace set to: {resolved}", type="positive")
                     _refresh_status()
 
                 ui.button(
@@ -540,9 +545,14 @@ class AdminPage:
                 ).style("min-height: 2rem")
 
                 async def _do_clone():
+                    from nicemeta.services.git_service import _validate_git_url
                     url = clone_url_input.value.strip()
                     if not url:
                         ui.notify("URL is required", type="warning")
+                        return
+                    url_err = _validate_git_url(url)
+                    if url_err:
+                        ui.notify(f"Invalid URL: {url_err}", type="negative")
                         return
                     clone_output.text = f"Cloning {url}…"
                     ok, msg = await git.clone_and_import(url)

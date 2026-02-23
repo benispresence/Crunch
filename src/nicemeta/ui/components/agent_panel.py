@@ -257,14 +257,10 @@ class AgentPanel:
         with self._messages_container:
             if role == "user":
                 with ui.row().classes("justify-end w-full"):
-                    ui.element("div").classes(
-                        "bg-blue-500 text-white rounded-2xl rounded-tr-sm px-4 py-2 max-w-xs text-sm"
-                    ).style("white-space:pre-wrap;word-break:break-word").tooltip("")
-                    # Use a label for user messages
-                ui.markdown(f"> {content}").classes(
-                    "bg-blue-500 text-white rounded-2xl rounded-tr-sm "
-                    "px-4 py-2 max-w-xs text-sm ml-auto"
-                ).style("word-break:break-word;")
+                    ui.markdown(f"> {content}").classes(
+                        "bg-blue-500 text-white rounded-2xl rounded-tr-sm "
+                        "px-4 py-2 max-w-xs text-sm ml-auto"
+                    ).style("word-break:break-word;")
             elif role == "tool_status":
                 # Tool call status chip
                 with ui.row().classes("items-center gap-2"):
@@ -348,9 +344,13 @@ class AgentPanel:
 
     def _maybe_send(self, e) -> None:
         """Send on Enter (without Shift)."""
-        if e.args.get("key") == "Enter" and not e.args.get("shiftKey"):
-            ui.run_javascript("event.preventDefault()")
-            self._send()
+        try:
+            args = e.args or {}
+            if args.get("key") == "Enter" and not args.get("shiftKey"):
+                ui.run_javascript("event.preventDefault()")
+                self._send()
+        except (AttributeError, TypeError):
+            pass
 
     def _send(self) -> None:
         if not self._input:
@@ -385,10 +385,9 @@ class AgentPanel:
         user_msg = {"role": "user", "content": user_text}
         history = self._load_history()
 
-        # Clear empty state label
-        if self._messages_container:
-            # Remove "Ask me anything" placeholder if present
-            pass
+        # Clear empty state placeholder on first message
+        if self._messages_container and not history:
+            self._messages_container.clear()
         self._render_message_bubble(user_msg, save=False)
         history.append(user_msg)
 
@@ -428,9 +427,11 @@ class AgentPanel:
             self._render_message_bubble(assistant_msg, save=False)
 
         except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Agent chat error")
             err_msg = {
                 "role": "assistant",
-                "content": f"**Error:** {exc}",
+                "content": "**Error:** Something went wrong. Please check your API key and try again.",
                 "ui_actions": [],
             }
             self._render_message_bubble(err_msg, save=False)

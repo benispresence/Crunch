@@ -31,11 +31,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
+
+_ALLOWED_GIT_SCHEMES = {"https", "http", "git", "ssh"}
+_GIT_OPERATION_LOCK = asyncio.Lock()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +99,31 @@ def _slugify(name: str) -> str:
 
 def _safe_json(data: dict) -> str:
     return json.dumps(data, indent=2, default=str) + "\n"
+
+
+def _validate_git_url(url: str) -> str | None:
+    """Return an error message if the URL is unsafe, or None if OK."""
+    if not url or not url.strip():
+        return "URL cannot be empty"
+    url = url.strip()
+    # Reject ext:: transport (arbitrary command execution)
+    if url.startswith("ext::"):
+        return "ext:: URLs are not allowed"
+    # Allow git@host:repo SSH shorthand
+    if re.match(r"^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+:", url):
+        return None
+    # Parse and validate scheme
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.scheme not in _ALLOWED_GIT_SCHEMES:
+        return f"URL scheme '{parsed.scheme}' is not allowed (use https, ssh, or git)"
+    if not parsed.scheme and not url.startswith("/"):
+        return "Invalid URL format"
+    return None
+
+
+def _sanitize_id(value: str) -> str:
+    """Sanitize an ID for use in file paths — alphanumeric, hyphens, underscores only."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "", value) or "unknown"
 
 
 # ── GitService ────────────────────────────────────────────────────────────────
@@ -189,7 +221,7 @@ class GitService:
         return written
 
     def _write_visualization(self, viz: dict) -> list[Path]:
-        vid = viz.get("id", "unknown")
+        vid = _sanitize_id(viz.get("id", "unknown"))
         written: list[Path] = []
 
         json_path = self.visualizations_dir / f"{vid}.json"
@@ -204,7 +236,7 @@ class GitService:
         written.append(json_path)
 
         if code := viz.get("python_code"):
-            py_path = self.visualizations_dir / f"{vid}.py"
+            py_path = self.visualizations_dir / f"{_sanitize_id(vid)}.py"
             py_path.write_text(code.rstrip() + "\n")
             written.append(py_path)
 
@@ -266,6 +298,7 @@ class GitService:
             cwd=self.workspace,
             capture_output=True,
             text=True,
+            timeout=30,
         )
 
     async def _git_async(self, *args: str) -> tuple[int, str, str]:
@@ -275,10 +308,15 @@ class GitService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await proc.communicate()
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return 1, "", "git operation timed out"
         return proc.returncode, out.decode(), err.decode()
 
     def _commit(self, message: str) -> bool:
+        # Note: callers should hold _GIT_OPERATION_LOCK for async contexts
         self._git("add", ".")
         if not self._git("status", "--porcelain").stdout.strip():
             return False  # nothing to commit
@@ -289,45 +327,49 @@ class GitService:
     async def sync_query(self, query: dict, deleted: bool = False) -> None:
         """Write (or remove) a query's files and commit. Safe to fire-and-forget."""
         try:
-            self.ensure_initialized()
-            if deleted:
-                self._delete_files_by_id(self.queries_dir, query.get("id", ""))
-                msg = f"remove query: {query.get('name', 'unknown')}"
-            else:
-                self._write_query(query)
-                msg = f"save query: {query.get('name', 'unknown')}"
-            self._commit(msg)
+            async with _GIT_OPERATION_LOCK:
+                self.ensure_initialized()
+                if deleted:
+                    self._delete_files_by_id(self.queries_dir, query.get("id", ""))
+                    msg = f"remove query: {query.get('name', 'unknown')}"
+                else:
+                    self._write_query(query)
+                    msg = f"save query: {query.get('name', 'unknown')}"
+                self._commit(msg)
         except Exception as exc:
-            print(f"[git] sync_query error: {exc}")
+            logger.exception("sync_query error")
 
     async def sync_visualization(self, viz: dict) -> None:
         try:
-            self.ensure_initialized()
-            self._write_visualization(viz)
-            self._commit(f"save visualization: {viz.get('name', viz.get('id', ''))}")
+            async with _GIT_OPERATION_LOCK:
+                self.ensure_initialized()
+                self._write_visualization(viz)
+                self._commit(f"save visualization: {viz.get('name', viz.get('id', ''))}")
         except Exception as exc:
-            print(f"[git] sync_visualization error: {exc}")
+            logger.exception("sync_visualization error")
 
     async def sync_dashboard(self, dashboard: dict, deleted: bool = False) -> None:
         try:
-            self.ensure_initialized()
-            if deleted:
-                self._delete_files_by_id(self.dashboards_dir, dashboard.get("id", ""))
-                msg = f"remove dashboard: {dashboard.get('name', 'unknown')}"
-            else:
-                self._write_dashboard(dashboard)
-                msg = f"save dashboard: {dashboard.get('name', 'unknown')}"
-            self._commit(msg)
+            async with _GIT_OPERATION_LOCK:
+                self.ensure_initialized()
+                if deleted:
+                    self._delete_files_by_id(self.dashboards_dir, dashboard.get("id", ""))
+                    msg = f"remove dashboard: {dashboard.get('name', 'unknown')}"
+                else:
+                    self._write_dashboard(dashboard)
+                    msg = f"save dashboard: {dashboard.get('name', 'unknown')}"
+                self._commit(msg)
         except Exception as exc:
-            print(f"[git] sync_dashboard error: {exc}")
+            logger.exception("sync_dashboard error")
 
     async def sync_connection(self, conn: dict) -> None:
         try:
-            self.ensure_initialized()
-            self._write_connection(conn)
-            self._commit(f"save connection: {conn.get('name', 'unknown')}")
+            async with _GIT_OPERATION_LOCK:
+                self.ensure_initialized()
+                self._write_connection(conn)
+                self._commit(f"save connection: {conn.get('name', 'unknown')}")
         except Exception as exc:
-            print(f"[git] sync_connection error: {exc}")
+            logger.exception("sync_connection error")
 
     async def sync_all(self) -> str:
         """Full export: write every DB object to files and commit."""
@@ -365,6 +407,9 @@ class GitService:
     # ── Remote operations ─────────────────────────────────────────────────────
 
     async def set_remote(self, url: str) -> tuple[bool, str]:
+        err = _validate_git_url(url)
+        if err:
+            return False, err
         self.ensure_initialized()
         rc, _, _ = await self._git_async("remote", "get-url", "origin")
         if rc == 0:
@@ -462,6 +507,10 @@ class GitService:
 
     async def clone_and_import(self, url: str) -> tuple[bool, str]:
         """Clone a remote repo, copy files into workspace, import to DB."""
+        err = _validate_git_url(url)
+        if err:
+            return False, err
+
         import shutil
         import tempfile
 
@@ -499,10 +548,12 @@ class GitService:
     def get_log(self, limit: int = 30) -> list[dict]:
         if not self.is_initialized():
             return []
-        r = self._git("log", f"-{limit}", "--pretty=format:%h|%s|%an|%ar")
+        limit = max(1, limit)
+        sep = "\x1f"  # unit separator — safe against commit message content
+        r = self._git("log", f"-{limit}", f"--pretty=format:%h{sep}%s{sep}%an{sep}%ar")
         commits = []
         for line in r.stdout.strip().splitlines():
-            parts = line.split("|", 3)
+            parts = line.split(sep, 3)
             if len(parts) >= 4:
                 commits.append({
                     "hash": parts[0],

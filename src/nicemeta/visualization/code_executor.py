@@ -4,11 +4,16 @@ Safe code executor for visualization code.
 Executes user-provided Python code in a restricted namespace.
 """
 
+import signal
 import traceback
 from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
+
+
+class _ExecutionTimeout(Exception):
+    pass
 
 
 @dataclass
@@ -60,11 +65,37 @@ class CodeExecutor:
             ExecutionResult with figure or error
         """
         try:
+            # Validate before execution
+            errors = cls.validate_code(code)
+            if errors:
+                return ExecutionResult(
+                    success=False,
+                    error="; ".join(errors),
+                )
+
             # Build the restricted namespace
             namespace = cls._build_namespace(df)
-            
-            # Execute the code
-            exec(code, namespace)
+
+            # Execute with timeout enforcement
+            def _timeout_handler(signum, frame):
+                raise _ExecutionTimeout("Code execution timed out")
+
+            old_handler = None
+            try:
+                old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+                signal.alarm(int(timeout))
+            except (ValueError, OSError, AttributeError):
+                pass  # SIGALRM not available (Windows / non-main thread)
+
+            try:
+                exec(code, namespace)
+            finally:
+                try:
+                    signal.alarm(0)
+                    if old_handler is not None:
+                        signal.signal(signal.SIGALRM, old_handler)
+                except (ValueError, OSError, AttributeError):
+                    pass
             
             # Look for 'fig' in the namespace (the expected output)
             fig = namespace.get("fig")
@@ -94,6 +125,11 @@ class CodeExecutor:
                 html=html,
             )
             
+        except _ExecutionTimeout:
+            return ExecutionResult(
+                success=False,
+                error=f"Code execution timed out after {timeout} seconds",
+            )
         except SyntaxError as e:
             return ExecutionResult(
                 success=False,
@@ -128,26 +164,29 @@ class CodeExecutor:
         from plotly.subplots import make_subplots
         
         namespace = {
+            # Block access to __builtins__ to prevent sandbox escape
+            "__builtins__": {},
+
             # Data
             "df": df,
-            
+
             # Pandas
             "pd": pd_module,
             "DataFrame": pd_module.DataFrame,
             "Series": pd_module.Series,
-            
+
             # NumPy
             "np": np,
-            
+
             # Plotly
             "px": px,
             "go": go,
             "make_subplots": make_subplots,
-            
+
             # Standard library
             "datetime": datetime,
             "math": math,
-            
+
             # Built-in functions (safe subset)
             "len": len,
             "range": range,
@@ -170,9 +209,14 @@ class CodeExecutor:
             "zip": zip,
             "map": map,
             "filter": filter,
-            "print": print,  # Allow for debugging
+            "isinstance": isinstance,
+            "hasattr": hasattr,
+            "print": print,
+            "True": True,
+            "False": False,
+            "None": None,
         }
-        
+
         return namespace
 
     @classmethod
@@ -239,22 +283,40 @@ class CodeExecutor:
             List of validation errors (empty if valid)
         """
         errors = []
-        
-        # Check for dangerous imports
-        dangerous_imports = [
+
+        # Check for dangerous patterns
+        import re
+
+        dangerous_words = [
             "os", "sys", "subprocess", "shutil",
             "socket", "urllib", "requests", "http",
             "__import__", "exec", "eval", "compile",
             "open", "file", "input",
+            "getattr", "setattr", "delattr",
+            "globals", "locals", "vars",
+            "breakpoint", "exit", "quit",
         ]
-        
-        for danger in dangerous_imports:
+
+        for danger in dangerous_words:
             if danger in code:
-                # More precise check to avoid false positives
-                import re
                 pattern = rf'\b{re.escape(danger)}\b'
                 if re.search(pattern, code):
                     errors.append(f"Unsafe operation detected: '{danger}' is not allowed")
+
+        # Block sandbox-escape patterns (attribute access tricks)
+        sandbox_patterns = [
+            r"__builtins__",
+            r"__subclasses__",
+            r"__class__",
+            r"__bases__",
+            r"__mro__",
+            r"__globals__",
+            r"__code__",
+            r"__import__",
+        ]
+        for pat in sandbox_patterns:
+            if re.search(pat, code):
+                errors.append(f"Unsafe pattern detected: '{pat}' is not allowed")
         
         # Check for syntax errors
         try:

@@ -3,8 +3,11 @@ Metabase-style sidebar and header components.
 """
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 from nicegui import app, ui
 
@@ -137,7 +140,7 @@ async def refresh_cache() -> None:
         _cached_dashboards = await db_get_dashboards()
         _cache_initialized = True
     except Exception as e:
-        print(f"Error refreshing cache: {e}")
+        logger.exception("Error refreshing cache")
 
 
 def get_saved_queries() -> list[dict]:

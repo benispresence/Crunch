@@ -577,8 +577,10 @@ class SQLEditorPage:
             self.result_df.to_csv(csv_buffer, index=False)
             csv_data = csv_buffer.getvalue()
             
-            # Generate filename
-            filename = f"{self.query_name.replace(' ', '_')}_results.csv"
+            # Generate safe filename
+            import re as _re
+            safe_name = _re.sub(r"[^a-zA-Z0-9_-]", "_", self.query_name)[:64]
+            filename = f"{safe_name}_results.csv"
             
             # Trigger download using NiceGUI's download functionality
             ui.download(csv_data.encode('utf-8'), filename)
@@ -1534,10 +1536,6 @@ class SQLEditorPage:
             # Check for numeric types (including int64, float64, Int64, etc.)
             if pd.api.types.is_numeric_dtype(dtype):
                 analysis["numeric_cols"].append(col)
-            elif pd.api.types.is_integer_dtype(dtype):
-                analysis["numeric_cols"].append(col)
-            elif dtype in [np.int64, np.int32, np.float64, np.float32, 'int64', 'int32', 'float64', 'float32']:
-                analysis["numeric_cols"].append(col)
             elif pd.api.types.is_datetime64_any_dtype(dtype):
                 analysis["datetime_cols"].append(col)
             else:
@@ -1559,9 +1557,9 @@ class SQLEditorPage:
                         pd.to_datetime(df[col].dropna().iloc[0])
                         analysis["datetime_cols"].append(col)
                         continue
-                except:
+                except Exception:
                     pass
-                
+
                 analysis["categorical_cols"].append(col)
         
         return analysis
@@ -1930,7 +1928,8 @@ class SQLEditorPage:
         # Show loading state
         if self._loading_container:
             self._loading_container.set_visibility(True)
-        self._results_container.clear()
+        if self._results_container:
+            self._results_container.clear()
         
         ui.notify(f"Executing query...", type="info")
         
