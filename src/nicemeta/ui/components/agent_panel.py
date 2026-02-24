@@ -128,23 +128,23 @@ class AgentPanel:
     def _build_ui(self) -> None:
         # ── Header bar ──────────────────────────────────────────────────────
         with ui.row().classes(
-            "items-center justify-between px-4 py-3 border-b border-gray-200"
+            "items-center justify-between px-4 py-3 border-b border"
         ):
             with ui.row().classes("items-center gap-2"):
-                ui.icon("smart_toy", size="sm").classes("text-blue-500")
-                ui.label("AI Agent").classes("font-semibold text-gray-800")
+                ui.icon("smart_toy", size="sm").classes("text-primary")
+                ui.label("AI Agent").classes("font-semibold text-weight-medium")
             with ui.row().classes("gap-1"):
                 ui.button(
                     icon="delete_sweep",
                     on_click=self._clear_history,
-                ).props("flat round dense").classes("text-gray-400").tooltip("Clear conversation")
+                ).props("flat round dense").classes("text-grey-5").tooltip("Clear conversation")
                 ui.button(
                     icon="close",
                     on_click=lambda: self._drawer.toggle(),
-                ).props("flat round dense").classes("text-gray-500")
+                ).props("flat round dense").classes("text-grey-6")
 
         # ── Model selector ───────────────────────────────────────────────────
-        with ui.row().classes("items-center gap-2 px-3 py-2 border-b border-gray-100"):
+        with ui.row().classes("items-center gap-2 px-3 py-2 border-b border"):
             storage = app.storage.user
             cur_provider = storage.get(_KEY_PROVIDER, "anthropic")
             cur_model = storage.get(_KEY_MODEL, "claude-sonnet-4-6")
@@ -186,12 +186,12 @@ class AgentPanel:
 
         # ── Status line ──────────────────────────────────────────────────────
         self._status_label = ui.label("").classes(
-            "text-xs text-gray-400 px-4 py-1"
+            "text-xs text-grey-5 px-4 py-1"
         ).style("min-height:18px")
 
         # ── Input area ───────────────────────────────────────────────────────
         with ui.row().classes(
-            "items-end gap-2 px-3 py-3 border-t border-gray-200 w-full"
+            "items-end gap-2 px-3 py-3 border-t border w-full"
         ).style("min-width:0"):
             self._input = ui.textarea(
                 placeholder="Ask anything about your data...",
@@ -228,7 +228,7 @@ class AgentPanel:
             self._messages_container.clear()
             with self._messages_container:
                 ui.label("Conversation cleared.").classes(
-                    "text-xs text-gray-400 text-center py-4"
+                    "text-xs text-grey-5 text-center py-4"
                 )
 
     # ── Message rendering ─────────────────────────────────────────────────────
@@ -244,7 +244,7 @@ class AgentPanel:
             with self._messages_container:
                 ui.label(
                     "Ask me anything about your data, connections, or queries."
-                ).classes("text-xs text-gray-400 text-center py-8")
+                ).classes("text-xs text-grey-5 text-center py-8")
 
     def _render_message_bubble(self, msg: dict, save: bool = True) -> None:
         """Render a single message bubble inside self._messages_container."""
@@ -258,20 +258,20 @@ class AgentPanel:
             if role == "user":
                 with ui.row().classes("justify-end w-full"):
                     ui.markdown(f"> {content}").classes(
-                        "bg-blue-500 text-white rounded-2xl rounded-tr-sm "
+                        "bg-primary text-white rounded-2xl rounded-tr-sm "
                         "px-4 py-2 max-w-xs text-sm ml-auto"
                     ).style("word-break:break-word;")
             elif role == "tool_status":
                 # Tool call status chip
                 with ui.row().classes("items-center gap-2"):
-                    ui.icon("build", size="xs").classes("text-gray-400")
-                    ui.label(content).classes("text-xs text-gray-400 italic")
+                    ui.icon("build", size="xs").classes("text-grey-5")
+                    ui.label(content).classes("text-xs text-grey-5 italic")
             elif role == "assistant":
                 with ui.column().classes("gap-2 w-full"):
                     if content:
                         ui.markdown(content).classes(
-                            "bg-white border border-gray-200 rounded-2xl rounded-tl-sm "
-                            "px-4 py-3 text-sm text-gray-800 w-full"
+                            "border border rounded-2xl rounded-tl-sm "
+                            "px-4 py-3 text-sm text-weight-medium w-full"
                         ).style("word-break:break-word;")
                     # Render UI actions (proposals, navigation)
                     for action in ui_actions:
@@ -289,20 +289,20 @@ class AgentPanel:
             diff_html = _make_diff_html(old_code, new_code)
 
             with ui.card().classes(
-                "w-full border border-blue-200 bg-blue-50 rounded-xl"
+                "w-full border rounded-xl"
             ):
                 with ui.column().classes("gap-2 p-3"):
                     with ui.row().classes("items-center gap-2"):
                         ui.icon(
                             "code" if atype == "sql_proposal" else "functions",
                             size="xs",
-                        ).classes("text-blue-600")
+                        ).classes("text-primary")
                         ui.label(f"{lang} Proposal").classes(
-                            "text-sm font-semibold text-blue-700"
+                            "text-sm font-semibold text-primary"
                         )
 
                     if explanation:
-                        ui.label(explanation).classes("text-xs text-gray-600")
+                        ui.label(explanation).classes("text-xs text-grey-7")
 
                     # Diff view
                     ui.html(diff_html).classes("w-full rounded overflow-hidden")
@@ -330,14 +330,14 @@ class AgentPanel:
                             "Reject",
                             icon="close",
                             on_click=lambda: ui.notify("Change rejected", type="info"),
-                        ).props("flat dense no-caps").classes("text-xs text-gray-500")
+                        ).props("flat dense no-caps").classes("text-xs text-grey-6")
 
         elif atype == "navigation":
             path = action.get("path", "/")
             with ui.row().classes("items-center gap-2"):
-                ui.icon("open_in_new", size="xs").classes("text-blue-500")
+                ui.icon("open_in_new", size="xs").classes("text-primary")
                 ui.link(f"Navigate to {path}", target=path).classes(
-                    "text-xs text-blue-600 underline cursor-pointer"
+                    "text-xs text-primary underline cursor-pointer"
                 )
 
     # ── Sending messages ──────────────────────────────────────────────────────
@@ -372,7 +372,7 @@ class AgentPanel:
                 with self._messages_container:
                     ui.label(
                         "⚠ No API key configured. Go to Admin → AI tab to add one."
-                    ).classes("text-xs text-red-500 px-2 py-1")
+                    ).classes("text-xs text-negative px-2 py-1")
             return
 
         # Disable input while thinking

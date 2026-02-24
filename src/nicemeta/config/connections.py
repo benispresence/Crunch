@@ -15,7 +15,7 @@ class ConnectionConfig(BaseModel):
     """Configuration for a single data source connection."""
 
     name: str
-    type: Literal["postgresql", "mysql", "sqlite", "sqlserver"]
+    type: Literal["postgresql", "mysql", "sqlite", "sqlserver", "file"]
     host: str = "localhost"
     port: int | None = None
     database: str = ""

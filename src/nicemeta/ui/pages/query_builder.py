@@ -77,7 +77,7 @@ class QueryBuilderPage:
                     self._builder_container = ui.column().classes("w-full flex-grow")
                     with self._builder_container:
                         ui.label("Select a connection to load tables").classes(
-                            "text-gray-400 p-4"
+                            "text-grey-5 p-4"
                         )
 
             # Right panel - Results & Visualization
@@ -92,14 +92,14 @@ class QueryBuilderPage:
                             self._results_container = ui.column().classes("w-full")
                             with self._results_container:
                                 ui.label("Build a query and click Run").classes(
-                                    "text-gray-400 p-4"
+                                    "text-grey-5 p-4"
                                 )
 
                         with ui.tab_panel(viz_tab):
                             self._viz_container = ui.column().classes("w-full")
                             with self._viz_container:
                                 ui.label("Run a query to create visualizations").classes(
-                                    "text-gray-400 p-4"
+                                    "text-grey-5 p-4"
                                 )
 
     async def _on_connection_change(self, e) -> None:
@@ -206,7 +206,7 @@ class QueryBuilderPage:
             self._results_container.clear()
             with self._results_container:
                 if result.error:
-                    ui.label(f"Error: {result.error}").classes("text-red-500 p-4")
+                    ui.label(f"Error: {result.error}").classes("text-negative p-4")
                 else:
                     self.result_df = result.to_dataframe()
                     columns = [
@@ -223,13 +223,13 @@ class QueryBuilderPage:
                         pagination={"rowsPerPage": 50},
                     ).classes("w-full")
                     ui.label(f"{result.row_count} rows returned").classes(
-                        "text-sm text-gray-500 mt-2"
+                        "text-sm text-grey-6 mt-2"
                     )
 
         except Exception as ex:
             self._results_container.clear()
             with self._results_container:
-                ui.label(f"Error: {ex}").classes("text-red-500 p-4")
+                ui.label(f"Error: {ex}").classes("text-negative p-4")
 
     def _open_in_sql_editor(self) -> None:
         """Open the generated SQL in the SQL editor."""

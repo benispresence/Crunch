@@ -168,9 +168,14 @@ class ConnectionAdapter(ABC):
                     pool_pre_ping=True,
                 )
 
-            # Apply limit if not already in query
-            if limit and "LIMIT" not in sql.upper():
-                sql = f"{sql.rstrip().rstrip(';')} LIMIT {limit}"
+            # Apply limit only to SELECT/WITH queries
+            cleaned = sql.strip().rstrip(";")
+            upper = cleaned.upper()
+            is_select = upper.startswith("SELECT") or upper.startswith("WITH")
+            if limit and is_select and "LIMIT" not in upper:
+                sql = f"{cleaned} LIMIT {limit}"
+            else:
+                sql = cleaned
 
             async with self._engine.connect() as conn:
                 result = await conn.execute(

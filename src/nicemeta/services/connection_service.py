@@ -44,10 +44,12 @@ class ConnectionService:
         username: str | None = None,
         password: str | None = None,
         description: str | None = None,
+        options: dict | None = None,
+        connection_id: str | None = None,
     ) -> dict:
         """Create a new connection."""
         async with get_session_context() as session:
-            connection = Connection(
+            kwargs = dict(
                 name=name,
                 db_type=db_type,
                 host=host,
@@ -56,7 +58,11 @@ class ConnectionService:
                 username=username,
                 password=password,
                 description=description,
+                options=options,
             )
+            if connection_id:
+                kwargs["id"] = connection_id
+            connection = Connection(**kwargs)
             session.add(connection)
             await session.flush()
             await session.refresh(connection)
@@ -73,6 +79,7 @@ class ConnectionService:
         username: str | None = None,
         password: str | None = None,
         description: str | None = None,
+        options: dict | None = None,
     ) -> dict | None:
         """Update an existing connection."""
         async with get_session_context() as session:
@@ -100,7 +107,9 @@ class ConnectionService:
                 connection.password = password
             if description is not None:
                 connection.description = description
-            
+            if options is not None:
+                connection.options = options
+
             await session.flush()
             await session.refresh(connection)
             return ConnectionService._to_dict(connection)
@@ -144,6 +153,7 @@ class ConnectionService:
             "user": connection.username,  # Alias for compatibility
             "username": connection.username,
             "password": connection.password,
+            "options": connection.options,
             "is_active": connection.is_active,
             "owner_id": connection.owner_id,
             "created_at": connection.created_at.isoformat() if connection.created_at else None,
@@ -170,6 +180,8 @@ async def create_connection(
     database: str,
     username: str | None = None,
     password: str | None = None,
+    options: dict | None = None,
+    connection_id: str | None = None,
 ) -> dict:
     """Create a new connection."""
     return await ConnectionService.create(
@@ -180,6 +192,8 @@ async def create_connection(
         database=database,
         username=username,
         password=password,
+        options=options,
+        connection_id=connection_id,
     )
 
 
@@ -192,6 +206,7 @@ async def update_connection(
     database: str | None = None,
     username: str | None = None,
     password: str | None = None,
+    options: dict | None = None,
 ) -> dict | None:
     """Update an existing connection."""
     return await ConnectionService.update(
@@ -203,6 +218,7 @@ async def update_connection(
         database=database,
         username=username,
         password=password,
+        options=options,
     )
 
 

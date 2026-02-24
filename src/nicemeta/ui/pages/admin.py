@@ -33,7 +33,7 @@ class AdminPage:
         header = MetabaseHeader(sidebar=sidebar, title="Settings", show_back=True, agent=agent)
         header.create()
 
-        with ui.column().classes("w-full p-6 gap-6 bg-gray-50 min-h-screen"):
+        with ui.column().classes("w-full p-6 gap-6 min-h-screen"):
             # Tabs
             with ui.tabs().classes("w-full") as tabs:
                 users_tab = ui.tab("Users", icon="people")
@@ -135,7 +135,7 @@ class AdminPage:
                 
                 ui.label(
                     "Note: Changing the database type requires migration"
-                ).classes("text-sm text-gray-500 mt-2")
+                ).classes("text-sm text-grey-6 mt-2")
             
             # Save button
             ui.button(
@@ -242,16 +242,16 @@ class AdminPage:
 
         with ui.column().classes("w-full gap-6 max-w-2xl"):
             # ── Info banner ──────────────────────────────────────────────
-            with ui.card().classes("w-full bg-blue-50 border border-blue-200"):
+            with ui.card().classes("w-full bg-blue-1 border"):
                 with ui.row().classes("items-start gap-3 p-4"):
-                    ui.icon("info", size="sm").classes("text-blue-500 mt-1 flex-shrink-0")
+                    ui.icon("info", size="sm").classes("text-primary mt-1 flex-shrink-0")
                     with ui.column().classes("gap-1"):
-                        ui.label("AI Agent Setup").classes("font-semibold text-blue-800")
+                        ui.label("AI Agent Setup").classes("font-semibold text-primary")
                         ui.label(
                             "Keys are stored in your user profile on the server. "
                             "They never leave your server and are only used for direct API calls "
                             "to Anthropic or OpenAI."
-                        ).classes("text-sm text-blue-700")
+                        ).classes("text-sm text-primary")
 
             # ── Anthropic ─────────────────────────────────────────────────
             with ui.card().classes("w-full"):
@@ -268,7 +268,7 @@ class AdminPage:
 
                     ui.label(
                         "Get your key at console.anthropic.com"
-                    ).classes("text-xs text-gray-400")
+                    ).classes("text-xs text-grey-5")
 
                     def _save_anthropic():
                         storage[_KEY_ANTHROPIC] = ant_key_input.value.strip()
@@ -293,7 +293,7 @@ class AdminPage:
 
                     ui.label(
                         "Get your key at platform.openai.com"
-                    ).classes("text-xs text-gray-400")
+                    ).classes("text-xs text-grey-5")
 
                     def _save_openai():
                         storage[_KEY_OPENAI] = oai_key_input.value.strip()
@@ -354,13 +354,13 @@ class AdminPage:
                 with ui.row().classes("items-center justify-between w-full mb-3"):
                     ui.label("Git Status").classes("text-lg font-semibold")
                     status_label = ui.label(git.get_short_status()).classes(
-                        "text-sm font-mono text-gray-600"
+                        "text-sm font-mono text-grey-7"
                     )
 
                 status_area = ui.label(
                     git.get_status() or "(not initialized — click Initialize below)"
                 ).classes(
-                    "text-xs font-mono whitespace-pre bg-gray-100 rounded p-2 w-full"
+                    "text-xs font-mono whitespace-pre bg-grey-2 rounded p-2 w-full"
                 )
 
                 def _refresh_status():
@@ -376,14 +376,14 @@ class AdminPage:
                 ui.label("Workspace Path").classes("text-lg font-semibold mb-3")
                 ui.label(
                     "All queries, dashboards, and connection configs are stored here as files."
-                ).classes("text-sm text-gray-500 mb-3")
+                ).classes("text-sm text-grey-6 mb-3")
 
                 workspace_input = ui.input(
                     label="Workspace Path",
                     value=storage.get("git_workspace_path", str(DEFAULT_WORKSPACE)),
                 ).classes("w-full")
 
-                ui.label(f"Current: {git.workspace}").classes("text-xs text-gray-400 mt-1")
+                ui.label(f"Current: {git.workspace}").classes("text-xs text-grey-5 mt-1")
 
                 def _set_workspace():
                     nonlocal git
@@ -412,7 +412,7 @@ class AdminPage:
                 current_remote = git.get_remote()
                 if current_remote:
                     ui.label(f"Current: {current_remote}").classes(
-                        "text-xs font-mono text-gray-500 mb-2"
+                        "text-xs font-mono text-grey-6 mb-2"
                     )
 
                 remote_input = ui.input(
@@ -441,15 +441,15 @@ class AdminPage:
                 ui.label("Operations").classes("text-lg font-semibold mb-3")
 
                 op_output = ui.label("").classes(
-                    "text-xs font-mono whitespace-pre bg-gray-100 rounded p-2 w-full"
+                    "text-xs font-mono whitespace-pre bg-grey-2 rounded p-2 w-full"
                 ).style("min-height: 2rem")
 
                 def _set_op_output(text: str, error: bool = False):
                     op_output.text = text
                     if error:
-                        op_output.classes(add="text-red-600")
+                        op_output.classes(add="text-negative")
                     else:
-                        op_output.classes(remove="text-red-600")
+                        op_output.classes(remove="text-negative")
 
                 def _do_initialize():
                     ok, msg = git.initialize()
@@ -533,7 +533,7 @@ class AdminPage:
                 ui.label(
                     "Clone a NiceMeta workspace repo and import its queries "
                     "and dashboards into this instance."
-                ).classes("text-sm text-gray-500 mb-3")
+                ).classes("text-sm text-grey-6 mb-3")
 
                 clone_url_input = ui.input(
                     label="Repository URL",
@@ -541,7 +541,7 @@ class AdminPage:
                 ).classes("w-full")
 
                 clone_output = ui.label("").classes(
-                    "text-xs font-mono whitespace-pre bg-gray-100 rounded p-2 w-full"
+                    "text-xs font-mono whitespace-pre bg-grey-2 rounded p-2 w-full"
                 ).style("min-height: 2rem")
 
                 async def _do_clone():
@@ -588,7 +588,7 @@ class AdminPage:
                 else:
                     ui.label(
                         "No commits yet — Initialize the repo and run Sync All."
-                    ).classes("text-gray-400 text-sm")
+                    ).classes("text-grey-5 text-sm")
 
     def _save_settings(self) -> None:
         """Save settings."""
@@ -598,7 +598,7 @@ class AdminPage:
 def info_item(label: str, value: str) -> None:
     """Create an info item."""
     with ui.row().classes("items-center gap-2"):
-        ui.label(f"{label}:").classes("text-gray-500")
+        ui.label(f"{label}:").classes("text-grey-6")
         ui.label(value).classes("font-medium")
 
 
@@ -606,7 +606,7 @@ def stat_box(label: str, value: str) -> None:
     """Create a statistics box."""
     with ui.card().classes("p-4 text-center"):
         ui.label(value).classes("text-2xl font-bold")
-        ui.label(label).classes("text-sm text-gray-500")
+        ui.label(label).classes("text-sm text-grey-6")
 
 
 async def admin_page() -> None:

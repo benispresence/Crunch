@@ -53,6 +53,10 @@ dependencies = [
     "tomli>=2.0.1",
     "tomli-w>=1.0.0",
     
+    # File-based data sources
+    "duckdb>=1.0.0",
+    "openpyxl>=3.1.0",
+
     # Data Processing
     "pandas>=2.1.0",
     "numpy>=1.26.0",

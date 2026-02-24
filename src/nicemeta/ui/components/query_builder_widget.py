@@ -89,7 +89,7 @@ class QueryBuilderWidget:
     def _create_table_selector(self) -> None:
         """Create table selection UI."""
         if not self.tables:
-            ui.label("No tables available").classes("text-gray-500")
+            ui.label("No tables available").classes("text-grey-6")
             return
         
         # Group tables by schema
@@ -124,7 +124,7 @@ class QueryBuilderWidget:
         
         with self._columns_container:
             if not self.selected_table:
-                ui.label("Select a table first").classes("text-gray-500")
+                ui.label("Select a table first").classes("text-grey-6")
                 return
             
             # Get columns for selected table
@@ -158,7 +158,7 @@ class QueryBuilderWidget:
         
         with self._filters_container:
             if not self.selected_table:
-                ui.label("Select a table first").classes("text-gray-500")
+                ui.label("Select a table first").classes("text-grey-6")
                 return
             
             # Add filter button
@@ -177,7 +177,7 @@ class QueryBuilderWidget:
         
         with self._sorts_container:
             if not self.selected_table:
-                ui.label("Select a table first").classes("text-gray-500")
+                ui.label("Select a table first").classes("text-grey-6")
                 return
             
             # Add sort button

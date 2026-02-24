@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 from nicegui import app, ui
 
-from nicemeta.ui.theme import inject_theme, apply_saved_theme, create_theme_toggle
+from nicemeta.ui.theme import inject_theme, create_theme_toggle
 
 # Import database services
 from nicemeta.services.query_service import (
@@ -259,7 +259,7 @@ class MetabaseSidebar:
                             "items-center gap-2 px-4 py-3 nm-sidebar-row"
                         ):
                             ui.icon("analytics", size="sm").classes(
-                                "text-blue-500 flex-shrink-0"
+                                "text-grey-7 flex-shrink-0"
                             )
                             ui.label("NiceMeta").classes(
                                 "text-base font-bold nm-sidebar-label"
@@ -334,11 +334,11 @@ class MetabaseSidebar:
     def _render_folders(self) -> None:
         folders = get_folders()
         if not folders:
-            ui.label("No collections yet").classes("text-gray-400 text-sm px-3 py-1")
+            ui.label("No collections yet").classes("text-grey-6 text-sm px-3 py-1")
             return
         for folder in folders:
-            with ui.row().classes("nm-sidebar-row nm-sidebar-child hover:bg-gray-100 rounded cursor-pointer"):
-                ui.icon("folder", size="xs").classes("text-yellow-500 flex-shrink-0")
+            with ui.row().classes("nm-sidebar-row nm-sidebar-child rounded cursor-pointer"):
+                ui.icon("folder", size="xs").classes("text-warning flex-shrink-0")
                 ui.label(folder["name"]).classes("text-sm nm-sidebar-label")
 
     def _render_queries_sync(self) -> None:
@@ -347,25 +347,25 @@ class MetabaseSidebar:
             queries = [q for q in queries if self._search_term in q["name"].lower()]
         if not queries:
             msg = "No matches" if self._search_term else "No saved questions yet"
-            ui.label(msg).classes("text-gray-400 text-sm px-3 py-1")
+            ui.label(msg).classes("text-grey-6 text-sm px-3 py-1")
             return
         for query in queries:
             with ui.row().classes(
-                "nm-sidebar-row nm-sidebar-child hover:bg-gray-100 rounded cursor-pointer"
+                "nm-sidebar-row nm-sidebar-child rounded cursor-pointer"
             ).on("click", lambda q=query: self._select_query(q)):
-                ui.icon("code", size="xs").classes("text-blue-500 flex-shrink-0")
+                ui.icon("code", size="xs").classes("text-grey-7 flex-shrink-0")
                 ui.label(query["name"]).classes("text-sm nm-sidebar-label")
 
     def _render_dashboards(self) -> None:
         dashboards = get_saved_dashboards()
         if not dashboards:
-            ui.label("No dashboards yet").classes("text-gray-400 text-sm px-3 py-1")
+            ui.label("No dashboards yet").classes("text-grey-6 text-sm px-3 py-1")
             return
         for dashboard in dashboards:
             with ui.row().classes(
-                "nm-sidebar-row nm-sidebar-child hover:bg-gray-100 rounded cursor-pointer"
+                "nm-sidebar-row nm-sidebar-child rounded cursor-pointer"
             ).on("click", lambda d=dashboard: ui.navigate.to(f"/dashboards/{d['id']}")):
-                ui.icon("dashboard", size="xs").classes("text-purple-500 flex-shrink-0")
+                ui.icon("dashboard", size="xs").classes("text-accent flex-shrink-0")
                 ui.label(dashboard["name"]).classes("text-sm nm-sidebar-label")
 
     def _refresh_queries_display(self) -> None:
@@ -382,7 +382,7 @@ class MetabaseSidebar:
         current = self._current_path()
         is_active = current == path or (path != "/" and current.startswith(path))
         active_cls = " nm-nav-active" if is_active else ""
-        icon_cls = "text-blue-500 flex-shrink-0" if is_active else "text-gray-500 flex-shrink-0"
+        icon_cls = "text-grey-7 flex-shrink-0"
         lbl_cls = "text-sm font-semibold nm-sidebar-label" if is_active else "text-sm nm-sidebar-label"
 
         with ui.link(target=path).classes("no-underline w-full"):
@@ -431,28 +431,27 @@ class MetabaseHeader:
 
     def create(self) -> ui.header:
         inject_theme()
-        apply_saved_theme()
 
-        with ui.header().classes("bg-white border-b border-gray-200 shadow-sm") as header:
+        with ui.header().props("bordered") as header:
             with ui.row().classes("w-full items-center px-4 py-2 gap-4"):
                 with ui.row().classes("items-center gap-2"):
                     ui.button(
                         icon="menu",
                         on_click=lambda: self.sidebar.toggle() if self.sidebar else None,
-                    ).props("flat round dense").classes("text-gray-600")
+                    ).props("flat round dense").classes("text-grey-7")
 
                     with ui.link(target="/").classes("no-underline"):
-                        ui.icon("analytics", size="md").classes("text-blue-500")
+                        ui.icon("analytics", size="md").classes("text-grey-7")
 
                     if self.show_back:
                         ui.button(
                             icon="arrow_back",
                             on_click=lambda: ui.navigate.to("/"),
-                        ).props("flat round dense").classes("text-gray-600")
+                        ).props("flat round dense").classes("text-grey-7")
 
                     if self.title:
                         self._title_label = ui.label(self.title).classes(
-                            "text-lg font-semibold text-gray-800 ml-2"
+                            "text-lg font-semibold ml-2"
                         )
 
                 ui.space()
@@ -475,16 +474,16 @@ class MetabaseHeader:
                     ui.button(
                         icon="smart_toy",
                         on_click=lambda: _agent.toggle() if _agent else None,
-                    ).props("flat round").classes("text-gray-600").tooltip("AI Agent")
+                    ).props("flat round").classes("text-grey-7").tooltip("AI Agent")
 
                     create_theme_toggle()
 
                     ui.button(
                         icon="settings",
                         on_click=lambda: ui.navigate.to("/admin"),
-                    ).props("flat round").classes("text-gray-600")
+                    ).props("flat round").classes("text-grey-7")
 
-                    with ui.button(icon="account_circle").props("flat round").classes("text-gray-600"):
+                    with ui.button(icon="account_circle").props("flat round").classes("text-grey-7"):
                         with ui.menu():
                             ui.menu_item("Profile")
                             ui.menu_item("Account Settings")
