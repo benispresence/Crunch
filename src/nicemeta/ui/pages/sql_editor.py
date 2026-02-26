@@ -2,6 +2,8 @@
 SQL Editor page for NiceMeta - Metabase-style layout.
 """
 
+import asyncio
+
 import pandas as pd
 from nicegui import ui
 
@@ -102,7 +104,15 @@ class SQLEditorPage:
             # Load query data (async)
             await self._load_query(query_id)
             self._is_saved_query = True
-        
+
+        # Check for connection_id + table params (from data browser)
+        browse_connection_id = ui.context.client.request.query_params.get("connection_id")
+        browse_table = ui.context.client.request.query_params.get("table")
+        if browse_connection_id and browse_table and not query_id:
+            self.current_connection = browse_connection_id
+            self._initial_sql = f"SELECT *\nFROM {browse_table}\nLIMIT 100"
+            self._is_saved_query = True  # triggers auto-run and hides editor
+
         # Create Metabase-style sidebar (top-level)
         self._sidebar = MetabaseSidebar(on_query_select=self._on_query_selected)
         self._sidebar.create()
@@ -111,7 +121,10 @@ class SQLEditorPage:
         self._agent_panel = AgentPanel(
             on_apply_sql=self._apply_agent_sql,
             on_apply_python=self._apply_agent_python,
+            on_apply_and_run_sql=self._apply_and_run_agent_sql,
+            on_apply_and_run_python=self._apply_and_run_agent_python,
             get_context=self._get_agent_context,
+            sidebar=self._sidebar,
         )
         self._agent_panel.create()
 
@@ -1889,6 +1902,7 @@ class SQLEditorPage:
             ),
             "current_connection_id": self.current_connection,
             "query_name": self.query_name,
+            "query_id": self.query_id,
         }
 
     def _apply_agent_sql(self, new_sql: str) -> None:
@@ -1909,6 +1923,17 @@ class SQLEditorPage:
             self._main_python_editor.set_value(new_code)
         elif not self._editors_visible:
             self._toggle_editors()
+
+    def _apply_and_run_agent_sql(self, new_sql: str) -> None:
+        """Apply SQL from agent and immediately execute it."""
+        self._apply_agent_sql(new_sql)
+        if self.current_connection:
+            asyncio.ensure_future(self._run_query(new_sql))
+
+    def _apply_and_run_agent_python(self, new_code: str) -> None:
+        """Apply Python viz code from agent and switch to visualization view."""
+        self._apply_agent_python(new_code)
+        self._set_view("visualization")
 
     # ── Query execution ───────────────────────────────────────────────────────
 
@@ -1937,50 +1962,9 @@ class SQLEditorPage:
         ui.notify(f"Executing query...", type="info")
         
         try:
-            from nicemeta.connections.manager import ConnectionManager
-            from nicemeta.config.connections import ConnectionConfig
+            from nicemeta.ui.utils import create_adapter_from_connection
 
-            if conn["db_type"] == "file":
-                # File connections use DuckDB adapter directly
-                from nicemeta.connections.adapters.file_adapter import FileAdapter
-                from nicemeta.connections.base import ConnectionInfo
-
-                options = conn.get("options") or {}
-                file_paths = options.get("files", [])
-
-                # If no file paths in options, scan upload dir
-                if not file_paths:
-                    from pathlib import Path
-                    upload_dir = Path(conn["database"])
-                    if upload_dir.is_dir():
-                        exts = {".csv", ".tsv", ".txt", ".xlsx", ".xls"}
-                        file_paths = [
-                            str(p) for p in sorted(upload_dir.iterdir())
-                            if p.is_file() and p.suffix.lower() in exts
-                        ]
-
-                info = ConnectionInfo(
-                    name=conn["name"],
-                    db_type="file",
-                    host="local",
-                    port=0,
-                    database=conn["database"],
-                    options={"files": file_paths},
-                )
-                adapter = FileAdapter(info)
-            else:
-                config = ConnectionConfig(
-                    name=conn["name"],
-                    type=conn["db_type"],
-                    host=conn["host"],
-                    port=conn["port"],
-                    database=conn["database"],
-                    user=conn.get("user", ""),
-                    password=conn.get("password", ""),
-                )
-                manager = ConnectionManager()
-                adapter = manager.create_adapter(config)
-
+            adapter = await create_adapter_from_connection(conn)
             result = await adapter.execute_query(sql, limit=1000)
             
             # Hide loading state

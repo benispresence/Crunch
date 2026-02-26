@@ -76,6 +76,88 @@ _KEY_MODEL = "agent_model"
 _KEY_HISTORY = "agent_history"
 _MAX_HISTORY = 40  # messages kept in storage
 
+# JavaScript for drag-to-resize the right agent drawer
+_AGENT_RESIZE_JS = """
+(function() {
+  var KEY = 'nm_agent_w';
+  var MIN = 300;
+  var MAX = 700;
+
+  function applyWidth(w) {
+    var styleEl = document.getElementById('nm-aw-override');
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = 'nm-aw-override';
+      document.head.appendChild(styleEl);
+    }
+    styleEl.textContent =
+      '.q-drawer--right{width:' + w + 'px!important;min-width:0!important}';
+    var pc = document.querySelector('.q-page-container');
+    if (pc) pc.style.setProperty('padding-right', w + 'px', 'important');
+  }
+
+  function init() {
+    var drawer = document.querySelector('.q-drawer--right');
+    if (!drawer || document.getElementById('nm-arh')) return;
+
+    var obs = new MutationObserver(function() {
+      var saved = parseInt(localStorage.getItem(KEY) || '0', 10);
+      if (saved >= MIN && saved <= MAX) setTimeout(function(){ applyWidth(saved); }, 30);
+    });
+    obs.observe(drawer, { attributes: true, attributeFilter: ['style'] });
+
+    var rh = document.createElement('div');
+    rh.id = 'nm-arh';
+    rh.style.cssText = [
+      'position:absolute', 'left:0', 'top:0',
+      'width:5px', 'height:100%', 'cursor:col-resize',
+      'z-index:9999', 'user-select:none', 'border-radius:2px 0 0 2px'
+    ].join(';');
+    drawer.appendChild(rh);
+
+    rh.addEventListener('mouseenter', function() {
+      rh.style.background = 'rgba(86,156,214,0.45)';
+    });
+    rh.addEventListener('mouseleave', function() {
+      if (!rh._d) rh.style.background = '';
+    });
+
+    rh.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      rh._d = true;
+      rh.style.background = 'rgba(86,156,214,0.7)';
+      document.body.classList.add('nm-resizing');
+      var x0 = e.clientX;
+      var w0 = drawer.offsetWidth;
+
+      function mv(e) {
+        applyWidth(Math.max(MIN, Math.min(MAX, w0 - (e.clientX - x0))));
+      }
+      function up() {
+        rh._d = false;
+        rh.style.background = '';
+        document.body.classList.remove('nm-resizing');
+        localStorage.setItem(KEY, drawer.offsetWidth);
+        window.removeEventListener('mousemove', mv);
+        window.removeEventListener('mouseup', up);
+      }
+      window.addEventListener('mousemove', mv);
+      window.addEventListener('mouseup', up);
+    });
+
+    var saved = parseInt(localStorage.getItem(KEY) || '0', 10);
+    if (saved >= MIN && saved <= MAX) applyWidth(saved);
+  }
+
+  var n = 0;
+  var iv = setInterval(function() {
+    n++;
+    if (n > 50) { clearInterval(iv); return; }
+    if (document.querySelector('.q-drawer--right')) { clearInterval(iv); setTimeout(init, 80); }
+  }, 100);
+})();
+"""
+
 
 # ── AgentPanel ────────────────────────────────────────────────────────────────
 
@@ -94,11 +176,17 @@ class AgentPanel:
         self,
         on_apply_sql: Callable[[str], None] | None = None,
         on_apply_python: Callable[[str], None] | None = None,
+        on_apply_and_run_sql: Callable[[str], None] | None = None,
+        on_apply_and_run_python: Callable[[str], None] | None = None,
         get_context: Callable[[], dict] | None = None,
+        sidebar=None,  # MetabaseSidebar | None — avoid circular import
     ) -> None:
         self.on_apply_sql = on_apply_sql
         self.on_apply_python = on_apply_python
+        self.on_apply_and_run_sql = on_apply_and_run_sql
+        self.on_apply_and_run_python = on_apply_and_run_python
         self.get_context = get_context or (lambda: {})
+        self.sidebar = sidebar
 
         self._drawer: ui.right_drawer | None = None
         self._messages_container: ui.column | None = None
@@ -117,6 +205,7 @@ class AgentPanel:
         )
         with self._drawer:
             self._build_ui()
+        ui.timer(0.2, lambda: ui.run_javascript(_AGENT_RESIZE_JS), once=True)
         return self._drawer
 
     def toggle(self) -> None:
@@ -305,7 +394,7 @@ class AgentPanel:
                         ui.label(explanation).classes("text-xs text-grey-7")
 
                     # Diff view
-                    ui.html(diff_html).classes("w-full rounded overflow-hidden")
+                    ui.html(diff_html, sanitize=False).classes("w-full rounded overflow-hidden")
 
                     # Accept / Reject buttons
                     with ui.row().classes("gap-2"):
@@ -412,9 +501,20 @@ class AgentPanel:
                 llm_messages, ctx, on_tool_start=_on_tool_start
             )
 
-            # Apply navigation side-effects immediately
+            # Apply side-effects immediately (auto-run, save, navigate)
             for action in ui_actions:
-                if action.get("type") == "navigation":
+                if action.get("type") == "sql_proposal" and self.on_apply_and_run_sql:
+                    self.on_apply_and_run_sql(action["new_code"])
+                elif action.get("type") == "python_proposal" and self.on_apply_and_run_python:
+                    self.on_apply_and_run_python(action["new_code"])
+                elif action.get("type") == "query_saved":
+                    if self.sidebar:
+                        await self.sidebar.refresh()
+                    ui.notify(
+                        f"Query '{action.get('name', '')}' saved!",
+                        type="positive", icon="save",
+                    )
+                elif action.get("type") == "navigation":
                     ui.navigate.to(action["path"])
 
             assistant_msg = {
@@ -472,6 +572,9 @@ def _tool_status_label(name: str, inputs: dict) -> str:
         "list_saved_queries": "Listing saved queries…",
         "list_dashboards": "Listing dashboards…",
         "navigate_to": f"Navigating to {inputs.get('path', '')}…",
+        "save_query": f"Saving query '{inputs.get('name', '')}'…",
+        "create_dashboard": f"Creating dashboard '{inputs.get('name', '')}'…",
+        "add_widget_to_dashboard": "Adding widget to dashboard…",
     }
     return labels.get(name, f"Calling tool: {name}…")
 

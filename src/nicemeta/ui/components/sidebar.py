@@ -238,6 +238,8 @@ class MetabaseSidebar:
         self.on_query_select = on_query_select
         self._drawer = None
         self._queries_container = None
+        self._dashboards_container = None
+        self._data_container = None
         self._search_input = None
         self._search_term = ""
 
@@ -306,13 +308,29 @@ class MetabaseSidebar:
                     with ui.expansion("Our Dashboards", icon="dashboard").classes(
                         "w-full nm-sidebar-expansion"
                     ).props("dense"):
-                        self._render_dashboards()
+                        self._dashboards_container = ui.column().classes("w-full gap-0")
+                        with self._dashboards_container:
+                            self._render_dashboards()
 
                     ui.separator().classes("nm-sidebar-sep")
 
+                    # ── Data browser ──────────────────────────────────
+                    with ui.expansion("Data", icon="storage").classes(
+                        "w-full nm-sidebar-expansion"
+                    ).props("dense") as data_exp:
+                        self._data_container = ui.column().classes("w-full gap-0")
+                        with self._data_container:
+                            self._render_data_tree()
+
+                        # Manage connections link at the bottom
+                        with ui.row().classes(
+                            "nm-sidebar-row nm-sidebar-child rounded cursor-pointer"
+                        ).on("click", lambda: ui.navigate.to("/connections")):
+                            ui.icon("settings", size="xs").classes("text-grey-6 flex-shrink-0")
+                            ui.label("Manage connections").classes("text-xs nm-sidebar-label text-grey-6")
+
                     # ── Utility nav ───────────────────────────────────
                     with ui.column().classes("w-full gap-0 px-2 py-1"):
-                        self._nav_item("/connections", "storage", "Data")
                         self._nav_item("/admin", "settings", "Settings")
 
                     # ── Theme toggle ──────────────────────────────────
@@ -368,6 +386,119 @@ class MetabaseSidebar:
                 ui.icon("dashboard", size="xs").classes("text-accent flex-shrink-0")
                 ui.label(dashboard["name"]).classes("text-sm nm-sidebar-label")
 
+    def _render_data_tree(self) -> None:
+        """Render connections as expandable tree items."""
+        connections = get_connections()
+        if not connections:
+            ui.label("No connections yet").classes("text-grey-6 text-sm px-3 py-1")
+            return
+
+        for conn in connections:
+            icon = {
+                "postgresql": "🐘", "mysql": "🐬", "sqlite": "📁",
+                "sqlserver": "🪟", "file": "📄",
+            }.get(conn["db_type"], "📊")
+
+            with ui.expansion(
+                f"{icon}  {conn['name']}",
+            ).classes("w-full nm-sidebar-expansion nm-sidebar-child").props("dense header-class=text-sm") as conn_exp:
+                schema_container = ui.column().classes("w-full gap-0")
+                with schema_container:
+                    ui.label("Loading...").classes("text-grey-6 text-xs px-3 py-1")
+
+                # Lazy-load schemas when expansion opens
+                conn_exp.on(
+                    "update:model-value",
+                    lambda e, c=conn, sc=schema_container: self._load_schemas(e.args, c, sc),
+                )
+
+    async def _load_schemas(self, is_open, conn: dict, container: ui.column) -> None:
+        """Lazy-load schemas for a connection when its expansion opens."""
+        if not is_open:
+            return
+
+        # Check if already loaded (not just "Loading...")
+        if hasattr(container, '_loaded') and container._loaded:
+            return
+        container._loaded = True
+
+        container.clear()
+        try:
+            from nicemeta.ui.utils import create_adapter_from_connection
+            adapter = await create_adapter_from_connection(conn)
+            schemas = await adapter.get_schemas()
+            await adapter.close()
+
+            with container:
+                if not schemas:
+                    ui.label("No schemas").classes("text-grey-6 text-xs px-3 py-1")
+                    return
+
+                for schema in schemas:
+                    with ui.expansion(
+                        schema,
+                        icon="schema",
+                    ).classes("w-full nm-sidebar-expansion nm-sidebar-child").props(
+                        "dense header-class=text-xs"
+                    ) as schema_exp:
+                        table_container = ui.column().classes("w-full gap-0")
+                        with table_container:
+                            ui.label("Loading...").classes("text-grey-6 text-xs px-3 py-1")
+
+                        schema_exp.on(
+                            "update:model-value",
+                            lambda e, c=conn, s=schema, tc=table_container: self._load_tables(
+                                e.args, c, s, tc
+                            ),
+                        )
+
+        except Exception as ex:
+            with container:
+                ui.label(f"Error: {ex}").classes("text-negative text-xs px-3 py-1")
+
+    async def _load_tables(
+        self, is_open, conn: dict, schema: str, container: ui.column
+    ) -> None:
+        """Lazy-load tables for a schema when its expansion opens."""
+        if not is_open:
+            return
+
+        if hasattr(container, '_loaded') and container._loaded:
+            return
+        container._loaded = True
+
+        container.clear()
+        try:
+            from nicemeta.ui.utils import create_adapter_from_connection
+            adapter = await create_adapter_from_connection(conn)
+            tables = await adapter.get_tables(schema)
+            await adapter.close()
+
+            with container:
+                if not tables:
+                    ui.label("No tables").classes("text-grey-6 text-xs px-3 py-1")
+                    return
+
+                for ti in tables:
+                    icon = "view_agenda" if ti.table_type == "view" else "table_chart"
+                    # Build qualified table name for the URL
+                    qualified = f"{schema}.{ti.name}" if schema else ti.name
+
+                    with ui.row().classes(
+                        "nm-sidebar-row nm-sidebar-child rounded cursor-pointer"
+                    ).on(
+                        "click",
+                        lambda cid=conn["id"], t=qualified: ui.navigate.to(
+                            f"/sql?connection_id={cid}&table={t}"
+                        ),
+                    ):
+                        ui.icon(icon, size="xs").classes("text-grey-7 flex-shrink-0")
+                        ui.label(ti.name).classes("text-xs nm-sidebar-label")
+
+        except Exception as ex:
+            with container:
+                ui.label(f"Error: {ex}").classes("text-negative text-xs px-3 py-1")
+
     def _refresh_queries_display(self) -> None:
         if self._queries_container:
             self._queries_container.clear()
@@ -406,9 +537,16 @@ class MetabaseSidebar:
         if self._drawer:
             self._drawer.toggle()
 
+    def _refresh_dashboards_display(self) -> None:
+        if self._dashboards_container:
+            self._dashboards_container.clear()
+            with self._dashboards_container:
+                self._render_dashboards()
+
     async def refresh(self) -> None:
         await refresh_cache()
         self._refresh_queries_display()
+        self._refresh_dashboards_display()
 
 
 class MetabaseHeader:

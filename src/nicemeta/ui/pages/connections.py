@@ -153,6 +153,8 @@ class ConnectionsPage:
 
     def __init__(self):
         self._cards_container = None
+        self._page_container = None
+        self._header = None
 
     async def render(self) -> None:
         """Render the connections page."""
@@ -164,20 +166,25 @@ class ConnectionsPage:
         agent = AgentPanel()
         agent.create()
 
-        header = MetabaseHeader(sidebar=sidebar, title="Data", show_back=True, agent=agent)
-        header.create()
+        self._header = MetabaseHeader(sidebar=sidebar, title="Data", show_back=True, agent=agent)
+        self._header.create()
 
-        with ui.column().classes("w-full p-6 gap-6 min-h-screen"):
-            with ui.row().classes("items-center justify-between w-full"):
-                ui.label("Data Connections").classes("text-xl font-semibold")
-                ui.button(
-                    "Add Connection",
-                    icon="add",
-                    on_click=self._add_connection,
-                ).props("color=primary")
+        self._page_container = ui.column().classes("w-full p-6 gap-6 min-h-screen")
+        with self._page_container:
+            self._render_card_grid()
 
-            self._cards_container = ui.row().classes("gap-4 flex-wrap")
-            self._render_connections()
+    def _render_card_grid(self) -> None:
+        """Render the connection cards grid view."""
+        with ui.row().classes("items-center justify-between w-full"):
+            ui.label("Data Connections").classes("text-xl font-semibold")
+            ui.button(
+                "Add Connection",
+                icon="add",
+                on_click=self._add_connection,
+            ).props("color=primary")
+
+        self._cards_container = ui.row().classes("gap-4 flex-wrap")
+        self._render_connections()
 
     def _render_connections(self) -> None:
         """Render connection cards."""
@@ -188,7 +195,6 @@ class ConnectionsPage:
         with self._cards_container:
             for conn in connections:
                 if conn["db_type"] == "file":
-                    # Count files from options or upload dir
                     opts = conn.get("options") or {}
                     file_list = opts.get("files", [])
                     file_count = len(file_list)
@@ -200,7 +206,7 @@ class ConnectionsPage:
                         db_type=conn["db_type"],
                         host=f"{file_count} file(s)" if file_count else conn.get("database", ""),
                         database=file_names,
-                        status="unknown",
+                        on_click=lambda c=conn: self._view_connection(c),
                         on_test=lambda c=conn: self._test_connection(c),
                         on_edit=lambda c=conn: self._edit_connection(c),
                         on_delete=lambda c=conn: self._delete_connection(c),
@@ -211,7 +217,7 @@ class ConnectionsPage:
                         db_type=conn["db_type"],
                         host=f"{conn['host']}:{conn['port']}",
                         database=conn["database"],
-                        status="unknown",
+                        on_click=lambda c=conn: self._view_connection(c),
                         on_test=lambda c=conn: self._test_connection(c),
                         on_edit=lambda c=conn: self._edit_connection(c),
                         on_delete=lambda c=conn: self._delete_connection(c),
@@ -225,6 +231,144 @@ class ConnectionsPage:
                 with ui.column().classes("items-center gap-2 text-grey-5"):
                     ui.icon("add_circle_outline", size="xl")
                     ui.label("Add Connection")
+
+    async def _view_connection(self, conn: dict) -> None:
+        """Show the detail view for a connection (schemas → tables → columns)."""
+        self._page_container.clear()
+
+        with self._page_container:
+            # Breadcrumb
+            with ui.row().classes("items-center gap-2"):
+                ui.button(
+                    "Data",
+                    icon="arrow_back",
+                    on_click=self._back_to_grid,
+                ).props("flat dense")
+                ui.icon("chevron_right", size="xs").classes("text-grey-5")
+                icon = DB_ICONS.get(conn["db_type"], "📊")
+                ui.label(f"{icon}  {conn['name']}").classes("text-lg font-semibold")
+
+            # Loading indicator
+            loading = ui.row().classes("items-center gap-2 p-4")
+            with loading:
+                ui.spinner("dots", size="md")
+                ui.label("Loading schemas and tables...").classes("text-grey-6")
+
+            try:
+                from nicemeta.ui.utils import create_adapter_from_connection
+                adapter = await create_adapter_from_connection(conn)
+                schemas = await adapter.get_schemas()
+
+                # Load all tables grouped by schema
+                schema_tables = {}
+                for schema in schemas:
+                    tables = await adapter.get_tables(schema)
+                    schema_tables[schema] = tables
+
+                await adapter.close()
+
+                loading.delete()
+
+                # Render schemas and tables
+                if not schemas:
+                    ui.label("No schemas found").classes("text-grey-6 p-4")
+                    return
+
+                for schema in schemas:
+                    tables = schema_tables.get(schema, [])
+                    with ui.expansion(
+                        f"{schema} ({len(tables)} tables)",
+                        icon="schema",
+                        value=len(schemas) == 1,  # auto-expand if single schema
+                    ).classes("w-full"):
+                        if not tables:
+                            ui.label("No tables").classes("text-grey-6 text-sm p-2")
+                            continue
+
+                        # Table list
+                        columns_def = [
+                            {"name": "icon", "label": "", "field": "icon", "style": "width: 40px"},
+                            {"name": "name", "label": "Table", "field": "name", "sortable": True},
+                            {"name": "type", "label": "Type", "field": "type", "sortable": True},
+                            {"name": "action", "label": "", "field": "action", "style": "width: 120px"},
+                        ]
+                        rows = []
+                        for ti in tables:
+                            rows.append({
+                                "icon": "view_agenda" if ti.table_type == "view" else "table_chart",
+                                "name": ti.name,
+                                "type": ti.table_type,
+                            })
+
+                        for ti in tables:
+                            qualified = f"{schema}.{ti.name}" if schema else ti.name
+                            icon_name = "view_agenda" if ti.table_type == "view" else "table_chart"
+
+                            with ui.expansion(
+                                ti.name,
+                                icon=icon_name,
+                            ).classes("w-full").props("dense"):
+                                # Column detail + query button
+                                with ui.row().classes("items-center gap-2 mb-2"):
+                                    ui.button(
+                                        "Query this table",
+                                        icon="play_arrow",
+                                        on_click=lambda cid=conn["id"], t=qualified: ui.navigate.to(
+                                            f"/sql?connection_id={cid}&table={t}"
+                                        ),
+                                    ).props("color=primary dense")
+
+                                # Load columns inline
+                                col_container = ui.column().classes("w-full")
+                                with col_container:
+                                    ui.label("Loading columns...").classes("text-xs text-grey-6")
+
+                                async def _load_cols(
+                                    c=conn, t=ti.name, s=schema, cc=col_container
+                                ):
+                                    try:
+                                        a = await create_adapter_from_connection(c)
+                                        cols = await a.get_columns(t, s)
+                                        await a.close()
+                                        cc.clear()
+                                        with cc:
+                                            if not cols:
+                                                ui.label("No columns").classes("text-xs text-grey-6")
+                                                return
+                                            col_rows = []
+                                            for ci in cols:
+                                                col_rows.append({
+                                                    "name": ci.name,
+                                                    "type": ci.data_type,
+                                                    "nullable": "YES" if ci.nullable else "NO",
+                                                    "pk": "PK" if ci.primary_key else "",
+                                                })
+                                            ui.table(
+                                                columns=[
+                                                    {"name": "name", "label": "Column", "field": "name"},
+                                                    {"name": "type", "label": "Type", "field": "type"},
+                                                    {"name": "nullable", "label": "Nullable", "field": "nullable"},
+                                                    {"name": "pk", "label": "Key", "field": "pk"},
+                                                ],
+                                                rows=col_rows,
+                                            ).classes("w-full").props("dense flat")
+                                    except Exception as ex:
+                                        cc.clear()
+                                        with cc:
+                                            ui.label(f"Error: {ex}").classes("text-xs text-negative")
+
+                                ui.timer(0.1, _load_cols, once=True)
+
+            except Exception as ex:
+                loading.delete()
+                ui.label(f"Error loading connection: {ex}").classes("text-negative p-4")
+
+    async def _back_to_grid(self) -> None:
+        """Go back to the card grid view."""
+        await refresh_cache()
+        self._page_container.clear()
+        with self._page_container:
+            self._render_card_grid()
 
     def _add_connection(self) -> None:
         """Show add connection dialog."""
@@ -910,6 +1054,7 @@ def connection_card(
     host: str,
     database: str,
     status: str = "unknown",
+    on_click=None,
     on_test=None,
     on_edit=None,
     on_delete=None,
@@ -921,7 +1066,7 @@ def connection_card(
         "unknown": "text-grey-5",
     }
 
-    with ui.card().classes("w-80"):
+    with ui.card().classes("w-80 cursor-pointer") as card:
         with ui.row().classes("items-center justify-between"):
             with ui.row().classes("items-center gap-2"):
                 ui.label(DB_ICONS.get(db_type, "📊")).classes("text-2xl")
@@ -934,7 +1079,11 @@ def connection_card(
                     ui.separator()
                     ui.menu_item("Delete", on_delete)
 
-        with ui.column().classes("mt-2 gap-1"):
+        # Clickable body area
+        body = ui.column().classes("mt-2 gap-1")
+        if on_click:
+            body.on("click", on_click)
+        with body:
             with ui.row().classes("items-center gap-2 text-sm text-grey-6"):
                 ui.icon("dns" if db_type != "file" else "folder", size="xs")
                 ui.label(host)
@@ -945,7 +1094,7 @@ def connection_card(
 
         with ui.row().classes("items-center gap-2 mt-3"):
             ui.icon("circle", size="xs").classes(status_colors.get(status, "text-grey-5"))
-            ui.label(status.capitalize()).classes("text-sm text-grey-6")
+            ui.label("Browse tables →").classes("text-sm text-grey-6")
 
     return None
 

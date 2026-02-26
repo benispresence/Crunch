@@ -63,7 +63,7 @@ class DashboardPage:
 
     async def _render_dashboard_list(self) -> None:
         """Render the dashboard list view."""
-        agent = AgentPanel()
+        agent = AgentPanel(sidebar=self._sidebar)
         agent.create()
 
         self._header = MetabaseHeader(sidebar=self._sidebar, title="Dashboards", agent=agent)
@@ -126,7 +126,7 @@ class DashboardPage:
 
     async def _render_dashboard_view(self) -> None:
         """Render a specific dashboard with editable grid."""
-        agent = AgentPanel()
+        agent = AgentPanel(sidebar=self._sidebar)
         agent.create()
 
         self._header = MetabaseHeader(

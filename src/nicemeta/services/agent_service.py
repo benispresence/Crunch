@@ -66,6 +66,8 @@ You can help users by:
 4. **Proposing edits** – use `propose_sql_edit` or `propose_python_edit` to suggest code changes; the user sees a diff and can accept or reject
 5. **Navigating** – use `navigate_to` to open specific pages, queries, or dashboards
 6. **Answering BI questions** – explain charts, suggest best practices, help with data analysis
+7. **Saving queries** – use `save_query` to save the current SQL as a named saved question
+8. **Dashboard management** – use `create_dashboard` to create dashboards, `add_widget_to_dashboard` to add saved queries as widgets
 
 ## Rules
 - Always inspect the schema (`get_schema`) before writing SQL for a connection you haven't seen yet
@@ -93,6 +95,9 @@ def _build_system(context: dict) -> str:
 
     if context.get("current_connection_id"):
         parts.append(f"\n## Active connection ID\n`{context['current_connection_id']}`")
+
+    if context.get("query_id"):
+        parts.append(f"\n## Current saved query ID\n`{context['query_id']}`")
 
     return "\n".join(parts)
 
@@ -208,6 +213,58 @@ TOOLS: list[dict] = [
                 }
             },
             "required": ["path"],
+        },
+    },
+    {
+        "name": "save_query",
+        "description": (
+            "Save the current SQL as a named saved question. Updates the existing "
+            "question if one is loaded, otherwise creates a new one. Returns the saved query ID."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Name for the saved question"},
+                "sql": {
+                    "type": "string",
+                    "description": "SQL to save. If omitted, uses the current SQL from the editor.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "create_dashboard",
+        "description": "Create a new empty dashboard and navigate to it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Dashboard name"},
+                "description": {"type": "string", "description": "Optional description"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "add_widget_to_dashboard",
+        "description": (
+            "Add a saved query as a widget to an existing dashboard. "
+            "The query must already be saved (use save_query first)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dashboard_id": {"type": "string", "description": "Target dashboard ID"},
+                "query_id": {"type": "string", "description": "Saved query ID to add"},
+                "chart_type": {
+                    "type": "string",
+                    "description": "Visualization type: table, bar, line, pie, area, scatter",
+                    "default": "bar",
+                },
+                "width": {"type": "integer", "description": "Widget width (1-12)", "default": 6},
+                "height": {"type": "integer", "description": "Widget height (1-6)", "default": 3},
+            },
+            "required": ["dashboard_id", "query_id"],
         },
     },
     {
@@ -503,6 +560,31 @@ class AgentService:
                 action = {"type": "navigation", "path": path}
                 ui_actions.append(action)
                 return {"status": "navigating", "path": path}
+            elif name == "save_query":
+                result = await self._tool_save_query(
+                    inputs["name"], inputs.get("sql"),
+                )
+                if result.get("status") == "saved":
+                    ui_actions.append({
+                        "type": "query_saved",
+                        "query_id": result["query_id"],
+                        "name": inputs["name"],
+                    })
+                return result
+            elif name == "create_dashboard":
+                result = await self._tool_create_dashboard(
+                    inputs["name"], inputs.get("description", ""),
+                )
+                if result.get("navigate_path"):
+                    ui_actions.append({"type": "navigation", "path": result["navigate_path"]})
+                return result
+            elif name == "add_widget_to_dashboard":
+                return await self._tool_add_widget(
+                    inputs["dashboard_id"], inputs["query_id"],
+                    inputs.get("chart_type", "bar"),
+                    int(inputs.get("width", 6)),
+                    int(inputs.get("height", 3)),
+                )
             elif name == "git_status":
                 return await self._tool_git_status()
             elif name == "git_sync_all":
@@ -522,24 +604,13 @@ class AgentService:
     async def _get_adapter(self, connection_id: str):
         """Look up a connection and return (adapter, None) or (None, error_dict)."""
         from nicemeta.services.connection_service import get_connection_by_id
-        from nicemeta.connections.manager import ConnectionManager
-        from nicemeta.config.connections import ConnectionConfig
+        from nicemeta.ui.utils import create_adapter_from_connection
 
         conn = await get_connection_by_id(connection_id)
         if not conn:
             return None, {"error": f"Connection '{connection_id}' not found"}
 
-        config = ConnectionConfig(
-            name=conn["name"],
-            type=conn["db_type"],
-            host=conn.get("host", "localhost"),
-            port=conn.get("port"),
-            database=conn.get("database", ""),
-            user=conn.get("user", conn.get("username", "")),
-            password=conn.get("password", ""),
-        )
-        manager = ConnectionManager()
-        adapter = manager.create_adapter(config)
+        adapter = await create_adapter_from_connection(conn)
         return adapter, None
 
     async def _tool_list_connections(self) -> dict:
@@ -639,6 +710,65 @@ class AgentService:
                 for d in dashboards
             ]
         }
+
+    async def _tool_save_query(self, name: str, sql: str | None = None) -> dict:
+        from nicemeta.ui.components.sidebar import save_query as sidebar_save_query
+
+        sql = sql or self._context.get("current_sql", "")
+        connection_id = self._context.get("current_connection_id", "")
+        query_id = self._context.get("query_id")
+
+        if not sql.strip():
+            return {"error": "No SQL to save"}
+        if not connection_id:
+            return {"error": "No connection selected"}
+
+        saved = await sidebar_save_query(
+            name=name, sql=sql, connection_id=connection_id, query_id=query_id,
+        )
+        return {"status": "saved", "query_id": saved["id"], "name": name}
+
+    async def _tool_create_dashboard(self, name: str, description: str = "") -> dict:
+        from nicemeta.ui.components.sidebar import create_dashboard as sidebar_create_dashboard
+
+        dashboard = await sidebar_create_dashboard(name=name, description=description)
+        return {
+            "status": "created",
+            "dashboard_id": dashboard["id"],
+            "name": name,
+            "navigate_path": f"/dashboards/{dashboard['id']}",
+        }
+
+    async def _tool_add_widget(
+        self, dashboard_id: str, query_id: str,
+        chart_type: str = "bar", width: int = 6, height: int = 3,
+    ) -> dict:
+        from nicemeta.services.dashboard_service import (
+            add_widget_to_dashboard, get_dashboard_by_id,
+        )
+
+        dashboard = await get_dashboard_by_id(dashboard_id)
+        if not dashboard:
+            return {"error": f"Dashboard '{dashboard_id}' not found"}
+
+        widgets = dashboard.get("widgets", [])
+        max_y = max(
+            (w.get("position_y", 0) + w.get("height", 4) for w in widgets),
+            default=0,
+        )
+
+        widget = await add_widget_to_dashboard(
+            dashboard_id=dashboard_id,
+            query_id=query_id,
+            chart_type=chart_type,
+            position_x=0,
+            position_y=max_y,
+            width=width,
+            height=height,
+        )
+        if widget:
+            return {"status": "widget_added", "widget_id": widget.get("id")}
+        return {"error": "Failed to add widget"}
 
     async def _tool_git_status(self) -> dict:
         from nicemeta.services.git_service import get_git_service

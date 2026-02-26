@@ -114,21 +114,9 @@ class QueryBuilderPage:
             return
 
         try:
-            from nicemeta.connections.manager import ConnectionManager
-            from nicemeta.config.connections import ConnectionConfig
+            from nicemeta.ui.utils import create_adapter_from_connection
 
-            config = ConnectionConfig(
-                name=conn["name"],
-                type=conn["db_type"],
-                host=conn["host"],
-                port=conn["port"],
-                database=conn["database"],
-                user=conn.get("user", "") or conn.get("username", ""),
-                password=conn.get("password", ""),
-            )
-
-            manager = ConnectionManager()
-            adapter = manager.create_adapter(config)
+            adapter = await create_adapter_from_connection(conn)
             table_infos = await adapter.get_tables()
 
             # Load columns for each table
@@ -186,21 +174,9 @@ class QueryBuilderPage:
         ui.notify("Executing query...", type="info")
 
         try:
-            from nicemeta.connections.manager import ConnectionManager
-            from nicemeta.config.connections import ConnectionConfig
+            from nicemeta.ui.utils import create_adapter_from_connection
 
-            config = ConnectionConfig(
-                name=conn["name"],
-                type=conn["db_type"],
-                host=conn["host"],
-                port=conn["port"],
-                database=conn["database"],
-                user=conn.get("user", "") or conn.get("username", ""),
-                password=conn.get("password", ""),
-            )
-
-            manager = ConnectionManager()
-            adapter = manager.create_adapter(config)
+            adapter = await create_adapter_from_connection(conn)
             result = await adapter.execute_query(sql, limit=1000)
 
             self._results_container.clear()
