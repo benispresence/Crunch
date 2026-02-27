@@ -81,6 +81,18 @@ _AGENT_RESIZE_JS = """
   var MIN = 300;
   var MAX = 700;
 
+  function isDrawerOpen(drawer) {
+    /* Quasar hides the drawer via an aria-hidden attribute or by
+       translating it off-screen.  Check a few reliable signals. */
+    if (drawer.getAttribute('aria-hidden') === 'true') return false;
+    var s = getComputedStyle(drawer);
+    if (s.display === 'none') return false;
+    /* Quasar translates closed right-drawers off-screen to the right */
+    var m = s.transform.match(/matrix.*,\\s*([\\d.-]+)\\)$/);
+    if (m && parseFloat(m[1]) > 50) return false;
+    return true;
+  }
+
   function applyWidth(w) {
     var styleEl = document.getElementById('nm-aw-override');
     if (!styleEl) {
@@ -94,15 +106,31 @@ _AGENT_RESIZE_JS = """
     if (pc) pc.style.setProperty('padding-right', w + 'px', 'important');
   }
 
+  function clearWidth() {
+    var pc = document.querySelector('.q-page-container');
+    if (pc) pc.style.removeProperty('padding-right');
+    var styleEl = document.getElementById('nm-aw-override');
+    if (styleEl) styleEl.textContent = '';
+  }
+
+  function syncDrawer(drawer) {
+    if (isDrawerOpen(drawer)) {
+      var saved = parseInt(localStorage.getItem(KEY) || '0', 10);
+      if (saved >= MIN && saved <= MAX) applyWidth(saved);
+    } else {
+      clearWidth();
+    }
+  }
+
   function init() {
     var drawer = document.querySelector('.q-drawer--right');
     if (!drawer || document.getElementById('nm-arh')) return;
 
+    /* Watch for open/close (style changes include Quasar transforms) */
     var obs = new MutationObserver(function() {
-      var saved = parseInt(localStorage.getItem(KEY) || '0', 10);
-      if (saved >= MIN && saved <= MAX) setTimeout(function(){ applyWidth(saved); }, 30);
+      setTimeout(function(){ syncDrawer(drawer); }, 50);
     });
-    obs.observe(drawer, { attributes: true, attributeFilter: ['style'] });
+    obs.observe(drawer, { attributes: true, attributeFilter: ['style', 'aria-hidden', 'class'] });
 
     var rh = document.createElement('div');
     rh.id = 'nm-arh';
@@ -143,8 +171,7 @@ _AGENT_RESIZE_JS = """
       window.addEventListener('mouseup', up);
     });
 
-    var saved = parseInt(localStorage.getItem(KEY) || '0', 10);
-    if (saved >= MIN && saved <= MAX) applyWidth(saved);
+    syncDrawer(drawer);
   }
 
   var n = 0;
@@ -267,48 +294,57 @@ class AgentPanel:
                 on_change=_on_model_change,
             ).props("dense borderless").classes("text-xs flex-1")
 
-        # ── History panel (toggled) ───────────────────────────────────────
-        self._history_panel = ui.column().classes("w-full h-full absolute bg-inherit").style(
-            "z-index: 10; top: 0; left: 0; right: 0; bottom: 0; padding-top: 100px;"
-        )
-        self._history_panel.set_visibility(False)
-        with self._history_panel:
-            with ui.row().classes("items-center justify-between px-3 py-2 border-b"):
-                ui.label("Chat History").classes("text-sm font-semibold")
-                ui.button(icon="close", on_click=self._toggle_history).props("flat round dense size=sm")
-            with ui.scroll_area().classes("w-full").style("height: calc(100% - 50px);"):
-                self._conversations_container = ui.column().classes("w-full gap-1 p-2")
+        # Wrapper for history and chat (only one visible at a time)
+        with ui.column().classes("w-full flex-grow gap-0").style("min-height: 0; overflow: hidden;"):
 
-        # ── Chat panel ────────────────────────────────────────────────────
-        self._chat_panel = ui.column().classes("w-full flex-grow gap-0").style("min-height: 0;")
-        with self._chat_panel:
-            # Messages area
-            with ui.scroll_area().style("height: calc(100vh - 280px); overflow-x: hidden;") as self._scroll_area:
-                self._messages_container = ui.column().classes(
-                    "w-full gap-3 px-3 py-3"
-                ).style("min-width:0")
-                self._render_empty_state()
+            # ── History panel (toggled — replaces chat, not overlay) ──────
+            self._history_panel = ui.column().classes("w-full flex-grow gap-0").style(
+                "min-height: 0;"
+            )
+            self._history_panel.set_visibility(False)
+            with self._history_panel:
+                with ui.row().classes(
+                    "items-center justify-between px-3 py-2 border-b border w-full flex-shrink-0"
+                ):
+                    ui.label("Chat History").classes("text-sm font-semibold")
+                    ui.button(
+                        icon="close", on_click=self._toggle_history
+                    ).props("flat round dense size=sm")
+                with ui.scroll_area().classes("w-full flex-grow"):
+                    self._conversations_container = ui.column().classes("w-full gap-1 p-2")
 
-            # Status line
-            self._status_label = ui.label("").classes(
-                "text-xs text-grey-5 px-4 py-1"
-            ).style("min-height:18px")
+            # ── Chat panel ────────────────────────────────────────────────
+            self._chat_panel = ui.column().classes("w-full flex-grow gap-0").style("min-height: 0;")
+            with self._chat_panel:
+                # Messages area
+                with ui.scroll_area().style(
+                    "flex: 1 1 0; min-height: 0; overflow-x: hidden;"
+                ).classes("w-full") as self._scroll_area:
+                    self._messages_container = ui.column().classes(
+                        "w-full gap-3 px-3 py-3"
+                    ).style("min-width:0")
+                    self._render_empty_state()
 
-            # Input area
-            with ui.row().classes(
-                "items-end gap-2 px-3 py-3 border-t border w-full"
-            ).style("min-width:0"):
-                self._input = ui.textarea(
-                    placeholder="Ask anything about your data...",
-                    on_change=lambda e: None,
-                ).props("dense outlined autogrow").classes("flex-1").style(
-                    "font-size:13px; max-height:120px; min-width:0;"
-                )
-                self._input.on("keydown", lambda e: self._maybe_send(e))
-                self._send_btn = ui.button(
-                    icon="send",
-                    on_click=self._send,
-                ).props("color=primary round dense")
+                # Status line
+                self._status_label = ui.label("").classes(
+                    "text-xs text-grey-5 px-4 py-1 flex-shrink-0"
+                ).style("min-height:18px")
+
+                # Input area
+                with ui.row().classes(
+                    "items-end gap-2 px-3 py-3 border-t border w-full flex-shrink-0"
+                ).style("min-width:0"):
+                    self._input = ui.textarea(
+                        placeholder="Ask anything about your data...",
+                        on_change=lambda e: None,
+                    ).props("dense outlined autogrow").classes("flex-1").style(
+                        "font-size:13px; max-height:120px; min-width:0;"
+                    )
+                    self._input.on("keydown", lambda e: self._maybe_send(e))
+                    self._send_btn = ui.button(
+                        icon="send",
+                        on_click=self._send,
+                    ).props("color=primary round dense")
 
     # ── History panel ─────────────────────────────────────────────────────────
 
@@ -316,6 +352,8 @@ class AgentPanel:
         self._history_visible = not self._history_visible
         if self._history_panel:
             self._history_panel.set_visibility(self._history_visible)
+        if self._chat_panel:
+            self._chat_panel.set_visibility(not self._history_visible)
         if self._history_visible:
             asyncio.ensure_future(self._load_conversations_list())
 

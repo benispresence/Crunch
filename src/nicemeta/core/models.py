@@ -392,3 +392,23 @@ class AgentConversation(Base, TimestampMixin):
         nullable=True,
     )
 
+
+class AllowedPackage(Base, TimestampMixin):
+    """Admin-managed whitelist of Python packages available in the viz sandbox."""
+
+    __tablename__ = "allowed_packages"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    package_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
+    import_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    version_spec: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    installed_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="pending")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+

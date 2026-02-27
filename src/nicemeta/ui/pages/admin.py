@@ -38,6 +38,7 @@ class AdminPage:
             with ui.tabs().classes("w-full") as tabs:
                 users_tab = ui.tab("Users", icon="people")
                 settings_tab = ui.tab("Settings", icon="settings")
+                packages_tab = ui.tab("Packages", icon="inventory_2")
                 ai_tab = ui.tab("AI", icon="smart_toy")
                 git_tab = ui.tab("Git", icon="merge")
                 system_tab = ui.tab("System", icon="computer")
@@ -48,6 +49,9 @@ class AdminPage:
 
                 with ui.tab_panel(settings_tab):
                     await self._render_settings_panel()
+
+                with ui.tab_panel(packages_tab):
+                    await self._render_packages_panel()
 
                 with ui.tab_panel(ai_tab):
                     self._render_ai_panel()
@@ -143,6 +147,269 @@ class AdminPage:
                 icon="save",
                 on_click=self._save_settings,
             ).props("color=primary")
+
+    async def _render_packages_panel(self) -> None:
+        """Render the Python packages management panel."""
+        from nicemeta.services import package_service
+        from nicemeta.visualization.code_executor import CodeExecutor
+
+        packages = await package_service.list_all()
+
+        with ui.column().classes("w-full gap-6 max-w-3xl"):
+            # Info banner
+            with ui.card().classes("w-full bg-blue-1 border"):
+                with ui.row().classes("items-start gap-3 p-4"):
+                    ui.icon("info", size="sm").classes("text-primary mt-1 flex-shrink-0")
+                    with ui.column().classes("gap-1"):
+                        ui.label("Sandbox Package Manager").classes("font-semibold text-primary")
+                        ui.label(
+                            "Packages listed here can be imported in visualization code. "
+                            "Only whitelisted packages are accessible — users cannot import "
+                            "arbitrary modules. Default packages (pandas, numpy, plotly, etc.) "
+                            "are pre-configured and cannot be removed."
+                        ).classes("text-sm text-primary")
+
+            # Add package card
+            with ui.card().classes("w-full"):
+                ui.label("Add Package").classes("text-lg font-semibold mb-3")
+                ui.label(
+                    "Add a PyPI package to the whitelist. It will be installed automatically."
+                ).classes("text-sm text-grey-6 mb-3")
+
+                with ui.row().classes("gap-3 items-end flex-wrap"):
+                    pkg_name_input = ui.input(
+                        label="PyPI Package Name",
+                        placeholder="e.g. wordcloud",
+                    ).classes("w-48")
+                    import_name_input = ui.input(
+                        label="Import Name (if different)",
+                        placeholder="e.g. sklearn",
+                    ).classes("w-48")
+                    version_input = ui.input(
+                        label="Version Spec",
+                        placeholder="e.g. >=1.0,<2.0",
+                    ).classes("w-40")
+
+                    async def _do_add_package():
+                        name = pkg_name_input.value.strip()
+                        if not name:
+                            ui.notify("Package name is required", type="warning")
+                            return
+                        ui.notify(f"Installing {name}...", type="info")
+                        result = await package_service.add_package(
+                            package_name=name,
+                            import_name=import_name_input.value.strip() or None,
+                            version_spec=version_input.value.strip() or None,
+                            auto_install=True,
+                        )
+                        CodeExecutor.invalidate_cache()
+                        if result.get("status") == "installed":
+                            ui.notify(
+                                f"Installed {name} v{result.get('installed_version', '?')}",
+                                type="positive",
+                            )
+                        else:
+                            ui.notify(
+                                f"Failed to install {name}: {result.get('error_message', 'unknown error')}",
+                                type="negative",
+                            )
+                        # Refresh table
+                        updated = await package_service.list_all()
+                        pkg_table.rows = [_pkg_row(p) for p in updated]
+                        pkg_table.update()
+
+                    ui.button(
+                        "Add & Install", icon="add", on_click=_do_add_package
+                    ).props("color=primary dense")
+
+            # Packages table
+            with ui.card().classes("w-full"):
+                with ui.row().classes("items-center justify-between w-full mb-3"):
+                    ui.label("Allowed Packages").classes("text-lg font-semibold")
+
+                    async def _refresh_versions():
+                        ui.notify("Scanning installed versions...", type="info")
+                        await package_service.refresh_all_versions()
+                        CodeExecutor.invalidate_cache()
+                        updated = await package_service.list_all()
+                        pkg_table.rows = [_pkg_row(p) for p in updated]
+                        pkg_table.update()
+                        ui.notify("Versions refreshed", type="positive")
+
+                    ui.button(
+                        "Refresh", icon="refresh", on_click=_refresh_versions
+                    ).props("flat dense")
+
+                def _pkg_row(p: dict) -> dict:
+                    status = p.get("status", "unknown")
+                    status_icon = {
+                        "installed": "check_circle",
+                        "installing": "hourglass_empty",
+                        "pending": "schedule",
+                        "failed": "error",
+                    }.get(status, "help")
+                    return {
+                        "id": p["id"],
+                        "package_name": p["package_name"],
+                        "import_name": p.get("import_name") or p["package_name"],
+                        "installed_version": p.get("installed_version") or "-",
+                        "status": status,
+                        "status_icon": status_icon,
+                        "is_enabled": p.get("is_enabled", True),
+                        "is_default": p.get("is_default", False),
+                        "error_message": p.get("error_message") or "",
+                    }
+
+                columns = [
+                    {"name": "package_name", "label": "Package", "field": "package_name",
+                     "sortable": True, "align": "left"},
+                    {"name": "import_name", "label": "Import As", "field": "import_name",
+                     "align": "left"},
+                    {"name": "installed_version", "label": "Version",
+                     "field": "installed_version", "align": "left"},
+                    {"name": "status", "label": "Status", "field": "status", "align": "left"},
+                    {"name": "is_enabled", "label": "Enabled", "field": "is_enabled",
+                     "align": "center"},
+                    {"name": "actions", "label": "Actions", "field": "actions",
+                     "align": "center"},
+                ]
+
+                rows = [_pkg_row(p) for p in packages]
+
+                pkg_table = ui.table(
+                    columns=columns,
+                    rows=rows,
+                    row_key="id",
+                ).classes("w-full")
+
+                # Add slot templates for status and action columns
+                pkg_table.add_slot(
+                    "body-cell-status",
+                    """
+                    <q-td :props="props">
+                        <q-badge
+                            :color="props.row.status === 'installed' ? 'positive' :
+                                    props.row.status === 'installing' ? 'warning' :
+                                    props.row.status === 'failed' ? 'negative' : 'grey'"
+                            :label="props.row.status"
+                        />
+                        <q-tooltip v-if="props.row.error_message">
+                            {{ props.row.error_message }}
+                        </q-tooltip>
+                    </q-td>
+                    """,
+                )
+
+                pkg_table.add_slot(
+                    "body-cell-is_enabled",
+                    """
+                    <q-td :props="props">
+                        <q-toggle
+                            :model-value="props.row.is_enabled"
+                            @update:model-value="() => $parent.$emit('toggle_enabled', props.row)"
+                            dense
+                        />
+                    </q-td>
+                    """,
+                )
+
+                pkg_table.add_slot(
+                    "body-cell-actions",
+                    """
+                    <q-td :props="props">
+                        <q-btn
+                            v-if="props.row.status !== 'installed'"
+                            icon="download"
+                            dense flat round size="sm"
+                            color="primary"
+                            @click="$parent.$emit('install_pkg', props.row)"
+                        >
+                            <q-tooltip>Install</q-tooltip>
+                        </q-btn>
+                        <q-btn
+                            v-if="props.row.status === 'installed'"
+                            icon="upgrade"
+                            dense flat round size="sm"
+                            color="secondary"
+                            @click="$parent.$emit('update_pkg', props.row)"
+                        >
+                            <q-tooltip>Update</q-tooltip>
+                        </q-btn>
+                        <q-btn
+                            v-if="!props.row.is_default"
+                            icon="delete"
+                            dense flat round size="sm"
+                            color="negative"
+                            @click="$parent.$emit('remove_pkg', props.row)"
+                        >
+                            <q-tooltip>Remove</q-tooltip>
+                        </q-btn>
+                    </q-td>
+                    """,
+                )
+
+                async def _on_toggle_enabled(e):
+                    row = e.args
+                    new_val = not row["is_enabled"]
+                    await package_service.toggle_enabled(row["id"], new_val)
+                    CodeExecutor.invalidate_cache()
+                    updated = await package_service.list_all()
+                    pkg_table.rows = [_pkg_row(p) for p in updated]
+                    pkg_table.update()
+                    state = "enabled" if new_val else "disabled"
+                    ui.notify(f"{row['package_name']} {state}", type="info")
+
+                async def _on_install(e):
+                    row = e.args
+                    ui.notify(f"Installing {row['package_name']}...", type="info")
+                    result = await package_service.install_package(row["id"])
+                    CodeExecutor.invalidate_cache()
+                    if result["success"]:
+                        ui.notify(
+                            f"Installed {row['package_name']} v{result.get('version', '?')}",
+                            type="positive",
+                        )
+                    else:
+                        ui.notify(
+                            f"Failed: {result.get('error', 'unknown')}",
+                            type="negative",
+                        )
+                    updated = await package_service.list_all()
+                    pkg_table.rows = [_pkg_row(p) for p in updated]
+                    pkg_table.update()
+
+                async def _on_update(e):
+                    row = e.args
+                    ui.notify(f"Updating {row['package_name']}...", type="info")
+                    result = await package_service.update_package(row["id"])
+                    CodeExecutor.invalidate_cache()
+                    if result["success"]:
+                        ui.notify(
+                            f"Updated to v{result.get('version', '?')}",
+                            type="positive",
+                        )
+                    else:
+                        ui.notify(f"Failed: {result.get('error', 'unknown')}", type="negative")
+                    updated = await package_service.list_all()
+                    pkg_table.rows = [_pkg_row(p) for p in updated]
+                    pkg_table.update()
+
+                async def _on_remove(e):
+                    row = e.args
+                    ok = await package_service.remove_package(row["id"])
+                    CodeExecutor.invalidate_cache()
+                    if ok:
+                        ui.notify(f"Removed {row['package_name']}", type="positive")
+                    else:
+                        ui.notify("Cannot remove default packages", type="warning")
+                    updated = await package_service.list_all()
+                    pkg_table.rows = [_pkg_row(p) for p in updated]
+                    pkg_table.update()
+
+                pkg_table.on("toggle_enabled", _on_toggle_enabled)
+                pkg_table.on("install_pkg", _on_install)
+                pkg_table.on("update_pkg", _on_update)
+                pkg_table.on("remove_pkg", _on_remove)
 
     async def _render_system_panel(self) -> None:
         """Render the system information panel."""

@@ -499,22 +499,31 @@ class SQLEditorPage:
             self._main_python_editor.set_value(self._python_code)
         ui.notify("Code reset to auto-generated version", type="info")
     
+    def _auto_execute_saved_python(self) -> None:
+        """Auto-execute saved custom Python code after query results load."""
+        if not self._python_code or self.result_df is None:
+            return
+        result = execute_visualization_code(self._python_code, self.result_df)
+        if result.success:
+            self._chart_config["_custom_figure"] = result.figure
+            self._chart_config["_use_custom_code"] = True
+
     def _execute_main_python_code(self) -> None:
         """Execute the Python code from main editor."""
         if self.result_df is None:
             ui.notify("No data available. Run the SQL query first.", type="warning")
             return
-        
+
         # Execute the code
         result = execute_visualization_code(self._python_code, self.result_df)
-        
+
         if result.success:
             ui.notify("Code executed successfully", type="positive")
-            
+
             # Store the figure for rendering
             self._chart_config["_custom_figure"] = result.figure
             self._chart_config["_use_custom_code"] = True
-            
+
             # Switch to visualization view and refresh
             self._selected_view = "visualization"
             self._render_results()
@@ -668,28 +677,35 @@ class SQLEditorPage:
 
     def _save_query_dialog(self) -> None:
         """Show save query dialog."""
+        from nicemeta.ui.components.sidebar import get_cached_folder_tree
+
         with ui.dialog() as dialog, ui.card().classes("w-96"):
             ui.label("Save Question").classes("text-lg font-semibold mb-4")
-            
+
             name_input = ui.input(
                 label="Name",
                 value=self.query_name,
             ).classes("w-full")
-            
-            # Folder selection (simplified)
+
+            # Build folder options from cached tree
+            folder_options: dict[str, str] = {"": "(No folder)"}
+            for f in get_cached_folder_tree():
+                folder_options[f["id"]] = f["name"]
+
             folder_select = ui.select(
                 label="Save to",
-                options={"1": "My Queries"},
-                value="1",
+                options=folder_options,
+                value="",
             ).classes("w-full")
-            
+
             async def do_save():
-                await self._do_save_query(name_input.value, folder_select.value, dialog)
-            
+                fid = folder_select.value or None
+                await self._do_save_query(name_input.value, fid, dialog)
+
             with ui.row().classes("justify-end gap-2 mt-4"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
                 ui.button("Save", on_click=do_save).props("color=primary")
-        
+
         dialog.open()
 
     async def _do_save_query(self, name: str, folder_id: str, dialog) -> None:
@@ -697,37 +713,51 @@ class SQLEditorPage:
         if not name:
             ui.notify("Please enter a name", type="warning")
             return
-        
+
         sql = self.editor.get_value() if self.editor else ""
         if not sql.strip():
             ui.notify("Please enter a SQL query", type="warning")
             return
-        
-        # Save the query
-        saved = await save_query(
-            name=name,
-            sql=sql,
-            connection_id=self.current_connection or "",
-            folder_id=folder_id,
-            query_id=self.query_id,
-        )
-        
-        self.query_id = saved["id"]
-        self.query_name = name
-        if self._query_name_input:
-            self._query_name_input.value = name
-        
-        # Save visualization settings if configured
-        if self._selected_chart_type:
-            await save_visualization(
+
+        try:
+            # Save the query
+            saved = await save_query(
+                name=name,
+                sql=sql,
+                connection_id=self.current_connection or "",
+                folder_id=folder_id,
                 query_id=self.query_id,
-                chart_type=self._selected_chart_type,
-                config=self._chart_config,
-                python_code=self._python_code if self._python_code_modified else None,
             )
-        
-        ui.notify(f"Saved '{name}'", type="positive")
-        dialog.close()
+
+            self.query_id = saved["id"]
+            self.query_name = name
+            if self._query_name_input:
+                self._query_name_input.value = name
+
+            # Capture current python code from the editor widget if open
+            if self._main_python_editor:
+                self._python_code = self._main_python_editor.value
+                if self._python_code:
+                    self._python_code_modified = True
+
+            # Save visualization settings if configured
+            if self._selected_chart_type:
+                # Strip runtime-only keys (non-serializable Figure objects)
+                persistable_config = {
+                    k: v for k, v in self._chart_config.items()
+                    if k not in ("_custom_figure", "_use_custom_code")
+                }
+                await save_visualization(
+                    query_id=self.query_id,
+                    chart_type=self._selected_chart_type,
+                    config=persistable_config,
+                    python_code=self._python_code if self._python_code_modified else None,
+                )
+
+            dialog.close()
+            ui.notify(f"Saved '{name}'", type="positive")
+        except Exception as exc:
+            ui.notify(f"Save failed: {exc}", type="negative")
 
     def _delete_query(self) -> None:
         """Delete the current query."""
@@ -2053,7 +2083,10 @@ class SQLEditorPage:
                     # Update main Python editor if visible
                     if self._main_python_editor:
                         self._main_python_editor.set_value(self._python_code)
-                
+                else:
+                    # Auto-execute saved custom Python code so the viz renders
+                    self._auto_execute_saved_python()
+
                 # Update bottom bar stats
                 if self._row_count_label:
                     self._row_count_label.text = f"Showing {result.row_count} rows"

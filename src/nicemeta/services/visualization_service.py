@@ -94,7 +94,10 @@ class VisualizationService:
                 # Update existing visualization
                 viz.chart_type = chart_type
                 viz.config = config or {}
-                viz.python_code = python_code
+                # Only overwrite python_code if a new value is provided;
+                # passing None means "keep existing code"
+                if python_code is not None:
+                    viz.python_code = python_code
                 viz.renderer = renderer
                 if name:
                     viz.name = name

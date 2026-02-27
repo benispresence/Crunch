@@ -18,6 +18,9 @@ async def lifespan(fastapi_app: FastAPI):
     """Application lifespan manager."""
     # Startup
     await init_db()
+    # Seed default allowed packages for the visualization sandbox
+    from nicemeta.services.package_service import seed_defaults
+    await seed_defaults()
     yield
     # Shutdown
     await close_db()
