@@ -116,6 +116,10 @@ body.body--dark .q-drawer--right .q-markdown code { background: rgba(255,255,255
     background: rgba(59, 130, 246, 0.12) !important;
     color: var(--q-primary) !important;
 }
+
+/* ── Plotly responsive charts ──────────────────────────────────────────── */
+.js-plotly-plot, .plotly { width: 100% !important; min-width: 0 !important; }
+.js-plotly-plot .plotly .main-svg { width: 100% !important; }
 """
 
 
@@ -142,6 +146,23 @@ def inject_theme() -> None:
 
     # Layout CSS for custom components only
     ui.add_head_html(f"<style>{_LAYOUT_CSS}</style>")
+
+    # Reflow plotly charts when page container resizes (drawer open/close/drag)
+    ui.add_head_html("""<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        var pc = document.querySelector('.q-page-container');
+        if (!pc || typeof ResizeObserver === 'undefined') return;
+        var _t;
+        new ResizeObserver(function() {
+            clearTimeout(_t);
+            _t = setTimeout(function() {
+                document.querySelectorAll('.js-plotly-plot').forEach(function(el) {
+                    if (window.Plotly) Plotly.Plots.resize(el);
+                });
+            }, 120);
+        }).observe(pc);
+    });
+    </script>""")
 
     # Force header/footer to neutral surface colors (Quasar sets inline primary bg)
     if is_dark:

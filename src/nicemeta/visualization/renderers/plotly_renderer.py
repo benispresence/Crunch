@@ -234,6 +234,8 @@ class PlotlyRenderer(ChartRenderer):
             layout_updates["yaxis_title"] = y_label
         if config.width:
             layout_updates["width"] = config.width
+        else:
+            layout_updates["autosize"] = True
         if config.height:
             layout_updates["height"] = config.height
         

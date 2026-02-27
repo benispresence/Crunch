@@ -163,8 +163,8 @@ class SQLEditorPage:
                         ui.label("Running query...").classes("text-grey-6 mt-2")
 
                     # Results/Visualization area
-                    with ui.column().classes("flex-grow w-full overflow-hidden"):
-                        self._results_container = ui.column().classes("w-full h-full p-4")
+                    with ui.column().classes("flex-grow w-full overflow-hidden min-w-0"):
+                        self._results_container = ui.column().classes("w-full h-full p-4 min-w-0")
                         with self._results_container:
                             if self._is_saved_query:
                                 with ui.column().classes(
@@ -1700,7 +1700,7 @@ class SQLEditorPage:
                         on_click=self._reset_to_auto_chart,
                     ).props("flat dense size=sm")
                 
-                ui.plotly(fig).classes("w-full")
+                ui.plotly(fig).classes("w-full").style("min-width:0")
                 return
             
             # Auto-detect column mappings from the DataFrame when not explicitly configured
@@ -1788,7 +1788,6 @@ class SQLEditorPage:
                 lat=lat_val,
                 lon=lon_val,
                 locations=locations_val,
-                width=900,
                 height=500,
             )
 
@@ -1870,8 +1869,8 @@ class SQLEditorPage:
                 with ui.row().classes("items-center gap-2 mb-2"):
                     ui.badge(lib_info).props("color=grey-7 outline")
             
-            ui.plotly(fig).classes("w-full")
-            
+            ui.plotly(fig).classes("w-full").style("min-width:0")
+
         except Exception as e:
             import traceback
             with ui.card().classes("w-full p-4 border"):
