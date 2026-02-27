@@ -28,7 +28,7 @@ class FolderService:
     async def create_folder(
         self,
         name: str,
-        owner_id: str,
+        owner_id: str | None = None,
         parent_id: str | None = None,
         description: str | None = None,
         is_public: bool = False,
@@ -72,32 +72,30 @@ class FolderService:
         )
         return result.scalar_one_or_none()
 
-    async def get_root_folders(self, owner_id: str) -> list[Folder]:
-        """Get all root folders for a user."""
-        result = await self.session.execute(
-            select(Folder)
-            .where(Folder.owner_id == owner_id)
-            .where(Folder.parent_id.is_(None))
-            .order_by(Folder.name)
-        )
+    async def get_root_folders(self, owner_id: str | None = None) -> list[Folder]:
+        """Get all root folders, optionally filtered by owner."""
+        stmt = select(Folder).where(Folder.parent_id.is_(None))
+        if owner_id is not None:
+            stmt = stmt.where(Folder.owner_id == owner_id)
+        result = await self.session.execute(stmt.order_by(Folder.name))
         return list(result.scalars().all())
 
-    async def get_folder_tree(self, owner_id: str) -> list[dict]:
+    async def get_folder_tree(self, owner_id: str | None = None) -> list[dict]:
         """
-        Get the complete folder tree for a user.
-        
+        Get the complete folder tree, optionally filtered by owner.
+
         Returns a nested structure with folders, queries, and dashboards.
         """
-        # Get all folders for user
-        result = await self.session.execute(
+        stmt = (
             select(Folder)
             .options(
                 selectinload(Folder.queries),
                 selectinload(Folder.dashboards),
             )
-            .where(Folder.owner_id == owner_id)
-            .order_by(Folder.name)
         )
+        if owner_id is not None:
+            stmt = stmt.where(Folder.owner_id == owner_id)
+        result = await self.session.execute(stmt.order_by(Folder.name))
         folders = list(result.scalars().all())
         
         # Build tree structure

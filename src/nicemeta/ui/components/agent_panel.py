@@ -1,19 +1,21 @@
 """
-AI Agent panel for NiceMeta.
+AI Agent panel for NiceMeta — Cursor-like right-drawer chat.
 
-A right-side chat drawer with:
-- Markdown-formatted LLM output
-- Inline tool-call status cards
-- Diff view (accept/reject) for SQL and Python proposals
-- Model/provider selector
-- API keys loaded from app.storage.user (set in Admin → AI tab)
+Features:
+- Multiple saved conversations with DB persistence
+- Combined model picker (all providers in one dropdown)
+- Markdown chat with tool-call chips and diff proposals
+- Accept/Reject per proposal, Accept All / Reject All
+- Drag-to-resize drawer (300-700 px, persisted to localStorage)
 """
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import html as _html
 import json
+import logging
 from typing import Callable
 
 from nicegui import app, ui
@@ -24,21 +26,11 @@ from nicemeta.services.agent_service import (
     ANTHROPIC_MODELS,
     OPENAI_MODELS,
 )
+from nicemeta.services import agent_conversation_service as conv_svc
+
+logger = logging.getLogger(__name__)
 
 # ── Diff helpers ──────────────────────────────────────────────────────────────
-
-_DIFF_STYLES = """
-<style>
-.nm-diff{font-family:monospace;font-size:12px;line-height:1.5;
-  border-radius:6px;overflow:auto;max-height:340px;background:#1e1e1e;
-  border:1px solid #3e3e42;}
-.nm-diff-line{display:block;padding:0 10px;white-space:pre;}
-.nm-diff-add{background:#1a3a1a;color:#4ec94e;}
-.nm-diff-del{background:#3a1a1a;color:#f97583;}
-.nm-diff-hunk{background:#1a1f2e;color:#7a8aaa;padding:2px 10px;font-size:11px;}
-.nm-diff-ctx{color:#888;}
-</style>
-"""
 
 
 def _make_diff_html(old: str, new: str) -> str:
@@ -50,7 +42,7 @@ def _make_diff_html(old: str, new: str) -> str:
     if not diff:
         return '<div class="nm-diff"><div class="nm-diff-ctx" style="padding:8px">No changes</div></div>'
 
-    parts = [_DIFF_STYLES, '<div class="nm-diff">']
+    parts = ['<div class="nm-diff">']
     for line in diff:
         esc = _html.escape(line)
         if line.startswith("+++") or line.startswith("---"):
@@ -73,10 +65,16 @@ _KEY_ANTHROPIC = "agent_anthropic_key"
 _KEY_OPENAI = "agent_openai_key"
 _KEY_PROVIDER = "agent_provider"
 _KEY_MODEL = "agent_model"
-_KEY_HISTORY = "agent_history"
-_MAX_HISTORY = 40  # messages kept in storage
 
-# JavaScript for drag-to-resize the right agent drawer
+# ── Combined model list ──────────────────────────────────────────────────────
+
+_COMBINED_MODELS: dict[str, str] = {}
+for _prov, _models in ALL_MODELS.items():
+    for _mid, _mname in _models.items():
+        _COMBINED_MODELS[f"{_prov}:{_mid}"] = _mname
+
+# ── Resize JS ────────────────────────────────────────────────────────────────
+
 _AGENT_RESIZE_JS = """
 (function() {
   var KEY = 'nm_agent_w';
@@ -164,12 +162,14 @@ _AGENT_RESIZE_JS = """
 
 class AgentPanel:
     """
-    Right-drawer AI chat panel.
+    Right-drawer AI chat panel with Cursor-like UX.
 
-    Pass page-specific callbacks so the panel can apply code proposals:
-      on_apply_sql(new_sql)     – called when user accepts a SQL proposal
-      on_apply_python(new_code) – called when user accepts a Python proposal
-      get_context()             – returns dict with current_sql, current_python, etc.
+    Features:
+    - Multiple saved conversations (DB-persisted)
+    - Combined model picker
+    - Tool-call status chips
+    - Diff proposals with Accept / Reject (+ Accept All / Reject All)
+    - Auto-apply side-effects (SQL run, save, navigate)
     """
 
     def __init__(
@@ -188,18 +188,28 @@ class AgentPanel:
         self.get_context = get_context or (lambda: {})
         self.sidebar = sidebar
 
+        # UI elements
         self._drawer: ui.right_drawer | None = None
         self._messages_container: ui.column | None = None
-        self._input: ui.input | None = None
+        self._input: ui.textarea | None = None
         self._send_btn: ui.button | None = None
         self._status_label: ui.label | None = None
-        self._provider_select: ui.select | None = None
         self._model_select: ui.select | None = None
+
+        # Chat history views
+        self._history_panel: ui.column | None = None
+        self._chat_panel: ui.column | None = None
+        self._conversations_container: ui.column | None = None
+        self._history_visible = False
+
+        # Current conversation
+        self._current_conversation_id: str | None = None
+        self._messages: list[dict] = []
 
     # ── Public ────────────────────────────────────────────────────────────────
 
     def create(self) -> ui.right_drawer:
-        """Build and return the right drawer. Call inside a NiceGUI page."""
+        """Build and return the right drawer."""
         self._drawer = ui.right_drawer(value=False).props("bordered").style(
             "width: 420px; min-width: 0; overflow: hidden;"
         )
@@ -217,125 +227,180 @@ class AgentPanel:
     def _build_ui(self) -> None:
         # ── Header bar ──────────────────────────────────────────────────────
         with ui.row().classes(
-            "items-center justify-between px-4 py-3 border-b border"
+            "items-center justify-between px-4 py-3 border-b border w-full"
         ):
             with ui.row().classes("items-center gap-2"):
+                ui.button(
+                    icon="menu",
+                    on_click=self._toggle_history,
+                ).props("flat round dense").classes("text-grey-6").tooltip("Chat history")
                 ui.icon("smart_toy", size="sm").classes("text-primary")
                 ui.label("AI Agent").classes("font-semibold text-weight-medium")
             with ui.row().classes("gap-1"):
                 ui.button(
-                    icon="delete_sweep",
-                    on_click=self._clear_history,
-                ).props("flat round dense").classes("text-grey-5").tooltip("Clear conversation")
+                    icon="add",
+                    on_click=self._new_conversation,
+                ).props("flat round dense").classes("text-grey-5").tooltip("New chat")
                 ui.button(
                     icon="close",
                     on_click=lambda: self._drawer.toggle(),
                 ).props("flat round dense").classes("text-grey-6")
 
-        # ── Model selector ───────────────────────────────────────────────────
-        with ui.row().classes("items-center gap-2 px-3 py-2 border-b border"):
+        # ── Model selector (combined) ─────────────────────────────────────
+        with ui.row().classes("items-center gap-2 px-3 py-2 border-b border w-full"):
             storage = app.storage.user
             cur_provider = storage.get(_KEY_PROVIDER, "anthropic")
             cur_model = storage.get(_KEY_MODEL, "claude-sonnet-4-6")
+            combined_value = f"{cur_provider}:{cur_model}"
+            if combined_value not in _COMBINED_MODELS:
+                combined_value = next(iter(_COMBINED_MODELS))
 
-            def _on_provider_change(e) -> None:
-                storage[_KEY_PROVIDER] = e.value
-                models = ALL_MODELS.get(e.value, ANTHROPIC_MODELS)
-                if self._model_select:
-                    self._model_select.options = models
-                    first = next(iter(models))
-                    self._model_select.value = first
-                    storage[_KEY_MODEL] = first
-
-            def _on_model_change(e) -> None:
-                storage[_KEY_MODEL] = e.value
-
-            self._provider_select = ui.select(
-                options={"anthropic": "Anthropic", "openai": "OpenAI"},
-                value=cur_provider,
-                on_change=_on_provider_change,
-            ).props("dense outlined").classes("text-xs").style("width:100px")
-
-            models_for_provider = ALL_MODELS.get(cur_provider, ANTHROPIC_MODELS)
-            if cur_model not in models_for_provider:
-                cur_model = next(iter(models_for_provider))
+            def _on_model_change(e):
+                if ":" in (e.value or ""):
+                    prov, mod = e.value.split(":", 1)
+                    storage[_KEY_PROVIDER] = prov
+                    storage[_KEY_MODEL] = mod
 
             self._model_select = ui.select(
-                options=models_for_provider,
-                value=cur_model,
+                options=_COMBINED_MODELS,
+                value=combined_value,
                 on_change=_on_model_change,
-            ).props("dense outlined").classes("text-xs flex-1")
+            ).props("dense borderless").classes("text-xs flex-1")
 
-        # ── Messages area ────────────────────────────────────────────────────
-        with ui.scroll_area().style("height: calc(100% - 200px); overflow-x: hidden;"):
-            self._messages_container = ui.column().classes(
-                "w-full gap-3 px-3 py-3"
-            ).style("min-width:0")
-            self._render_history()
+        # ── History panel (toggled) ───────────────────────────────────────
+        self._history_panel = ui.column().classes("w-full h-full absolute bg-inherit").style(
+            "z-index: 10; top: 0; left: 0; right: 0; bottom: 0; padding-top: 100px;"
+        )
+        self._history_panel.set_visibility(False)
+        with self._history_panel:
+            with ui.row().classes("items-center justify-between px-3 py-2 border-b"):
+                ui.label("Chat History").classes("text-sm font-semibold")
+                ui.button(icon="close", on_click=self._toggle_history).props("flat round dense size=sm")
+            with ui.scroll_area().classes("w-full").style("height: calc(100% - 50px);"):
+                self._conversations_container = ui.column().classes("w-full gap-1 p-2")
 
-        # ── Status line ──────────────────────────────────────────────────────
-        self._status_label = ui.label("").classes(
-            "text-xs text-grey-5 px-4 py-1"
-        ).style("min-height:18px")
+        # ── Chat panel ────────────────────────────────────────────────────
+        self._chat_panel = ui.column().classes("w-full flex-grow gap-0").style("min-height: 0;")
+        with self._chat_panel:
+            # Messages area
+            with ui.scroll_area().style("height: calc(100vh - 280px); overflow-x: hidden;") as self._scroll_area:
+                self._messages_container = ui.column().classes(
+                    "w-full gap-3 px-3 py-3"
+                ).style("min-width:0")
+                self._render_empty_state()
 
-        # ── Input area ───────────────────────────────────────────────────────
-        with ui.row().classes(
-            "items-end gap-2 px-3 py-3 border-t border w-full"
-        ).style("min-width:0"):
-            self._input = ui.textarea(
-                placeholder="Ask anything about your data...",
-                on_change=lambda e: None,
-            ).props("dense outlined autogrow").classes("flex-1").style(
-                "font-size:13px; max-height:120px; min-width:0;"
-            )
-            # Send on Shift+Enter or click
-            self._input.on(
-                "keydown",
-                lambda e: self._maybe_send(e),
-            )
-            self._send_btn = ui.button(
-                icon="send",
-                on_click=self._send,
-            ).props("color=primary round dense")
+            # Status line
+            self._status_label = ui.label("").classes(
+                "text-xs text-grey-5 px-4 py-1"
+            ).style("min-height:18px")
 
-    # ── History persistence ───────────────────────────────────────────────────
-
-    def _load_history(self) -> list[dict]:
-        raw = app.storage.user.get(_KEY_HISTORY, "[]")
-        try:
-            return json.loads(raw) if isinstance(raw, str) else raw
-        except Exception:
-            return []
-
-    def _save_history(self, messages: list[dict]) -> None:
-        trimmed = messages[-_MAX_HISTORY:]
-        app.storage.user[_KEY_HISTORY] = json.dumps(trimmed)
-
-    def _clear_history(self) -> None:
-        app.storage.user[_KEY_HISTORY] = "[]"
-        if self._messages_container:
-            self._messages_container.clear()
-            with self._messages_container:
-                ui.label("Conversation cleared.").classes(
-                    "text-xs text-grey-5 text-center py-4"
+            # Input area
+            with ui.row().classes(
+                "items-end gap-2 px-3 py-3 border-t border w-full"
+            ).style("min-width:0"):
+                self._input = ui.textarea(
+                    placeholder="Ask anything about your data...",
+                    on_change=lambda e: None,
+                ).props("dense outlined autogrow").classes("flex-1").style(
+                    "font-size:13px; max-height:120px; min-width:0;"
                 )
+                self._input.on("keydown", lambda e: self._maybe_send(e))
+                self._send_btn = ui.button(
+                    icon="send",
+                    on_click=self._send,
+                ).props("color=primary round dense")
+
+    # ── History panel ─────────────────────────────────────────────────────────
+
+    def _toggle_history(self) -> None:
+        self._history_visible = not self._history_visible
+        if self._history_panel:
+            self._history_panel.set_visibility(self._history_visible)
+        if self._history_visible:
+            asyncio.ensure_future(self._load_conversations_list())
+
+    async def _load_conversations_list(self) -> None:
+        if not self._conversations_container:
+            return
+        self._conversations_container.clear()
+        try:
+            conversations = await conv_svc.list_conversations()
+        except Exception:
+            logger.exception("Error loading conversations")
+            conversations = []
+
+        with self._conversations_container:
+            if not conversations:
+                ui.label("No conversations yet").classes("text-grey-6 text-sm py-4 text-center w-full")
+                return
+
+            for conv in conversations:
+                is_active = conv["id"] == self._current_conversation_id
+                bg = " bg-primary/10" if is_active else ""
+                with ui.row().classes(
+                    f"items-center gap-2 px-3 py-2 rounded-lg cursor-pointer w-full hover:bg-grey-2{bg}"
+                ).style("transition: background 0.12s;").on(
+                    "click", lambda c=conv: asyncio.ensure_future(self._open_conversation(c["id"]))
+                ):
+                    ui.icon("chat_bubble_outline", size="xs").classes("text-grey-6 flex-shrink-0")
+                    with ui.column().classes("flex-1 gap-0 min-w-0"):
+                        ui.label(conv["title"][:50]).classes("text-sm truncate")
+                        if conv.get("updated_at"):
+                            ui.label(_relative_time(conv["updated_at"])).classes("text-xs text-grey-5")
+                    ui.button(
+                        icon="delete_outline",
+                        on_click=lambda c=conv: asyncio.ensure_future(self._delete_conversation(c["id"])),
+                    ).props("flat round dense size=xs").classes("text-grey-5")
+
+    async def _open_conversation(self, conversation_id: str) -> None:
+        conv = await conv_svc.get_conversation(conversation_id)
+        if not conv:
+            ui.notify("Conversation not found", type="warning")
+            return
+        self._current_conversation_id = conversation_id
+        self._messages = conv.get("messages", [])
+        self._toggle_history()  # close history panel
+        self._render_messages()
+
+    async def _delete_conversation(self, conversation_id: str) -> None:
+        await conv_svc.delete_conversation(conversation_id)
+        if self._current_conversation_id == conversation_id:
+            self._current_conversation_id = None
+            self._messages = []
+            self._render_messages()
+        await self._load_conversations_list()
+
+    def _new_conversation(self) -> None:
+        self._current_conversation_id = None
+        self._messages = []
+        self._render_messages()
+        if self._history_visible:
+            self._toggle_history()
 
     # ── Message rendering ─────────────────────────────────────────────────────
 
-    def _render_history(self) -> None:
-        """Re-render all stored messages."""
+    def _render_empty_state(self) -> None:
         if not self._messages_container:
             return
-        messages = self._load_history()
-        for msg in messages:
-            self._render_message_bubble(msg, save=False)
-        if not messages:
-            with self._messages_container:
+        with self._messages_container:
+            with ui.column().classes("items-center justify-center py-8 gap-2 w-full"):
+                ui.icon("smart_toy", size="xl").classes("text-grey-4")
                 ui.label(
                     "Ask me anything about your data, connections, or queries."
-                ).classes("text-xs text-grey-5 text-center py-8")
+                ).classes("text-xs text-grey-5 text-center")
 
-    def _render_message_bubble(self, msg: dict, save: bool = True) -> None:
+    def _render_messages(self) -> None:
+        """Re-render all messages for the current conversation."""
+        if not self._messages_container:
+            return
+        self._messages_container.clear()
+        if not self._messages:
+            self._render_empty_state()
+            return
+        for msg in self._messages:
+            self._render_message_bubble(msg)
+
+    def _render_message_bubble(self, msg: dict) -> None:
         """Render a single message bubble inside self._messages_container."""
         if not self._messages_container:
             return
@@ -347,24 +412,47 @@ class AgentPanel:
             if role == "user":
                 with ui.row().classes("justify-end w-full"):
                     ui.markdown(f"> {content}").classes(
-                        "bg-primary text-white rounded-2xl rounded-tr-sm "
+                        "bg-primary text-white "
                         "px-4 py-2 max-w-xs text-sm ml-auto"
-                    ).style("word-break:break-word;")
+                    ).style("word-break:break-word; border-radius: 16px 4px 16px 16px;")
+
             elif role == "tool_status":
-                # Tool call status chip
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("build", size="xs").classes("text-grey-5")
-                    ui.label(content).classes("text-xs text-grey-5 italic")
+                with ui.element("div").classes(
+                    "flex items-center gap-2 px-3 py-1.5 rounded-lg"
+                ).style("background: rgba(0,0,0,0.04);"):
+                    ui.icon("settings", size="xs").classes("text-grey-5")
+                    ui.label(content).classes("text-xs text-grey-6 font-mono")
+
             elif role == "assistant":
                 with ui.column().classes("gap-2 w-full"):
                     if content:
                         ui.markdown(content).classes(
-                            "border border rounded-2xl rounded-tl-sm "
+                            "border "
                             "px-4 py-3 text-sm text-weight-medium w-full"
-                        ).style("word-break:break-word;")
+                        ).style("word-break:break-word; border-radius: 4px 16px 16px 16px;")
                     # Render UI actions (proposals, navigation)
                     for action in ui_actions:
                         self._render_ui_action(action)
+                    # Accept All / Reject All if there are proposals
+                    if any(a.get("type") in ("sql_proposal", "python_proposal") for a in ui_actions):
+                        with ui.row().classes("gap-2 mt-1"):
+                            def _accept_all(actions=ui_actions):
+                                for a in actions:
+                                    if a.get("type") == "sql_proposal" and self.on_apply_sql:
+                                        self.on_apply_sql(a["new_code"])
+                                    elif a.get("type") == "python_proposal" and self.on_apply_python:
+                                        self.on_apply_python(a["new_code"])
+                                ui.notify("All changes accepted", type="positive")
+
+                            def _reject_all():
+                                ui.notify("All changes rejected", type="info")
+
+                            ui.button(
+                                "Accept All", icon="check_circle", on_click=_accept_all,
+                            ).props("color=positive dense outlined no-caps").classes("text-xs")
+                            ui.button(
+                                "Reject All", icon="cancel", on_click=_reject_all,
+                            ).props("flat dense no-caps").classes("text-xs text-grey-6")
 
     def _render_ui_action(self, action: dict) -> None:
         """Render a proposal diff card or navigation card."""
@@ -377,9 +465,7 @@ class AgentPanel:
             explanation = action.get("explanation", "")
             diff_html = _make_diff_html(old_code, new_code)
 
-            with ui.card().classes(
-                "w-full border rounded-xl"
-            ):
+            with ui.card().classes("w-full border"):
                 with ui.column().classes("gap-2 p-3"):
                     with ui.row().classes("items-center gap-2"):
                         ui.icon(
@@ -401,23 +487,20 @@ class AgentPanel:
                         def _accept(nc=new_code, at=atype):
                             if at == "sql_proposal" and self.on_apply_sql:
                                 self.on_apply_sql(nc)
-                                ui.notify("SQL applied ✓", type="positive")
+                                ui.notify("SQL applied", type="positive")
                             elif at == "python_proposal" and self.on_apply_python:
                                 self.on_apply_python(nc)
-                                ui.notify("Python code applied ✓", type="positive")
+                                ui.notify("Python code applied", type="positive")
                             else:
                                 ui.notify(
                                     "No editor available on this page", type="warning"
                                 )
 
                         ui.button(
-                            "Accept",
-                            icon="check",
-                            on_click=_accept,
+                            "Accept", icon="check", on_click=_accept,
                         ).props("color=positive dense no-caps").classes("text-xs")
                         ui.button(
-                            "Reject",
-                            icon="close",
+                            "Reject", icon="close",
                             on_click=lambda: ui.notify("Change rejected", type="info"),
                         ).props("flat dense no-caps").classes("text-xs text-grey-6")
 
@@ -448,9 +531,6 @@ class AgentPanel:
         if not text:
             return
         self._input.value = ""
-
-        import asyncio
-
         asyncio.ensure_future(self._do_send(text))
 
     async def _do_send(self, user_text: str) -> None:
@@ -460,7 +540,7 @@ class AgentPanel:
             if self._messages_container:
                 with self._messages_container:
                     ui.label(
-                        "⚠ No API key configured. Go to Admin → AI tab to add one."
+                        "No API key configured. Go to Admin > AI tab to add one."
                     ).classes("text-xs text-negative px-2 py-1")
             return
 
@@ -468,29 +548,40 @@ class AgentPanel:
         if self._send_btn:
             self._send_btn.props(add="loading")
         if self._status_label:
-            self._status_label.text = "Thinking…"
+            self._status_label.text = "Thinking..."
+
+        # Create conversation if needed
+        if not self._current_conversation_id:
+            try:
+                conv = await conv_svc.create_conversation(
+                    title=user_text[:60],
+                    provider=app.storage.user.get(_KEY_PROVIDER, "anthropic"),
+                    model=app.storage.user.get(_KEY_MODEL, ""),
+                )
+                self._current_conversation_id = conv["id"]
+            except Exception:
+                logger.exception("Error creating conversation")
 
         # Add user message
         user_msg = {"role": "user", "content": user_text}
-        history = self._load_history()
 
-        # Clear empty state placeholder on first message
-        if self._messages_container and not history:
+        # Clear empty state on first message
+        if self._messages_container and not self._messages:
             self._messages_container.clear()
-        self._render_message_bubble(user_msg, save=False)
-        history.append(user_msg)
+        self._render_message_bubble(user_msg)
+        self._messages.append(user_msg)
 
-        # Build messages for LLM (omit ui_actions - not part of LLM convo)
+        # Build messages for LLM (omit ui_actions, tool_status)
         llm_messages = [
             {"role": m["role"], "content": m["content"]}
-            for m in history
+            for m in self._messages
             if m["role"] in ("user", "assistant")
         ]
 
         def _on_tool_start(name: str, inputs: dict) -> None:
             label = _tool_status_label(name, inputs)
             status_msg = {"role": "tool_status", "content": label}
-            self._render_message_bubble(status_msg, save=False)
+            self._render_message_bubble(status_msg)
             if self._status_label:
                 self._status_label.text = label
 
@@ -522,19 +613,30 @@ class AgentPanel:
                 "content": assistant_text,
                 "ui_actions": ui_actions,
             }
-            history.append(assistant_msg)
-            self._save_history(history)
-            self._render_message_bubble(assistant_msg, save=False)
+            self._messages.append(assistant_msg)
+            self._render_message_bubble(assistant_msg)
+
+            # Persist to DB
+            if self._current_conversation_id:
+                try:
+                    # Only persist user + assistant messages (not tool_status)
+                    persistable = [
+                        m for m in self._messages if m["role"] in ("user", "assistant")
+                    ]
+                    await conv_svc.update_messages(
+                        self._current_conversation_id, persistable
+                    )
+                except Exception:
+                    logger.exception("Error saving conversation")
 
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).exception("Agent chat error")
+            logger.exception("Agent chat error")
             err_msg = {
                 "role": "assistant",
                 "content": "**Error:** Something went wrong. Please check your API key and try again.",
                 "ui_actions": [],
             }
-            self._render_message_bubble(err_msg, save=False)
+            self._render_message_bubble(err_msg)
         finally:
             if self._send_btn:
                 self._send_btn.props(remove="loading")
@@ -564,19 +666,19 @@ class AgentPanel:
 
 def _tool_status_label(name: str, inputs: dict) -> str:
     labels = {
-        "list_connections": "Listing database connections…",
-        "get_schema": f"Fetching schema for connection {inputs.get('connection_id', '')}…",
-        "execute_sql": "Executing SQL query…",
-        "propose_sql_edit": "Preparing SQL proposal…",
-        "propose_python_edit": "Preparing Python proposal…",
-        "list_saved_queries": "Listing saved queries…",
-        "list_dashboards": "Listing dashboards…",
-        "navigate_to": f"Navigating to {inputs.get('path', '')}…",
-        "save_query": f"Saving query '{inputs.get('name', '')}'…",
-        "create_dashboard": f"Creating dashboard '{inputs.get('name', '')}'…",
-        "add_widget_to_dashboard": "Adding widget to dashboard…",
+        "list_connections": "Listing database connections...",
+        "get_schema": f"Fetching schema for connection {inputs.get('connection_id', '')}...",
+        "execute_sql": "Executing SQL query...",
+        "propose_sql_edit": "Preparing SQL proposal...",
+        "propose_python_edit": "Preparing Python proposal...",
+        "list_saved_queries": "Listing saved queries...",
+        "list_dashboards": "Listing dashboards...",
+        "navigate_to": f"Navigating to {inputs.get('path', '')}...",
+        "save_query": f"Saving query '{inputs.get('name', '')}'...",
+        "create_dashboard": f"Creating dashboard '{inputs.get('name', '')}'...",
+        "add_widget_to_dashboard": "Adding widget to dashboard...",
     }
-    return labels.get(name, f"Calling tool: {name}…")
+    return labels.get(name, f"Calling tool: {name}...")
 
 
 def _current_path() -> str:
@@ -584,3 +686,29 @@ def _current_path() -> str:
         return ui.context.client.request.url.path
     except Exception:
         return "/"
+
+
+def _relative_time(dt_str: str) -> str:
+    """Convert a datetime string to relative time like '2 min ago'."""
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            from datetime import timezone as tz
+            dt = dt.replace(tzinfo=tz.utc)
+        diff = now - dt
+        seconds = int(diff.total_seconds())
+        if seconds < 60:
+            return "just now"
+        elif seconds < 3600:
+            m = seconds // 60
+            return f"{m} min ago"
+        elif seconds < 86400:
+            h = seconds // 3600
+            return f"{h}h ago"
+        else:
+            d = seconds // 86400
+            return f"{d}d ago"
+    except Exception:
+        return ""

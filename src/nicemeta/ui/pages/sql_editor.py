@@ -69,6 +69,7 @@ class SQLEditorPage:
         self._editor_panel_container = None
         self._main_python_editor = None  # Python editor in main view
         self._editor_toggle_btn = None  # Toggle button reference
+        self._inline_diff = None  # InlineDiffView overlay (when active)
         
         # Individual editor expansion state
         self._sql_editor_expanded: bool = True
@@ -1905,34 +1906,104 @@ class SQLEditorPage:
         }
 
     def _apply_agent_sql(self, new_sql: str) -> None:
-        """Apply SQL proposed by the agent (accept diff)."""
-        self._initial_sql = new_sql
-        if self.editor:
-            self.editor.set_value(new_sql)
-        else:
-            # Editor not visible – make it visible first
-            if not self._editors_visible:
-                self._toggle_editors()
+        """Show inline diff for SQL proposed by agent."""
+        from nicemeta.ui.components.inline_diff import InlineDiffView
 
-    def _apply_agent_python(self, new_code: str) -> None:
-        """Apply Python visualization code proposed by the agent (accept diff)."""
-        self._python_code = new_code
-        self._python_code_modified = True
-        if self._main_python_editor:
-            self._main_python_editor.set_value(new_code)
-        elif not self._editors_visible:
+        old_sql = self.editor.get_value() if self.editor else self._initial_sql
+
+        # Make sure editor panel is visible
+        if not self._editors_visible:
             self._toggle_editors()
 
-    def _apply_and_run_agent_sql(self, new_sql: str) -> None:
-        """Apply SQL from agent and immediately execute it."""
-        self._apply_agent_sql(new_sql)
+        # Hide editor, show diff overlay in its place
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                self._inline_diff = InlineDiffView(
+                    old_code=old_sql,
+                    new_code=new_sql,
+                    language="sql",
+                    on_accept_all=self._accept_sql_diff,
+                    on_reject_all=self._reject_sql_diff,
+                )
+                self._inline_diff.create()
+
+    def _accept_sql_diff(self, new_sql: str) -> None:
+        """Accept the SQL diff — apply to editor, restore it, and auto-run."""
+        self._initial_sql = new_sql
+        self._inline_diff = None
+        # Re-render editor panels with new SQL
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                self._render_editor_panels()
+        if self.editor:
+            self.editor.set_value(new_sql)
+        # Auto-run the accepted query
         if self.current_connection:
             asyncio.ensure_future(self._run_query(new_sql))
 
-    def _apply_and_run_agent_python(self, new_code: str) -> None:
-        """Apply Python viz code from agent and switch to visualization view."""
-        self._apply_agent_python(new_code)
+    def _reject_sql_diff(self) -> None:
+        """Reject the SQL diff — restore editor with original code."""
+        self._inline_diff = None
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                self._render_editor_panels()
+
+    def _apply_agent_python(self, new_code: str) -> None:
+        """Show inline diff for Python visualization code proposed by agent."""
+        from nicemeta.ui.components.inline_diff import InlineDiffView
+
+        old_code = (
+            self._main_python_editor.value
+            if self._main_python_editor
+            else self._python_code
+        )
+
+        if not self._editors_visible:
+            self._toggle_editors()
+
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                self._inline_diff = InlineDiffView(
+                    old_code=old_code,
+                    new_code=new_code,
+                    language="python",
+                    on_accept_all=self._accept_python_diff,
+                    on_reject_all=self._reject_python_diff,
+                )
+                self._inline_diff.create()
+
+    def _accept_python_diff(self, new_code: str) -> None:
+        """Accept the Python diff — apply, restore editor, switch to viz."""
+        self._python_code = new_code
+        self._python_code_modified = True
+        self._inline_diff = None
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                self._render_editor_panels()
+        if self._main_python_editor:
+            self._main_python_editor.set_value(new_code)
         self._set_view("visualization")
+
+    def _reject_python_diff(self) -> None:
+        """Reject the Python diff — restore editor."""
+        self._inline_diff = None
+        if self._editor_panel_container:
+            self._editor_panel_container.clear()
+            with self._editor_panel_container:
+                self._render_editor_panels()
+
+    def _apply_and_run_agent_sql(self, new_sql: str) -> None:
+        """Show inline diff for SQL, auto-run on accept."""
+        self._apply_agent_sql(new_sql)
+
+    def _apply_and_run_agent_python(self, new_code: str) -> None:
+        """Show inline diff for Python, switch to viz on accept."""
+        self._apply_agent_python(new_code)
 
     # ── Query execution ───────────────────────────────────────────────────────
 

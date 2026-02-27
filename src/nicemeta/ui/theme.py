@@ -9,6 +9,18 @@ from nicegui import app, ui
 
 # CSS for custom layout components ONLY — no Tailwind color overrides.
 _LAYOUT_CSS = """
+/* ── Design tokens ───────────────────────────────────────────────────── */
+:root {
+    --nm-radius-sm: 8px;
+    --nm-radius-md: 12px;
+    --nm-radius-lg: 16px;
+}
+.q-card { border-radius: var(--nm-radius-md) !important; }
+.q-dialog .q-card { border-radius: var(--nm-radius-lg) !important; }
+.q-btn:not(.q-btn--round) { border-radius: var(--nm-radius-sm) !important; }
+.q-field--outlined .q-field__control { border-radius: var(--nm-radius-sm) !important; }
+.q-expansion-item { border-radius: var(--nm-radius-sm); }
+
 /* ── CodeMirror dark mode ──────────────────────────────────────────────── */
 body.body--dark .cm-editor { background-color: #1e1e1e; }
 body.body--dark .cm-gutters {
@@ -63,7 +75,7 @@ body.body--dark .nm-nav-active {
 .nm-sidebar-row {
     display: flex; align-items: center; overflow: hidden;
     white-space: nowrap; flex-wrap: nowrap; min-width: 0;
-    padding: 6px 12px; border-radius: 6px; transition: background 0.12s;
+    padding: 6px 12px; border-radius: var(--nm-radius-sm); transition: background 0.12s;
 }
 .nm-sidebar-row:hover { background: rgba(0, 0, 0, 0.05); }
 body.body--dark .nm-sidebar-row:hover { background: rgba(255, 255, 255, 0.06); }
@@ -94,17 +106,17 @@ body.nm-resizing .q-page-container { transition: none !important; }
 }
 .q-drawer--right .q-markdown p { margin: 0.3em 0; }
 .q-drawer--right .q-markdown pre {
-    background: #1e1e1e; color: #d4d4d4; border-radius: 6px;
+    background: #1e1e1e; color: #d4d4d4; border-radius: var(--nm-radius-sm);
     padding: 10px 14px; overflow-x: auto; font-size: 12px;
 }
 .q-drawer--right .q-markdown code {
-    background: rgba(0,0,0,0.08); border-radius: 3px;
+    background: rgba(0,0,0,0.08); border-radius: 4px;
     padding: 1px 4px; font-size: 12px;
 }
 body.body--dark .q-drawer--right .q-markdown code { background: rgba(255,255,255,0.1); }
 .nm-diff {
     font-family: 'JetBrains Mono', 'Fira Mono', monospace;
-    font-size: 12px; line-height: 1.5; border-radius: 6px;
+    font-size: 12px; line-height: 1.5; border-radius: var(--nm-radius-sm);
     overflow: auto; max-height: 340px; background: #1e1e1e; border: 1px solid #3e3e42;
 }
 .nm-diff-line { display: block; padding: 0 10px; white-space: pre; }
@@ -116,6 +128,17 @@ body.body--dark .q-drawer--right .q-markdown code { background: rgba(255,255,255
     background: rgba(59, 130, 246, 0.12) !important;
     color: var(--q-primary) !important;
 }
+
+/* ── Inline diff overlay (Cursor-like) ─────────────────────────────────── */
+.nm-inline-diff {
+    font-family: 'JetBrains Mono', 'Fira Mono', monospace;
+    font-size: 12px; line-height: 1.6;
+    border-radius: var(--nm-radius-sm);
+    background: #1e1e1e; border: 1px solid #3e3e42;
+}
+.nm-idiff-ctx { padding: 1px 12px; color: #888; }
+.nm-idiff-add { padding: 1px 12px; background: rgba(26,58,26,0.6); color: #4ec94e; }
+.nm-idiff-del { padding: 1px 12px; background: rgba(58,26,26,0.6); color: #f97583; text-decoration: line-through; }
 
 /* ── Plotly responsive charts ──────────────────────────────────────────── */
 .js-plotly-plot, .plotly { width: 100% !important; min-width: 0 !important; }

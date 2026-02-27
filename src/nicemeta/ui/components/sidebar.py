@@ -39,12 +39,8 @@ from nicemeta.services.git_service import get_git_service
 _cached_queries: list[dict] = []
 _cached_connections: list[dict] = []
 _cached_dashboards: list[dict] = []
+_cached_folder_tree: list[dict] = []
 _cache_initialized: bool = False
-
-# Folders (still in-memory for now)
-_folders: list[dict] = [
-    {"id": "1", "name": "My Queries", "parent_id": None},
-]
 
 # JavaScript for drag-to-resize sidebar, with localStorage persistence.
 # Text clips at the resize line because the drawer has overflow:hidden.
@@ -132,12 +128,18 @@ _RESIZE_JS = """
 
 
 async def refresh_cache() -> None:
-    """Refresh the cached queries, connections, and dashboards from database."""
-    global _cached_queries, _cached_connections, _cached_dashboards, _cache_initialized
+    """Refresh the cached queries, connections, dashboards, and folder tree."""
+    global _cached_queries, _cached_connections, _cached_dashboards, _cached_folder_tree, _cache_initialized
     try:
         _cached_queries = await db_get_saved_queries()
         _cached_connections = await db_get_connections()
         _cached_dashboards = await db_get_dashboards()
+        # Fetch folder tree from DB
+        from nicemeta.core.database import get_session_context
+        from nicemeta.services.folder_service import FolderService
+        async with get_session_context() as session:
+            svc = FolderService(session)
+            _cached_folder_tree = await svc.get_folder_tree(owner_id=None)
         _cache_initialized = True
     except Exception as e:
         logger.exception("Error refreshing cache")
@@ -195,7 +197,11 @@ async def get_connection_by_id(connection_id: str) -> dict | None:
 
 
 def get_folders() -> list[dict]:
-    return _folders
+    return _cached_folder_tree
+
+
+def get_cached_folder_tree() -> list[dict]:
+    return _cached_folder_tree
 
 
 def get_saved_dashboards() -> list[dict]:
@@ -237,11 +243,11 @@ class MetabaseSidebar:
     def __init__(self, on_query_select: Callable[[dict], None] | None = None):
         self.on_query_select = on_query_select
         self._drawer = None
-        self._queries_container = None
-        self._dashboards_container = None
+        self._collections_container = None
         self._data_container = None
         self._search_input = None
         self._search_term = ""
+        self._pending_ids: set[str] = set()  # IDs of agent-pending items (green highlight)
 
     def create(self) -> ui.left_drawer:
         """Create the sidebar drawer."""
@@ -290,27 +296,20 @@ class MetabaseSidebar:
                     # ── Browse label ──────────────────────────────────
                     ui.label("Browse").classes("nm-sidebar-section-label")
 
-                    # ── Collections ───────────────────────────────────
-                    with ui.expansion("Collections", icon="folder").classes(
+                    # ── Unified Collections tree ──────────────────────
+                    with ui.expansion("Collections", icon="folder_open").classes(
                         "w-full nm-sidebar-expansion"
-                    ).props("dense"):
-                        self._render_folders()
+                    ).props("dense default-opened"):
+                        # New folder button
+                        with ui.row().classes(
+                            "nm-sidebar-row nm-sidebar-child rounded cursor-pointer"
+                        ).on("click", lambda: self._create_folder_dialog()):
+                            ui.icon("create_new_folder", size="xs").classes("text-grey-6 flex-shrink-0")
+                            ui.label("New folder").classes("text-xs nm-sidebar-label text-grey-6")
 
-                    # ── Saved Questions ───────────────────────────────
-                    with ui.expansion("Saved Questions", icon="description").classes(
-                        "w-full nm-sidebar-expansion"
-                    ).props("dense"):
-                        self._queries_container = ui.column().classes("w-full gap-0")
-                        with self._queries_container:
-                            self._render_queries_sync()
-
-                    # ── Dashboards ────────────────────────────────────
-                    with ui.expansion("Our Dashboards", icon="dashboard").classes(
-                        "w-full nm-sidebar-expansion"
-                    ).props("dense"):
-                        self._dashboards_container = ui.column().classes("w-full gap-0")
-                        with self._dashboards_container:
-                            self._render_dashboards()
+                        self._collections_container = ui.column().classes("w-full gap-0")
+                        with self._collections_container:
+                            self._render_unified_tree()
 
                     ui.separator().classes("nm-sidebar-sep")
 
@@ -341,7 +340,7 @@ class MetabaseSidebar:
         # Init cache then inject resize JS
         async def _init():
             await refresh_cache()
-            self._refresh_queries_display()
+            self._refresh_collections_display()
             ui.run_javascript(_RESIZE_JS)
 
         ui.timer(0.1, _init, once=True)
@@ -349,42 +348,90 @@ class MetabaseSidebar:
 
     # ── Rendering helpers ─────────────────────────────────────────────────────
 
-    def _render_folders(self) -> None:
-        folders = get_folders()
-        if not folders:
-            ui.label("No collections yet").classes("text-grey-6 text-sm px-3 py-1")
-            return
-        for folder in folders:
-            with ui.row().classes("nm-sidebar-row nm-sidebar-child rounded cursor-pointer"):
-                ui.icon("folder", size="xs").classes("text-warning flex-shrink-0")
-                ui.label(folder["name"]).classes("text-sm nm-sidebar-label")
-
-    def _render_queries_sync(self) -> None:
+    def _render_unified_tree(self) -> None:
+        """Render the unified collections tree: folders + unfiled queries + dashboards."""
+        tree = get_cached_folder_tree()
         queries = get_saved_queries()
+        dashboards = get_saved_dashboards()
+
         if self._search_term:
             queries = [q for q in queries if self._search_term in q["name"].lower()]
-        if not queries:
-            msg = "No matches" if self._search_term else "No saved questions yet"
-            ui.label(msg).classes("text-grey-6 text-sm px-3 py-1")
-            return
-        for query in queries:
-            with ui.row().classes(
-                "nm-sidebar-row nm-sidebar-child rounded cursor-pointer"
-            ).on("click", lambda q=query: self._select_query(q)):
-                ui.icon("code", size="xs").classes("text-grey-7 flex-shrink-0")
-                ui.label(query["name"]).classes("text-sm nm-sidebar-label")
+            dashboards = [d for d in dashboards if self._search_term in d["name"].lower()]
 
-    def _render_dashboards(self) -> None:
-        dashboards = get_saved_dashboards()
-        if not dashboards:
-            ui.label("No dashboards yet").classes("text-grey-6 text-sm px-3 py-1")
-            return
-        for dashboard in dashboards:
-            with ui.row().classes(
-                "nm-sidebar-row nm-sidebar-child rounded cursor-pointer"
-            ).on("click", lambda d=dashboard: ui.navigate.to(f"/dashboards/{d['id']}")):
-                ui.icon("dashboard", size="xs").classes("text-accent flex-shrink-0")
-                ui.label(dashboard["name"]).classes("text-sm nm-sidebar-label")
+        # Render folder nodes recursively
+        for node in tree:
+            self._render_tree_node(node)
+
+        # Render unfiled queries (folder_id is None)
+        filed_query_ids = self._collect_item_ids(tree, "query")
+        unfiled_queries = [q for q in queries if q["id"] not in filed_query_ids]
+        for q in unfiled_queries:
+            self._render_query_item(q)
+
+        # Render unfiled dashboards (folder_id is None)
+        filed_dash_ids = self._collect_item_ids(tree, "dashboard")
+        unfiled_dashboards = [d for d in dashboards if d["id"] not in filed_dash_ids]
+        for d in unfiled_dashboards:
+            self._render_dashboard_item(d)
+
+        # Empty state
+        if not tree and not unfiled_queries and not unfiled_dashboards:
+            ui.label("No items yet").classes("text-grey-6 text-sm px-3 py-1")
+
+    def _collect_item_ids(self, nodes: list[dict], item_type: str) -> set[str]:
+        """Collect all item IDs of a given type from the folder tree."""
+        ids: set[str] = set()
+        for node in nodes:
+            for item in node.get("items", []):
+                if item.get("type") == item_type:
+                    ids.add(item["id"])
+            ids |= self._collect_item_ids(node.get("children", []), item_type)
+        return ids
+
+    def _render_tree_node(self, node: dict) -> None:
+        """Render a folder node with its children and items recursively."""
+        with ui.expansion(node["name"], icon="folder").classes(
+            "w-full nm-sidebar-expansion nm-sidebar-child"
+        ).props("dense header-class=text-sm"):
+            # Sub-folders
+            for child in node.get("children", []):
+                self._render_tree_node(child)
+            # Items inside this folder
+            for item in node.get("items", []):
+                if item["type"] == "query":
+                    self._render_query_item(item)
+                elif item["type"] == "dashboard":
+                    self._render_dashboard_item(item)
+
+    def _render_query_item(self, query: dict) -> None:
+        """Render a single query item in the sidebar."""
+        is_pending = query["id"] in self._pending_ids
+        icon_cls = "text-positive flex-shrink-0" if is_pending else "text-grey-7 flex-shrink-0"
+        label_cls = "text-sm nm-sidebar-label"
+        if is_pending:
+            label_cls += " text-positive font-semibold"
+        with ui.row().classes(
+            "nm-sidebar-row nm-sidebar-child rounded cursor-pointer"
+        ).on("click", lambda q=query: self._select_query(q)):
+            ui.icon("code", size="xs").classes(icon_cls)
+            ui.label(query["name"]).classes(label_cls)
+            if is_pending:
+                ui.badge("new").props("color=positive dense").classes("text-xs")
+
+    def _render_dashboard_item(self, dashboard: dict) -> None:
+        """Render a single dashboard item in the sidebar."""
+        is_pending = dashboard["id"] in self._pending_ids
+        icon_cls = "text-positive flex-shrink-0" if is_pending else "text-accent flex-shrink-0"
+        label_cls = "text-sm nm-sidebar-label"
+        if is_pending:
+            label_cls += " text-positive font-semibold"
+        with ui.row().classes(
+            "nm-sidebar-row nm-sidebar-child rounded cursor-pointer"
+        ).on("click", lambda d=dashboard: ui.navigate.to(f"/dashboards/{d['id']}")):
+            ui.icon("dashboard", size="xs").classes(icon_cls)
+            ui.label(dashboard["name"]).classes(label_cls)
+            if is_pending:
+                ui.badge("new").props("color=positive dense").classes("text-xs")
 
     def _render_data_tree(self) -> None:
         """Render connections as expandable tree items."""
@@ -499,15 +546,15 @@ class MetabaseSidebar:
             with container:
                 ui.label(f"Error: {ex}").classes("text-negative text-xs px-3 py-1")
 
-    def _refresh_queries_display(self) -> None:
-        if self._queries_container:
-            self._queries_container.clear()
-            with self._queries_container:
-                self._render_queries_sync()
+    def _refresh_collections_display(self) -> None:
+        if self._collections_container:
+            self._collections_container.clear()
+            with self._collections_container:
+                self._render_unified_tree()
 
     def _filter_queries(self, term: str) -> None:
         self._search_term = (term or "").strip().lower()
-        self._refresh_queries_display()
+        self._refresh_collections_display()
 
     def _nav_item(self, path: str, icon: str, label: str) -> None:
         current = self._current_path()
@@ -533,20 +580,43 @@ class MetabaseSidebar:
             self.on_query_select(query)
         ui.navigate.to(f"/sql?query_id={query['id']}")
 
+    def _create_folder_dialog(self, parent_id: str | None = None) -> None:
+        """Open a dialog to create a new folder."""
+        with ui.dialog() as dialog, ui.card().classes("w-80"):
+            ui.label("New Folder").classes("text-lg font-semibold")
+            name_input = ui.input(label="Folder name").props("dense outlined autofocus").classes("w-full mt-2")
+
+            async def _do_create():
+                name = (name_input.value or "").strip()
+                if not name:
+                    ui.notify("Please enter a name", type="warning")
+                    return
+                from nicemeta.core.database import get_session_context
+                from nicemeta.services.folder_service import FolderService
+                async with get_session_context() as session:
+                    svc = FolderService(session)
+                    await svc.create_folder(name=name, parent_id=parent_id)
+                dialog.close()
+                await self.refresh()
+                ui.notify(f"Folder '{name}' created", type="positive")
+
+            with ui.row().classes("justify-end gap-2 mt-4 w-full"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Create", on_click=_do_create).props("color=primary")
+        dialog.open()
+
+    def set_pending_ids(self, ids: set[str]) -> None:
+        """Set the IDs of pending (agent-created) items for green highlighting."""
+        self._pending_ids = ids
+        self._refresh_collections_display()
+
     def toggle(self) -> None:
         if self._drawer:
             self._drawer.toggle()
 
-    def _refresh_dashboards_display(self) -> None:
-        if self._dashboards_container:
-            self._dashboards_container.clear()
-            with self._dashboards_container:
-                self._render_dashboards()
-
     async def refresh(self) -> None:
         await refresh_cache()
-        self._refresh_queries_display()
-        self._refresh_dashboards_display()
+        self._refresh_collections_display()
 
 
 class MetabaseHeader:

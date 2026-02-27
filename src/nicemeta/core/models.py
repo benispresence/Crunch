@@ -373,3 +373,22 @@ class DashboardWidget(Base, TimestampMixin):
         back_populates="dashboard_widgets",
     )
 
+
+class AgentConversation(Base, TimestampMixin):
+    """Saved AI agent conversation."""
+
+    __tablename__ = "agent_conversations"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="New Chat")
+    messages: Mapped[dict] = mapped_column(JSON, default=list)
+    provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    owner_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
