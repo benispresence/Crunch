@@ -97,3 +97,11 @@ dmypy.json
 # ruff
 .ruff_cache/
 
+# Node / TS / Vite
+node_modules/
+backend/dist/
+frontend/dist/
+backend/*.sqlite
+backend/.env
+.vite/
+

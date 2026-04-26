@@ -1,0 +1,202 @@
+/*
+  NiceMeta design system.
+  Anthropic-inspired warm neutrals with Cursor's compact editor density.
+*/
+
+:root {
+  /* Warm neutrals (Anthropic) */
+  --bg: #1a1815;
+  --bg-elev: #211e1a;
+  --bg-elev-2: #2a2622;
+  --bg-hover: #2f2a25;
+  --surface: #211e1a;
+  --border: #36312b;
+  --border-strong: #4a443c;
+
+  /* Text */
+  --fg: #f5f1ec;
+  --fg-muted: #a8a098;
+  --fg-subtle: #6b655e;
+
+  /* Accent — Anthropic clay */
+  --accent: #d97757;
+  --accent-hover: #e0876a;
+  --accent-subtle: rgba(217, 119, 87, 0.12);
+  --accent-border: rgba(217, 119, 87, 0.3);
+
+  /* Semantic */
+  --success: #7fb069;
+  --warn: #e8b04c;
+  --error: #e07a5f;
+  --info: #7aa2c8;
+
+  /* Code */
+  --code-bg: #16140f;
+  --code-border: #2e2925;
+  --code-fg: #e8e2d9;
+
+  /* Type */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Menlo", ui-monospace, monospace;
+  --font-serif: "Tiempos Headline", "Iowan Old Style", Georgia, serif;
+
+  /* Sizing */
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="light"] {
+  --bg: #faf9f7;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #f3f0eb;
+  --bg-hover: #ece7df;
+  --surface: #ffffff;
+  --border: #e3ddd2;
+  --border-strong: #c9c0b1;
+  --fg: #1a1815;
+  --fg-muted: #5a544c;
+  --fg-subtle: #8a8278;
+  --code-bg: #f5f2ec;
+  --code-border: #e3ddd2;
+  --code-fg: #1a1815;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  outline: none;
+}
+
+input:focus,
+textarea:focus {
+  border-color: var(--accent);
+}
+
+::selection {
+  background: var(--accent-subtle);
+  color: var(--fg);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 120ms, border-color 120ms;
+}
+.btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1815;
+}
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-ghost { border-color: transparent; background: transparent; }
+.btn-ghost:hover { background: var(--bg-hover); }
+.btn-sm { padding: 4px 8px; font-size: 12px; }
+.btn-icon { padding: 4px; min-width: 24px; justify-content: center; }
+
+/* Splitpanes — Cursor-style adjustable borders */
+.splitpanes__splitter {
+  background: transparent;
+  position: relative;
+}
+.splitpanes--vertical > .splitpanes__splitter {
+  width: 6px;
+  margin-left: -3px;
+}
+.splitpanes--horizontal > .splitpanes__splitter {
+  height: 6px;
+  margin-top: -3px;
+}
+.splitpanes__splitter::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  opacity: 0;
+  transition: opacity 150ms;
+}
+.splitpanes--vertical > .splitpanes__splitter::before {
+  inset: 0 2px;
+}
+.splitpanes--horizontal > .splitpanes__splitter::before {
+  inset: 2px 0;
+}
+.splitpanes__splitter:hover::before,
+.splitpanes--dragging .splitpanes__splitter::before {
+  opacity: 1;
+  background: var(--accent);
+}
+
+/* Highlight.js — match Anthropic palette */
+.hljs {
+  color: var(--code-fg);
+  background: var(--code-bg);
+}
+.hljs-keyword, .hljs-built_in, .hljs-type { color: #d59c79; }
+.hljs-string, .hljs-attr { color: #a3c585; }
+.hljs-number, .hljs-literal { color: #c8a2d4; }
+.hljs-comment { color: var(--fg-subtle); font-style: italic; }
+.hljs-function .hljs-title, .hljs-title.function_ { color: #7aa2c8; }
+.hljs-variable, .hljs-name { color: var(--fg); }
+.hljs-tag, .hljs-meta { color: #d59c79; }
