@@ -8,18 +8,17 @@ import ChartPanel from "@/components/ChartPanel.vue";
 import ConnectionsPanel from "@/components/ConnectionsPanel.vue";
 import ResultsTable from "@/components/ResultsTable.vue";
 import SqlEditor from "@/components/SqlEditor.vue";
-import TopBar from "@/components/TopBar.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+
+const props = defineProps<{ sidebarOpen?: boolean; chatOpen?: boolean }>();
 
 const auth = useAuthStore();
 const router = useRouter();
 const ws = useWorkspaceStore();
 const chat = useChatStore();
 
-const sidebarOpen = ref(true);
-const chatOpen = ref(true);
 const compact = ref(window.innerWidth < 1100);
 
 window.addEventListener("resize", () => {
@@ -40,51 +39,37 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="workspace">
-    <TopBar
-      v-model:sidebar-open="sidebarOpen"
-      v-model:chat-open="chatOpen"
-    />
+  <Splitpanes class="workspace" :horizontal="false">
+    <Pane v-if="props.sidebarOpen !== false" :size="compact ? 22 : 18" :min-size="14" :max-size="32">
+      <ConnectionsPanel />
+    </Pane>
 
-    <Splitpanes class="workspace__body" :horizontal="false">
-      <Pane v-if="sidebarOpen" :size="compact ? 22 : 18" :min-size="14" :max-size="32">
-        <ConnectionsPanel />
-      </Pane>
+    <Pane :size="props.chatOpen !== false ? (compact ? 48 : 52) : 80">
+      <Splitpanes horizontal>
+        <Pane :size="55" :min-size="20">
+          <SqlEditor />
+        </Pane>
+        <Pane :size="45" :min-size="20">
+          <Splitpanes>
+            <Pane :size="60" :min-size="30">
+              <ResultsTable />
+            </Pane>
+            <Pane :size="40" :min-size="20">
+              <ChartPanel />
+            </Pane>
+          </Splitpanes>
+        </Pane>
+      </Splitpanes>
+    </Pane>
 
-      <Pane :size="chatOpen ? (compact ? 48 : 52) : 80">
-        <Splitpanes horizontal>
-          <Pane :size="55" :min-size="20">
-            <SqlEditor />
-          </Pane>
-          <Pane :size="45" :min-size="20">
-            <Splitpanes>
-              <Pane :size="60" :min-size="30">
-                <ResultsTable />
-              </Pane>
-              <Pane :size="40" :min-size="20">
-                <ChartPanel />
-              </Pane>
-            </Splitpanes>
-          </Pane>
-        </Splitpanes>
-      </Pane>
-
-      <Pane v-if="chatOpen" :size="compact ? 30 : 30" :min-size="20" :max-size="50">
-        <ChatPanel />
-      </Pane>
-    </Splitpanes>
-  </div>
+    <Pane v-if="props.chatOpen !== false" :size="compact ? 30 : 30" :min-size="20" :max-size="50">
+      <ChatPanel />
+    </Pane>
+  </Splitpanes>
 </template>
 
 <style scoped>
 .workspace {
-  display: flex;
-  flex-direction: column;
   height: 100%;
-  background: var(--bg);
-}
-.workspace__body {
-  flex: 1;
-  min-height: 0;
 }
 </style>

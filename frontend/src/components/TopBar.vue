@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { useRouter } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 
-defineProps<{ sidebarOpen: boolean; chatOpen: boolean }>();
+defineProps<{ sidebarOpen?: boolean; chatOpen?: boolean }>();
 const emit = defineEmits<{
   (e: "update:sidebarOpen", v: boolean): void;
   (e: "update:chatOpen", v: boolean): void;
@@ -10,6 +10,7 @@ const emit = defineEmits<{
 
 const auth = useAuthStore();
 const router = useRouter();
+const route = useRoute();
 
 function logout() {
   auth.logout();
@@ -30,16 +31,22 @@ function logout() {
           <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" />
         </svg>
       </button>
-      <div class="topbar__brand">
+      <RouterLink to="/workspace" class="topbar__brand">
         <div class="topbar__logo">N</div>
         <span class="topbar__name">NiceMeta</span>
-      </div>
-      <span class="topbar__sep" />
-      <span class="topbar__crumb">Workspace</span>
+      </RouterLink>
+      <nav class="topbar__nav">
+        <RouterLink to="/workspace" class="topbar__link">Workspace</RouterLink>
+        <RouterLink to="/dashboards" class="topbar__link">Dashboards</RouterLink>
+        <RouterLink v-if="auth.user?.role === 'admin'" to="/admin" class="topbar__link">
+          Admin
+        </RouterLink>
+      </nav>
     </div>
 
     <div class="topbar__right">
       <button
+        v-if="route.name === 'workspace'"
         class="btn btn-ghost btn-sm"
         :title="chatOpen ? 'Hide chat' : 'Show chat'"
         @click="emit('update:chatOpen', !chatOpen)"
@@ -53,6 +60,7 @@ function logout() {
         <span>Chat</span>
       </button>
       <span class="topbar__user">{{ auth.user?.email ?? "" }}</span>
+      <span v-if="auth.user?.role === 'admin'" class="topbar__role">admin</span>
       <button class="btn btn-ghost btn-sm" @click="logout">Sign out</button>
     </div>
   </header>
@@ -79,6 +87,36 @@ function logout() {
   display: flex;
   align-items: center;
   gap: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+.topbar__nav {
+  display: flex;
+  gap: 2px;
+  margin-left: 8px;
+}
+.topbar__link {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-decoration: none;
+  transition: background 120ms, color 120ms;
+}
+.topbar__link:hover { background: var(--bg-hover); color: var(--fg); }
+.topbar__link.router-link-active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.topbar__role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
 }
 .topbar__logo {
   width: 22px;

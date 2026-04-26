@@ -111,19 +111,32 @@ DATABASE_FILE=./nicemeta.sqlite
 CORS_ORIGIN=http://localhost:5173
 ```
 
-## Status of the migration
+## Surfaces
 
-This branch lands the new architecture and the day-one workspace
-(connections, SQL editor, results, chart panel, AI chat with full
-streaming + tools + confirmations). Two areas of the original Python UI
-have not yet been re-implemented in Vue and remain available only via
-direct API:
+Top-bar nav routes:
 
-- Dashboard builder (drag-and-drop grid of saved visualizations)
-- Admin panel (allowed-package management, user roles)
+- **Workspace** — connections sidebar, Monaco SQL editor, results table,
+  chart panel, AI chat. `Save` on the chart panel persists a
+  Visualization (SQL + chart type + column mapping).
+- **Dashboards** — grid of dashboards. Each dashboard is a 12-column
+  layout of widgets that point at saved visualizations. Toggle **Edit
+  layout** to drag and resize widgets on the grid (cell-snapped, with
+  guides), then **Save layout** persists positions. Adding a widget
+  picks from your saved visualizations.
+- **Admin** (only for users with `role = "admin"`):
+  - Allowed packages table — add a pip package, install/uninstall via the
+    Python engine (`/packages/install`, `/packages/uninstall`),
+    enable/disable per package. Defaults (pandas, numpy, plotly, matplotlib,
+    seaborn, scipy, altair) cannot be deleted.
+  - Users table — flip roles between `viewer`, `editor`, and `admin`.
+    The first registered user is auto-promoted to admin.
 
-The data models and the Python engine endpoints they need are already in
-place; porting them is purely a frontend exercise.
+## Migration status
+
+The TypeScript/Vue/Express stack now covers every surface from the original
+NiceGUI UI: workspace, dashboards, admin. The Python engine remains the
+authority on SQL execution, chart rendering, and sandboxed Python — Express
+proxies all of it.
 
 ## License
 

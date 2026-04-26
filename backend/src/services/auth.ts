@@ -7,11 +7,13 @@ export interface UserRow {
   id: number;
   email: string;
   password_hash: string;
+  role: string;
 }
 
 export interface JwtPayload {
   sub: number;
   email: string;
+  role: string;
 }
 
 function hashPassword(password: string, salt: string): string {
@@ -21,10 +23,12 @@ function hashPassword(password: string, salt: string): string {
 export function createUser(email: string, password: string): UserRow {
   const salt = crypto.randomBytes(16).toString("hex");
   const stored = `${salt}:${hashPassword(password, salt)}`;
+  const existing = db.prepare("SELECT COUNT(*) as c FROM users").get() as { c: number };
+  const role = existing.c === 0 ? "admin" : "viewer";
   const info = db
-    .prepare("INSERT INTO users (email, password_hash) VALUES (?, ?)")
-    .run(email, stored);
-  return { id: Number(info.lastInsertRowid), email, password_hash: stored };
+    .prepare("INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)")
+    .run(email, stored, role);
+  return { id: Number(info.lastInsertRowid), email, password_hash: stored, role };
 }
 
 export function findUserByEmail(email: string): UserRow | undefined {
@@ -39,9 +43,11 @@ export function verifyPassword(user: UserRow, password: string): boolean {
 }
 
 export function signToken(user: UserRow): string {
-  return jwt.sign({ sub: user.id, email: user.email } satisfies JwtPayload, config.jwtSecret, {
-    expiresIn: "30d",
-  });
+  return jwt.sign(
+    { sub: user.id, email: user.email, role: user.role } satisfies JwtPayload,
+    config.jwtSecret,
+    { expiresIn: "30d" },
+  );
 }
 
 export function verifyToken(token: string): JwtPayload | null {

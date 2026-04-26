@@ -18,10 +18,10 @@ async function submit() {
   error.value = "";
   try {
     const path = mode.value === "login" ? "/auth/login" : "/auth/register";
-    const res = await api.post<{ token: string; user: { id: number; email: string } }>(path, {
-      email: email.value,
-      password: password.value,
-    });
+    const res = await api.post<{ token: string; user: { id: number; email: string; role: string } }>(
+      path,
+      { email: email.value, password: password.value },
+    );
     auth.setSession(res.token, res.user);
     await router.push({ name: "workspace" });
   } catch (e) {

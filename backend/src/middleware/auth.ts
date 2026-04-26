@@ -22,3 +22,11 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   req.user = payload;
   next();
 }
+
+export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.role !== "admin") {
+    res.status(403).json({ error: "admin only" });
+    return;
+  }
+  next();
+}

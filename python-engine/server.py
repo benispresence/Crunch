@@ -170,6 +170,64 @@ async def render_chart(req: RenderChartRequest) -> RenderChartResponse:
         return RenderChartResponse(success=False, error=f"{type(exc).__name__}: {exc}")
 
 
+class PackageRequest(BaseModel):
+    token: str
+    package_name: str
+    version_spec: str | None = None
+
+
+@app.post("/packages/install")
+async def install_package(req: PackageRequest) -> dict[str, Any]:
+    _check_token(req.token)
+    spec = req.package_name + (req.version_spec or "")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "pip", "install", "--quiet", spec,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        if proc.returncode != 0:
+            return {"success": False, "error": stderr.decode()[:1000]}
+    except asyncio.TimeoutError:
+        return {"success": False, "error": "install timed out"}
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    version = await _resolve_installed_version(req.package_name)
+    return {"success": True, "version": version}
+
+
+@app.post("/packages/uninstall")
+async def uninstall_package(req: PackageRequest) -> dict[str, Any]:
+    _check_token(req.token)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "pip", "uninstall", "-y", "--quiet", req.package_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode != 0:
+            return {"success": False, "error": stderr.decode()[:1000]}
+    except asyncio.TimeoutError:
+        return {"success": False, "error": "uninstall timed out"}
+    except Exception as exc:
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"success": True}
+
+
+async def _resolve_installed_version(package_name: str) -> str | None:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version(package_name)
+    except PackageNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
 @app.post("/python/execute", response_model=ExecutePythonResponse)
 async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
     _check_token(req.token)

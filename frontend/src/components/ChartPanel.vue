@@ -2,9 +2,11 @@
 import Plotly from "plotly.js-dist-min";
 import { onMounted, ref, watch } from "vue";
 import { useWorkspaceStore } from "@/stores/workspace";
+import SaveVisualizationDialog from "./SaveVisualizationDialog.vue";
 
 const ws = useWorkspaceStore();
 const host = ref<HTMLDivElement | null>(null);
+const saveOpen = ref(false);
 
 const baseLayout = {
   paper_bgcolor: "rgba(0,0,0,0)",
@@ -42,10 +44,19 @@ watch(() => ws.chart, render, { deep: true });
   <section class="chart">
     <header class="chart__bar">
       <span class="chart__title">Visualization</span>
+      <button
+        class="btn btn-ghost btn-sm"
+        :disabled="!ws.result?.success"
+        @click="saveOpen = true"
+        title="Save as visualization"
+      >
+        Save
+      </button>
     </header>
     <div ref="host" class="chart__host">
       <div v-if="!ws.chart" class="chart__empty">Ask the assistant to chart your results.</div>
     </div>
+    <SaveVisualizationDialog :open="saveOpen" @close="saveOpen = false" @saved="saveOpen = false" />
   </section>
 </template>
 
@@ -59,7 +70,10 @@ watch(() => ws.chart, render, { deep: true });
   border-left: 1px solid var(--border);
 }
 .chart__bar {
-  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 4px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
   font-size: 12px;

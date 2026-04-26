@@ -20,7 +20,10 @@ authRouter.post("/register", (req, res) => {
     return;
   }
   const user = createUser(parsed.data.email, parsed.data.password);
-  res.json({ token: signToken(user), user: { id: user.id, email: user.email } });
+  res.json({
+    token: signToken(user),
+    user: { id: user.id, email: user.email, role: user.role },
+  });
 });
 
 authRouter.post("/login", (req, res) => {
@@ -34,5 +37,8 @@ authRouter.post("/login", (req, res) => {
     res.status(401).json({ error: "invalid credentials" });
     return;
   }
-  res.json({ token: signToken(user), user: { id: user.id, email: user.email } });
+  res.json({
+    token: signToken(user),
+    user: { id: user.id, email: user.email, role: user.role },
+  });
 });

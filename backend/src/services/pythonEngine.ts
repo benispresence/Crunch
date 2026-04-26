@@ -63,6 +63,18 @@ export const pythonEngine = {
     timeout_seconds?: number;
   }) => call<PythonResult>({ path: "/python/execute", body: params }),
 
+  installPackage: (name: string, versionSpec?: string) =>
+    call<{ success: boolean; version?: string; error?: string }>({
+      path: "/packages/install",
+      body: { package_name: name, version_spec: versionSpec },
+    }),
+
+  uninstallPackage: (name: string) =>
+    call<{ success: boolean; error?: string }>({
+      path: "/packages/uninstall",
+      body: { package_name: name },
+    }),
+
   health: async () => {
     const { statusCode, body } = await request(`${config.pythonEngineUrl}/health`);
     return { ok: statusCode === 200, body: await body.text() };
