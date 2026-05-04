@@ -23,13 +23,66 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from nicemeta.connections.manager import ConnectionManager  # noqa: E402
-from nicemeta.query.executor import QueryExecutor  # noqa: E402
+from nicemeta.connections.adapters import (  # noqa: E402
+    FileAdapter,
+    MySQLAdapter,
+    PostgreSQLAdapter,
+    SQLiteAdapter,
+    SQLServerAdapter,
+)
+from nicemeta.connections.base import ConnectionAdapter, ConnectionInfo  # noqa: E402
 from nicemeta.query.validator import QueryValidator  # noqa: E402
 from nicemeta.visualization.code_executor import CodeExecutor  # noqa: E402
 from nicemeta.visualization.factory import ChartFactory  # noqa: E402
 
 ENGINE_TOKEN = os.environ.get("PYTHON_ENGINE_TOKEN", "dev-engine-token")
+
+# Map both the user-facing alias ("postgres") and the canonical
+# Python-side name ("postgresql") to the same adapter class so the
+# Express backend's enum and the existing Python registry agree.
+ADAPTER_REGISTRY: dict[str, type[ConnectionAdapter]] = {
+    "postgres": PostgreSQLAdapter,
+    "postgresql": PostgreSQLAdapter,
+    "mysql": MySQLAdapter,
+    "sqlite": SQLiteAdapter,
+    "sqlserver": SQLServerAdapter,
+    "file": FileAdapter,
+}
+
+# Cached adapters keyed by a stable signature of the connection config so
+# repeated queries reuse the same DuckDB / DB-API connection.
+_adapter_cache: dict[str, ConnectionAdapter] = {}
+
+
+def _adapter_for(connection: dict[str, Any]) -> ConnectionAdapter:
+    db_type = (connection.get("type") or "").lower()
+    cls = ADAPTER_REGISTRY.get(db_type)
+    if cls is None:
+        raise ValueError(
+            f"Unsupported connection type: {connection.get('type')}. "
+            f"Supported: {sorted(set(ADAPTER_REGISTRY))}"
+        )
+    cache_key = "|".join(
+        str(connection.get(k, "")) for k in ("type", "host", "port", "database", "user")
+    )
+    cached = _adapter_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    info = ConnectionInfo(
+        name=connection.get("name") or f"{db_type}_conn",
+        db_type="postgresql" if db_type == "postgres" else db_type,
+        host=connection.get("host") or "localhost",
+        port=connection.get("port") or 0,
+        database=connection.get("database") or "",
+        username=connection.get("user"),
+        options={
+            "password": connection.get("password"),
+            **(connection.get("options") or {}),
+        },
+    )
+    adapter = cls(info)
+    _adapter_cache[cache_key] = adapter
+    return adapter
 
 app = FastAPI(title="NiceMeta Python Engine", version="1.0.0")
 app.add_middleware(
@@ -39,7 +92,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-connection_manager = ConnectionManager()
 query_validator = QueryValidator()
 chart_factory = ChartFactory()
 
@@ -119,21 +171,26 @@ async def health() -> dict[str, str]:
 async def validate_sql(req: ValidateSqlRequest) -> dict[str, Any]:
     _check_token(req.token)
     result = query_validator.validate(req.sql)
-    return {"valid": result.valid, "error": result.error}
+    return {
+        "valid": result.is_valid,
+        "error": "; ".join(result.errors) if result.errors else None,
+    }
 
 
 @app.post("/sql/execute", response_model=ExecuteSqlResponse)
 async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
     _check_token(req.token)
     validation = query_validator.validate(req.sql)
-    if not validation.valid:
-        return ExecuteSqlResponse(success=False, error=validation.error or "invalid sql")
+    if not validation.is_valid:
+        return ExecuteSqlResponse(
+            success=False,
+            error="; ".join(validation.errors) or "invalid sql",
+        )
 
     started = time.perf_counter()
     try:
-        adapter = connection_manager.get_or_create(req.connection.model_dump())
-        executor = QueryExecutor(adapter)
-        df = await executor.execute(req.sql, limit=req.limit)
+        adapter = _adapter_for(req.connection.model_dump())
+        result = await adapter.execute_query(req.sql, limit=req.limit)
     except Exception as exc:  # surface engine errors to backend
         return ExecuteSqlResponse(
             success=False,
@@ -142,13 +199,18 @@ async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
         )
 
     elapsed_ms = (time.perf_counter() - started) * 1000
-    columns = list(df.columns)
-    rows = df.where(df.notnull(), None).values.tolist()
+    if result.error:
+        return ExecuteSqlResponse(
+            success=False,
+            error=result.error,
+            execution_time_ms=elapsed_ms,
+        )
+    rows = [list(row) for row in result.rows]
     return ExecuteSqlResponse(
         success=True,
-        columns=columns,
+        columns=list(result.columns),
         rows=rows,
-        row_count=len(rows),
+        row_count=result.row_count,
         execution_time_ms=elapsed_ms,
     )
 
