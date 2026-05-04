@@ -39,6 +39,12 @@ async function submit() {
       <h1 class="login__title">NiceMeta</h1>
       <p class="login__subtitle">Sign in to continue.</p>
 
+      <div v-if="mode === 'login'" class="login__hint">
+        First launch? Default admin:
+        <code>admin@nicemeta.local</code> / <code>admin</code>
+        — change it after signing in.
+      </div>
+
       <form class="login__form" @submit.prevent="submit">
         <label>
           <span>Email</span>
@@ -46,7 +52,12 @@ async function submit() {
         </label>
         <label>
           <span>Password</span>
-          <input v-model="password" type="password" minlength="6" required />
+          <input
+            v-model="password"
+            type="password"
+            :minlength="mode === 'register' ? 6 : 1"
+            required
+          />
         </label>
 
         <button class="btn btn-primary" type="submit" :disabled="busy">
@@ -124,5 +135,22 @@ async function submit() {
   color: var(--fg-muted);
   text-align: center;
   font-size: 12px;
+}
+.login__hint {
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-border);
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 16px;
+}
+.login__hint code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--fg);
 }
 </style>

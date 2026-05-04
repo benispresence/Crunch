@@ -10,6 +10,7 @@ import { dashboardsRouter } from "./routes/dashboards.js";
 import { queriesRouter } from "./routes/queries.js";
 import { visualizationsRouter } from "./routes/visualizations.js";
 import { vizRouter } from "./routes/viz.js";
+import { seedDefaultAdmin } from "./services/auth.js";
 import { pythonEngine } from "./services/pythonEngine.js";
 
 const app = express();
@@ -37,6 +38,17 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   console.error(err);
   res.status(500).json({ error: err.message });
 });
+
+const seed = seedDefaultAdmin();
+if (seed.created) {
+  console.log("");
+  console.log("  Default admin account created:");
+  console.log(`    email:    ${seed.email}`);
+  console.log(`    password: ${seed.password}`);
+  console.log("  Sign in, then change the password via POST /api/auth/change-password");
+  console.log("  (or the Change password form on the login screen).");
+  console.log("");
+}
 
 app.listen(config.port, () => {
   console.log(`nicemeta backend listening on :${config.port}`);
