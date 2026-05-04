@@ -47,6 +47,17 @@ queriesRouter.post("/", (req, res) => {
   res.json({ id: Number(info.lastInsertRowid) });
 });
 
+queriesRouter.delete("/:id", (req, res) => {
+  const result = db
+    .prepare("DELETE FROM queries WHERE id = ? AND user_id = ?")
+    .run(req.params.id, req.user!.sub);
+  if (result.changes === 0) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
 queriesRouter.put("/:id", (req, res) => {
   const parsed = z
     .object({ name: z.string().optional(), sql: z.string().optional() })

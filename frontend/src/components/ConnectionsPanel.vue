@@ -104,30 +104,40 @@ async function remove(id: number) {
   if (ws.activeConnectionId === id) ws.activeConnectionId = null;
   await ws.loadConnections();
 }
+
+function connectionName(connectionId: number | null): string | null {
+  if (connectionId == null) return null;
+  return ws.connections.find((c) => c.id === connectionId)?.name ?? null;
+}
+
+async function removeQuery(id: number) {
+  if (!confirm("Delete this query?")) return;
+  await ws.deleteSavedQuery(id);
+}
 </script>
 
 <template>
   <aside class="sidebar">
-    <div class="sidebar__heading">
-      <span class="sidebar__heading-title">Connections</span>
-      <button
-        v-if="!adding"
-        class="btn btn-ghost btn-sm"
-        @click="openForm"
-        title="Add a new connection"
-      >
-        + New
-      </button>
-      <button
-        v-else
-        class="btn btn-ghost btn-sm"
-        @click="closeForm"
-      >
-        Close
-      </button>
-    </div>
-
     <div class="sidebar__scroll">
+      <div class="sidebar__heading">
+        <span class="sidebar__heading-title">Connections</span>
+        <button
+          v-if="!adding"
+          class="btn btn-ghost btn-sm"
+          @click="openForm"
+          title="Add a new connection"
+        >
+          + New
+        </button>
+        <button
+          v-else
+          class="btn btn-ghost btn-sm"
+          @click="closeForm"
+        >
+          Close
+        </button>
+      </div>
+
       <form v-if="adding" class="conn-form" @submit.prevent="add">
         <label class="conn-form__field">
           <span>Name</span>
@@ -215,6 +225,55 @@ async function remove(id: number) {
           No connections yet. Click <strong>+ New</strong> to add one.
         </li>
       </ul>
+
+      <div class="sidebar__heading sidebar__heading--secondary">
+        <span class="sidebar__heading-title">Saved queries</span>
+        <button
+          class="btn btn-ghost btn-sm"
+          @click="ws.newQuery()"
+          title="Start a new empty query"
+        >
+          + New
+        </button>
+      </div>
+
+      <ul class="sidebar__list">
+        <li
+          v-for="q in ws.savedQueries"
+          :key="q.id"
+          :class="{ 'sidebar__item--active': ws.activeQueryId === q.id }"
+          class="sidebar__item"
+          @click="ws.loadQuery(q)"
+        >
+          <div class="sidebar__item-main">
+            <span class="sidebar__qicon" aria-hidden="true">
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                <path d="M2 2.5h6.5l1.5 1.5v5.5h-8z" stroke="currentColor" stroke-linejoin="round" />
+                <line x1="3.5" y1="5" x2="8.5" y2="5" stroke="currentColor" stroke-linecap="round" />
+                <line x1="3.5" y1="7" x2="7" y2="7" stroke="currentColor" stroke-linecap="round" />
+              </svg>
+            </span>
+            <span class="sidebar__name" :title="q.name">{{ q.name }}</span>
+            <span
+              v-if="connectionName(q.connection_id)"
+              class="sidebar__qconn"
+              :title="`Runs against ${connectionName(q.connection_id)}`"
+            >
+              {{ connectionName(q.connection_id) }}
+            </span>
+          </div>
+          <button
+            class="btn btn-ghost btn-icon sidebar__delete"
+            @click.stop="removeQuery(q.id)"
+            title="Delete"
+          >
+            ×
+          </button>
+        </li>
+        <li v-if="ws.savedQueries.length === 0" class="sidebar__empty">
+          No saved queries yet. Hit <strong>Save</strong> in the editor toolbar.
+        </li>
+      </ul>
     </div>
   </aside>
 </template>
@@ -232,22 +291,26 @@ async function remove(id: number) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 12px 8px;
+  padding: 6px 4px;
   color: var(--fg-muted);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
+}
+.sidebar__heading--secondary {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 .sidebar__heading-title { font-weight: 600; }
 .sidebar__scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 8px 8px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .conn-form {
@@ -357,4 +420,23 @@ async function remove(id: number) {
   line-height: 1.5;
 }
 .sidebar__empty strong { color: var(--fg-muted); }
+.sidebar__qicon {
+  color: var(--fg-subtle);
+  flex-shrink: 0;
+  display: inline-flex;
+}
+.sidebar__qconn {
+  font-size: 10px;
+  color: var(--fg-subtle);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 100px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 </style>

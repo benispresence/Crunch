@@ -31,7 +31,11 @@ onMounted(async () => {
     return;
   }
   try {
-    await Promise.all([ws.loadConnections(), chat.loadConversations()]);
+    await Promise.all([
+      ws.loadConnections(),
+      ws.loadSavedQueries(),
+      chat.loadConversations(),
+    ]);
   } catch (err) {
     console.warn(err);
   }

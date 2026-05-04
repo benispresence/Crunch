@@ -1,11 +1,58 @@
 <script setup lang="ts">
 import * as monaco from "monaco-editor";
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 
 const ws = useWorkspaceStore();
 const host = ref<HTMLDivElement | null>(null);
 let editor: monaco.editor.IStandaloneCodeEditor | null = null;
+
+const showSaveAs = ref(false);
+const saveAsName = ref("");
+const saving = ref(false);
+const saveError = ref("");
+
+const activeQuery = computed(() =>
+  ws.activeQueryId == null
+    ? null
+    : ws.savedQueries.find((q) => q.id === ws.activeQueryId) ?? null,
+);
+
+async function save() {
+  saveError.value = "";
+  if (activeQuery.value) {
+    // Updating an existing saved query — no name prompt.
+    saving.value = true;
+    try {
+      await ws.saveCurrentQuery(activeQuery.value.name);
+    } catch (e) {
+      saveError.value = (e as Error).message;
+    } finally {
+      saving.value = false;
+    }
+    return;
+  }
+  // First save — open the inline name prompt.
+  saveAsName.value = "";
+  showSaveAs.value = true;
+}
+
+async function confirmSaveAs() {
+  if (!saveAsName.value.trim()) {
+    saveError.value = "Name is required";
+    return;
+  }
+  saving.value = true;
+  saveError.value = "";
+  try {
+    await ws.saveCurrentQuery(saveAsName.value);
+    showSaveAs.value = false;
+  } catch (e) {
+    saveError.value = (e as Error).message;
+  } finally {
+    saving.value = false;
+  }
+}
 
 monaco.editor.defineTheme("nicemeta-dark", {
   base: "vs-dark",
@@ -78,14 +125,40 @@ function reject() {
   <div class="editor">
     <div class="editor__bar">
       <div class="editor__title">
-        <span>Query</span>
+        <span class="editor__name">{{ activeQuery ? activeQuery.name : "Untitled query" }}</span>
         <span class="editor__hint">⌘ + Enter to run</span>
       </div>
-      <button class="btn btn-primary btn-sm" :disabled="ws.running" @click="ws.runSql">
-        <svg width="10" height="10" viewBox="0 0 10 10"><polygon points="2,1 9,5 2,9" fill="currentColor" /></svg>
-        {{ ws.running ? "Running..." : "Run" }}
+      <div class="editor__actions">
+        <button
+          class="btn btn-ghost btn-sm"
+          :disabled="saving"
+          :title="activeQuery ? 'Save changes to this query' : 'Save as a new query'"
+          @click="save"
+        >
+          {{ saving ? "Saving..." : activeQuery ? "Save" : "Save as..." }}
+        </button>
+        <button class="btn btn-primary btn-sm" :disabled="ws.running" @click="ws.runSql">
+          <svg width="10" height="10" viewBox="0 0 10 10"><polygon points="2,1 9,5 2,9" fill="currentColor" /></svg>
+          {{ ws.running ? "Running..." : "Run" }}
+        </button>
+      </div>
+    </div>
+
+    <div v-if="showSaveAs" class="save-as">
+      <input
+        v-model="saveAsName"
+        class="save-as__input"
+        placeholder="Query name"
+        autofocus
+        @keyup.enter="confirmSaveAs"
+        @keyup.escape="showSaveAs = false"
+      />
+      <button class="btn btn-ghost btn-sm" @click="showSaveAs = false">Cancel</button>
+      <button class="btn btn-primary btn-sm" :disabled="saving" @click="confirmSaveAs">
+        {{ saving ? "Saving..." : "Save" }}
       </button>
     </div>
+    <p v-if="saveError" class="save-as__error">{{ saveError }}</p>
 
     <div ref="host" class="editor__host" />
 
@@ -125,9 +198,40 @@ function reject() {
   gap: 10px;
   font-size: 12px;
   color: var(--fg-muted);
+  min-width: 0;
+}
+.editor__name {
+  color: var(--fg);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 360px;
 }
 .editor__hint { color: var(--fg-subtle); font-size: 11px; }
+.editor__actions { display: flex; gap: 6px; flex-shrink: 0; }
 .editor__host { flex: 1; min-height: 0; }
+.save-as {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.save-as__input {
+  flex: 1;
+  font-size: 13px;
+  padding: 5px 8px;
+}
+.save-as__error {
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--error);
+  background: rgba(220, 80, 80, 0.08);
+  border-bottom: 1px solid var(--border);
+}
 .proposal {
   border-top: 1px solid var(--accent-border);
   background: var(--accent-subtle);
