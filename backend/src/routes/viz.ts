@@ -6,6 +6,14 @@ import { pythonEngine } from "../services/pythonEngine.js";
 export const vizRouter = Router();
 vizRouter.use(requireAuth);
 
+vizRouter.get("/chart-types", async (_req, res) => {
+  try {
+    res.json(await pythonEngine.listChartTypes());
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
+  }
+});
+
 vizRouter.post("/render", async (req, res) => {
   const parsed = z
     .object({

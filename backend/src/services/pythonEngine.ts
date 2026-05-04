@@ -19,6 +19,15 @@ async function call<T>({ path, body }: EngineRequest): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+async function callGet<T>(path: string): Promise<T> {
+  const { statusCode, body: resBody } = await request(`${config.pythonEngineUrl}${path}`);
+  const text = await resBody.text();
+  if (statusCode >= 400) {
+    throw new Error(`python engine ${path} failed (${statusCode}): ${text}`);
+  }
+  return JSON.parse(text) as T;
+}
+
 export interface SqlResult {
   success: boolean;
   columns: string[];
@@ -40,6 +49,18 @@ export interface PythonResult {
   spec?: Record<string, unknown>;
   stdout: string;
   error?: string;
+}
+
+export interface ChartTypeMeta {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  supported_renderers: string[];
+  required_fields: string[];
+  optional_fields: string[];
+  default_renderer: string;
+  icon: string;
 }
 
 export const pythonEngine = {
@@ -74,6 +95,8 @@ export const pythonEngine = {
       path: "/packages/uninstall",
       body: { package_name: name },
     }),
+
+  listChartTypes: () => callGet<{ chart_types: ChartTypeMeta[] }>("/viz/chart-types"),
 
   health: async () => {
     const { statusCode, body } = await request(`${config.pythonEngineUrl}/health`);

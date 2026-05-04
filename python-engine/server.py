@@ -167,6 +167,28 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "service": "nicemeta-python-engine"}
 
 
+@app.get("/viz/chart-types")
+async def list_chart_types() -> dict[str, Any]:
+    """Return the catalog of supported chart types for the picker."""
+    from nicemeta.visualization.chart_types import CHART_TYPES
+
+    out = []
+    for ct in CHART_TYPES.values():
+        out.append({
+            "id": ct.id,
+            "name": ct.name,
+            "description": ct.description,
+            "category": ct.category.value,
+            "supported_renderers": list(ct.supported_renderers),
+            "required_fields": list(ct.required_fields),
+            "optional_fields": list(ct.optional_fields),
+            "default_renderer": ct.default_renderer,
+            "icon": ct.icon,
+        })
+    out.sort(key=lambda c: (c["category"], c["name"]))
+    return {"chart_types": out}
+
+
 @app.post("/sql/validate")
 async def validate_sql(req: ValidateSqlRequest) -> dict[str, Any]:
     _check_token(req.token)
@@ -219,15 +241,28 @@ async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
 async def render_chart(req: RenderChartRequest) -> RenderChartResponse:
     _check_token(req.token)
     try:
-        chart = chart_factory.create(
-            chart_type=req.chart_type,
-            renderer=req.renderer,
-            data=req.data,
-            config=req.config,
+        import pandas as pd
+        from nicemeta.visualization.base import ChartConfig
+
+        df = pd.DataFrame(req.data)
+        cfg_kwargs = {"chart_type": req.chart_type}
+        # Map common fields from the picker config (x, y, color, size, etc.)
+        for key in (
+            "x", "y", "z", "color", "size", "labels", "values",
+            "parents", "source", "target", "open", "high", "low", "close",
+            "lat", "lon", "locations", "title", "x_label", "y_label",
+        ):
+            if req.config.get(key) not in (None, ""):
+                cfg_kwargs[key] = req.config[key]
+        config = ChartConfig(**cfg_kwargs)
+        result = chart_factory.render(df, config, renderer=req.renderer)
+        if not result.success:
+            return RenderChartResponse(success=False, error=result.error)
+        return RenderChartResponse(
+            success=True,
+            spec=result.json_data,
+            html=result.html,
         )
-        spec = chart.to_spec()
-        html = chart.to_html() if hasattr(chart, "to_html") else None
-        return RenderChartResponse(success=True, spec=spec, html=html)
     except Exception as exc:
         return RenderChartResponse(success=False, error=f"{type(exc).__name__}: {exc}")
 
@@ -293,22 +328,41 @@ async def _resolve_installed_version(package_name: str) -> str | None:
 @app.post("/python/execute", response_model=ExecutePythonResponse)
 async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
     _check_token(req.token)
-    executor = CodeExecutor(allowed_packages=req.allowed_packages or None)
     try:
-        result = await asyncio.wait_for(
-            executor.run(req.code, data=req.data),
-            timeout=req.timeout_seconds,
+        import pandas as pd
+
+        df = pd.DataFrame(req.data) if req.data else pd.DataFrame()
+        # CodeExecutor.execute is sync; run in threadpool to keep the loop free.
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: CodeExecutor.execute(req.code, df, timeout=req.timeout_seconds),
         )
-    except asyncio.TimeoutError:
-        return ExecutePythonResponse(success=False, error="execution timed out")
     except Exception as exc:
         return ExecutePythonResponse(success=False, error=f"{type(exc).__name__}: {exc}")
 
+    if not result.success:
+        return ExecutePythonResponse(success=False, error=result.error or "execution failed")
+
+    spec: dict[str, Any] | None = None
+    fig = result.figure
+    if fig is not None:
+        # Plotly figures: serialize via plotly.io.to_json so numpy arrays
+        # become plain JSON-serializable lists. Matplotlib figures have no
+        # spec — we fall back to the rendered HTML.
+        try:
+            import json as _json
+
+            import plotly.io as pio
+
+            spec = _json.loads(pio.to_json(fig))
+        except Exception:
+            spec = None
     return ExecutePythonResponse(
-        success=result.success,
-        spec=result.spec,
-        stdout=result.stdout,
-        error=result.error,
+        success=True,
+        spec=spec,
+        stdout=result.html or "",
+        error=None,
     )
 
 

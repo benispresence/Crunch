@@ -1,31 +1,25 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import { useVisualizationsStore } from "@/stores/visualizations";
+import { api } from "@/api/client";
 import { useWorkspaceStore } from "@/stores/workspace";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void; (e: "saved", id: number): void }>();
 
 const ws = useWorkspaceStore();
-const vizStore = useVisualizationsStore();
 
 const name = ref("");
-const chartType = ref("bar");
-const xField = ref("");
-const yField = ref("");
 const saving = ref(false);
 const error = ref("");
 
 watch(
   () => props.open,
   (v) => {
-    if (v) {
-      name.value = "";
-      error.value = "";
-      const cols = ws.result?.columns ?? [];
-      xField.value = cols[0] ?? "";
-      yField.value = cols[1] ?? cols[0] ?? "";
-    }
+    if (!v) return;
+    error.value = "";
+    // Pre-fill from the active viz, or leave blank for a new one.
+    const active = ws.visualizations.find((vv) => vv.id === ws.activeVizId);
+    name.value = active?.name ?? "";
   },
 );
 
@@ -41,14 +35,25 @@ async function save() {
   saving.value = true;
   error.value = "";
   try {
-    const id = await vizStore.save({
+    const payload = {
       name: name.value.trim(),
       connection_id: ws.activeConnectionId,
       sql: ws.sql,
-      chart_type: chartType.value,
-      config: { x: xField.value, y: yField.value },
-    });
-    await vizStore.load();
+      chart_type: ws.chartMode === "python" ? "python" : ws.chartType,
+      renderer: ws.chartMode === "python" ? "python" : "plotly",
+      config: ws.chartMode === "python" ? {} : ws.chartConfig,
+      python_code: ws.chartMode === "python" ? ws.pythonCode : null,
+    };
+    let id: number;
+    if (ws.activeVizId) {
+      await api.put(`/visualizations/${ws.activeVizId}`, payload);
+      id = ws.activeVizId;
+    } else {
+      const r = await api.post<{ id: number }>("/visualizations", payload);
+      id = r.id;
+      ws.activeVizId = id;
+    }
+    await ws.loadVisualizations();
     emit("saved", id);
     emit("close");
   } catch (e) {
@@ -63,7 +68,7 @@ async function save() {
   <div v-if="open" class="modal" @click.self="emit('close')">
     <div class="modal__panel">
       <header class="modal__head">
-        <h3>Save visualization</h3>
+        <h3>{{ ws.activeVizId ? "Update visualization" : "Save visualization" }}</h3>
         <button class="btn btn-ghost btn-icon" @click="emit('close')">×</button>
       </header>
 
@@ -73,32 +78,23 @@ async function save() {
           <input v-model="name" placeholder="e.g. Daily revenue" autofocus />
         </label>
 
-        <label>
-          <span>Chart type</span>
-          <select v-model="chartType">
-            <option value="bar">Bar</option>
-            <option value="line">Line</option>
-            <option value="scatter">Scatter</option>
-            <option value="area">Area</option>
-            <option value="pie">Pie</option>
-            <option value="histogram">Histogram</option>
-            <option value="heatmap">Heatmap</option>
-          </select>
-        </label>
-
-        <div class="modal__row">
-          <label>
-            <span>X column</span>
-            <select v-model="xField">
-              <option v-for="c in ws.result?.columns ?? []" :key="c" :value="c">{{ c }}</option>
-            </select>
-          </label>
-          <label>
-            <span>Y column</span>
-            <select v-model="yField">
-              <option v-for="c in ws.result?.columns ?? []" :key="c" :value="c">{{ c }}</option>
-            </select>
-          </label>
+        <div class="modal__meta">
+          <div class="modal__meta-row">
+            <span class="modal__meta-key">Mode</span>
+            <span class="modal__meta-val">
+              {{ ws.chartMode === "python" ? "Python" : "Chart picker" }}
+            </span>
+          </div>
+          <div v-if="ws.chartMode !== 'python'" class="modal__meta-row">
+            <span class="modal__meta-key">Chart type</span>
+            <span class="modal__meta-val">{{ ws.chartType }}</span>
+          </div>
+          <div class="modal__meta-row">
+            <span class="modal__meta-key">Connection</span>
+            <span class="modal__meta-val">
+              {{ ws.connections.find((c) => c.id === ws.activeConnectionId)?.name ?? "—" }}
+            </span>
+          </div>
         </div>
 
         <p v-if="error" class="modal__error">{{ error }}</p>
@@ -107,7 +103,7 @@ async function save() {
       <footer class="modal__foot">
         <button class="btn btn-sm" @click="emit('close')">Cancel</button>
         <button class="btn btn-primary btn-sm" :disabled="saving" @click="save">
-          {{ saving ? "Saving…" : "Save" }}
+          {{ saving ? "Saving…" : ws.activeVizId ? "Update" : "Save" }}
         </button>
       </footer>
     </div>
@@ -149,7 +145,7 @@ async function save() {
 .modal__body {
   padding: 16px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 .modal__body label {
   display: grid;
@@ -157,11 +153,21 @@ async function save() {
   font-size: 12px;
   color: var(--fg-muted);
 }
-.modal__row {
+.modal__meta {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
 }
+.modal__meta-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.modal__meta-key { color: var(--fg-subtle); }
+.modal__meta-val { color: var(--fg); font-weight: 500; }
 .modal__error {
   margin: 4px 0 0;
   color: var(--error);

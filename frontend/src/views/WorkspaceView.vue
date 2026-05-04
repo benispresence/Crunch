@@ -34,6 +34,8 @@ onMounted(async () => {
     await Promise.all([
       ws.loadConnections(),
       ws.loadSavedQueries(),
+      ws.loadVisualizations(),
+      ws.loadChartTypes(),
       chat.loadConversations(),
     ]);
   } catch (err) {

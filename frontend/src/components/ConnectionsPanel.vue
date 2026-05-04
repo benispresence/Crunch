@@ -114,6 +114,11 @@ async function removeQuery(id: number) {
   if (!confirm("Delete this query?")) return;
   await ws.deleteSavedQuery(id);
 }
+
+async function removeViz(id: number) {
+  if (!confirm("Delete this visualization?")) return;
+  await ws.deleteVisualization(id);
+}
 </script>
 
 <template>
@@ -272,6 +277,42 @@ async function removeQuery(id: number) {
         </li>
         <li v-if="ws.savedQueries.length === 0" class="sidebar__empty">
           No saved queries yet. Hit <strong>Save</strong> in the editor toolbar.
+        </li>
+      </ul>
+
+      <div class="sidebar__heading sidebar__heading--secondary">
+        <span class="sidebar__heading-title">Visualizations</span>
+        <button
+          class="btn btn-ghost btn-sm"
+          @click="ws.newVisualization()"
+          title="Start a new visualization"
+        >
+          + New
+        </button>
+      </div>
+
+      <ul class="sidebar__list">
+        <li
+          v-for="v in ws.visualizations"
+          :key="v.id"
+          :class="{ 'sidebar__item--active': ws.activeVizId === v.id }"
+          class="sidebar__item"
+          @click="ws.loadVisualization(v)"
+        >
+          <div class="sidebar__item-main">
+            <span class="sidebar__type">{{ v.python_code ? "py" : v.chart_type }}</span>
+            <span class="sidebar__name" :title="v.name">{{ v.name }}</span>
+          </div>
+          <button
+            class="btn btn-ghost btn-icon sidebar__delete"
+            @click.stop="removeViz(v.id)"
+            title="Delete"
+          >
+            ×
+          </button>
+        </li>
+        <li v-if="ws.visualizations.length === 0" class="sidebar__empty">
+          No visualizations yet. <strong>Save</strong> from the chart panel.
         </li>
       </ul>
     </div>

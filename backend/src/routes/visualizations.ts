@@ -178,6 +178,19 @@ visualizationsRouter.post("/:id/render", async (req, res) => {
     sqlResult.columns.forEach((col, i) => {
       data[col] = sqlResult.rows.map((r) => r[i]);
     });
+    if (row.python_code && row.renderer === "python") {
+      const py = await pythonEngine.executePython({
+        code: row.python_code,
+        data,
+      });
+      res.json({
+        success: py.success,
+        spec: py.spec,
+        error: py.error,
+        row_count: sqlResult.row_count,
+      });
+      return;
+    }
     const chart = await pythonEngine.renderChart({
       chart_type: row.chart_type,
       renderer: row.renderer,
