@@ -40,7 +40,7 @@ onMounted(async () => {
 
 <template>
   <Splitpanes class="workspace" :horizontal="false">
-    <Pane v-if="props.sidebarOpen !== false" :size="compact ? 22 : 18" :min-size="14" :max-size="32">
+    <Pane v-if="props.sidebarOpen !== false" :size="compact ? 24 : 20" :min-size="16" :max-size="50">
       <ConnectionsPanel />
     </Pane>
 
