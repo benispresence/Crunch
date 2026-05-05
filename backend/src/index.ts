@@ -8,6 +8,7 @@ import { chatRouter } from "./routes/chat.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { dashboardsRouter } from "./routes/dashboards.js";
 import { foldersRouter } from "./routes/folders.js";
+import { gitRouter } from "./routes/git.js";
 import { queriesRouter } from "./routes/queries.js";
 import { visualizationsRouter } from "./routes/visualizations.js";
 import { vizRouter } from "./routes/viz.js";
@@ -35,6 +36,7 @@ app.use("/api/visualizations", visualizationsRouter);
 app.use("/api/dashboards", dashboardsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/chat", chatRouter);
+app.use("/api/git", gitRouter);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);

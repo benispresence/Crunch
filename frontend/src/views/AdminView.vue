@@ -23,12 +23,115 @@ interface AdminUser {
 }
 
 const auth = useAuthStore();
-const tab = ref<"packages" | "users">("packages");
+const tab = ref<"packages" | "users" | "git">("packages");
 
 const packages = ref<Pkg[]>([]);
 const users = ref<AdminUser[]>([]);
 const busy = ref<Record<number, boolean>>({});
 const error = ref("");
+
+interface GitStatus {
+  initialized: boolean;
+  branch: string | null;
+  remote_url: string | null;
+  ahead: number;
+  behind: number;
+  has_uncommitted: boolean;
+  uncommitted_files: string[];
+  last_commit: { sha: string; subject: string; author: string; date: string } | null;
+  workspace_dir: string;
+}
+interface GitLogEntry {
+  sha: string;
+  subject: string;
+  author: string;
+  date: string;
+}
+
+const gitStatus = ref<GitStatus | null>(null);
+const gitLog = ref<GitLogEntry[]>([]);
+const gitMessage = ref("");
+const gitRemote = ref("");
+const gitBusy = ref(false);
+const gitToast = ref("");
+
+async function loadGit() {
+  try {
+    const s = await api.get<GitStatus>("/git/status");
+    gitStatus.value = s;
+    gitRemote.value = s.remote_url ?? "";
+    if (s.initialized) {
+      const log = await api.get<{ entries: GitLogEntry[] }>("/git/log");
+      gitLog.value = log.entries;
+    } else {
+      gitLog.value = [];
+    }
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
+
+async function gitDo<T>(label: string, fn: () => Promise<T>): Promise<void> {
+  gitBusy.value = true;
+  gitToast.value = "";
+  error.value = "";
+  try {
+    await fn();
+    gitToast.value = label;
+    await loadGit();
+  } catch (e) {
+    error.value = `${label}: ${(e as Error).message}`;
+  } finally {
+    gitBusy.value = false;
+  }
+}
+
+async function gitInit() {
+  await gitDo("Initialized git repo", () => api.post("/git/init", {}));
+}
+async function gitSyncExport() {
+  await gitDo("Exported workspace", () => api.post("/git/sync-export", {}));
+}
+async function gitCommit() {
+  if (!gitMessage.value.trim()) {
+    error.value = "Commit message required";
+    return;
+  }
+  const msg = gitMessage.value.trim();
+  await gitDo(`Committed: "${msg}"`, async () => {
+    const r = await api.post<{ committed: boolean; sha: string | null; stderr: string }>(
+      "/git/commit",
+      { message: msg, sync_first: true },
+    );
+    if (!r.committed) throw new Error(r.stderr || "nothing committed");
+    gitMessage.value = "";
+  });
+}
+async function gitPush() {
+  await gitDo("Pushed to remote", () => api.post("/git/push", {}));
+}
+async function gitPull() {
+  await gitDo("Pulled from remote", () => api.post("/git/pull", {}));
+}
+async function gitSetRemote() {
+  if (!gitRemote.value.trim()) return;
+  await gitDo("Remote set", () =>
+    api.put("/git/remote", { url: gitRemote.value.trim() }),
+  );
+}
+async function gitClone() {
+  if (!gitRemote.value.trim()) {
+    error.value = "Enter a clone URL first";
+    return;
+  }
+  if (
+    !confirm(
+      "Clone will overwrite the workspace directory. The DB will then be augmented with anything new in the cloned repo. Continue?",
+    )
+  )
+    return;
+  await gitDo("Cloned", () => api.post("/git/clone", { url: gitRemote.value.trim() }));
+}
 
 const newPkg = ref({ package_name: "", version_spec: "", auto_install: true });
 const adding = ref(false);
@@ -44,6 +147,7 @@ async function loadAll() {
   } catch (e) {
     error.value = (e as Error).message;
   }
+  await loadGit();
 }
 
 onMounted(loadAll);
@@ -139,6 +243,13 @@ async function setRole(u: AdminUser, role: string) {
         @click="tab = 'users'"
       >
         Users
+      </button>
+      <button
+        class="admin__tab"
+        :class="{ 'admin__tab--active': tab === 'git' }"
+        @click="tab = 'git'"
+      >
+        Git
       </button>
     </div>
 
@@ -263,6 +374,125 @@ async function setRole(u: AdminUser, role: string) {
           </tr>
         </tbody>
       </table>
+    </section>
+
+    <!-- Git -->
+    <section v-if="tab === 'git'" class="admin__section">
+      <p class="git__intro">
+        Mirror your saved queries, visualizations and dashboards to a real git
+        repo so you can back them up to GitHub, sync between machines, or load
+        a colleague's collection. Files live in
+        <code>{{ gitStatus?.workspace_dir ?? "the workspace directory" }}</code>.
+      </p>
+
+      <div v-if="gitStatus" class="git__status">
+        <div class="git__status-row">
+          <span class="git__status-key">Repo</span>
+          <span class="git__status-val">
+            {{ gitStatus.initialized ? `initialized · ${gitStatus.branch ?? "?"}` : "not a git repo" }}
+          </span>
+        </div>
+        <div class="git__status-row">
+          <span class="git__status-key">Remote</span>
+          <span class="git__status-val">{{ gitStatus.remote_url ?? "—" }}</span>
+        </div>
+        <div v-if="gitStatus.initialized" class="git__status-row">
+          <span class="git__status-key">Sync</span>
+          <span class="git__status-val">
+            {{ gitStatus.ahead }} ahead · {{ gitStatus.behind }} behind
+            <span v-if="gitStatus.has_uncommitted" class="git__dirty">
+              · {{ gitStatus.uncommitted_files.length }} uncommitted change(s)
+            </span>
+          </span>
+        </div>
+        <div v-if="gitStatus.last_commit" class="git__status-row">
+          <span class="git__status-key">HEAD</span>
+          <span class="git__status-val git__mono">
+            {{ gitStatus.last_commit.sha.slice(0, 8) }} — {{ gitStatus.last_commit.subject }}
+          </span>
+        </div>
+      </div>
+
+      <p v-if="gitToast" class="git__toast">{{ gitToast }}</p>
+
+      <div v-if="!gitStatus?.initialized" class="git__init">
+        <p>This workspace isn't a git repo yet.</p>
+        <div class="git__row">
+          <button class="btn btn-primary btn-sm" :disabled="gitBusy" @click="gitInit">
+            Initialize repo
+          </button>
+          <span class="git__or">or</span>
+          <input
+            v-model="gitRemote"
+            placeholder="https://github.com/you/your-collection.git"
+            class="git__input"
+          />
+          <button class="btn btn-sm" :disabled="gitBusy" @click="gitClone">
+            Clone existing
+          </button>
+        </div>
+      </div>
+
+      <div v-else class="git__panels">
+        <div class="git__panel">
+          <h4>Remote</h4>
+          <div class="git__row">
+            <input v-model="gitRemote" placeholder="git@github.com:you/repo.git" class="git__input" />
+            <button class="btn btn-sm" :disabled="gitBusy" @click="gitSetRemote">Set</button>
+          </div>
+        </div>
+
+        <div class="git__panel">
+          <h4>Sync &amp; commit</h4>
+          <p class="git__hint">
+            <strong>Export</strong> writes the current DB state to disk;
+            <strong>commit</strong> stages and records it; <strong>push</strong>
+            uploads to the remote.
+          </p>
+          <div class="git__row">
+            <button class="btn btn-sm" :disabled="gitBusy" @click="gitSyncExport">
+              Export workspace
+            </button>
+          </div>
+          <div class="git__row">
+            <input
+              v-model="gitMessage"
+              placeholder="Commit message…"
+              class="git__input"
+              @keyup.enter="gitCommit"
+            />
+            <button class="btn btn-primary btn-sm" :disabled="gitBusy" @click="gitCommit">
+              Commit
+            </button>
+          </div>
+          <div class="git__row">
+            <button class="btn btn-sm" :disabled="gitBusy" @click="gitPush">Push</button>
+            <button class="btn btn-sm" :disabled="gitBusy" @click="gitPull">Pull</button>
+          </div>
+        </div>
+
+        <div v-if="gitLog.length > 0" class="git__panel">
+          <h4>Recent commits</h4>
+          <ul class="git__log">
+            <li v-for="c in gitLog" :key="c.sha" class="git__log-row">
+              <span class="git__mono git__sha">{{ c.sha.slice(0, 7) }}</span>
+              <span class="git__log-subject">{{ c.subject }}</span>
+              <span class="git__log-meta">
+                {{ c.author }} · {{ new Date(c.date).toLocaleString() }}
+              </span>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="gitStatus.uncommitted_files.length > 0" class="git__panel">
+          <h4>Uncommitted</h4>
+          <ul class="git__log">
+            <li v-for="f in gitStatus.uncommitted_files" :key="f" class="git__mono git__log-row">
+              {{ f }}
+            </li>
+          </ul>
+        </div>
+      </div>
     </section>
   </div>
 </template>
@@ -425,4 +655,111 @@ async function setRole(u: AdminUser, role: string) {
 .admin__toggle--on span { transform: translateX(14px); }
 
 .admin__actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+.git__intro { color: var(--fg-muted); font-size: 13px; margin: 0 0 16px; line-height: 1.5; }
+.git__intro code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+.git__status {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  display: grid;
+  gap: 6px;
+}
+.git__status-row {
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+}
+.git__status-key {
+  color: var(--fg-subtle);
+  width: 70px;
+  flex-shrink: 0;
+}
+.git__status-val { color: var(--fg); }
+.git__dirty { color: var(--accent); }
+.git__mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+.git__toast {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.git__init {
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  padding: 16px;
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 12px;
+}
+.git__init p { margin: 0; color: var(--fg-muted); font-size: 13px; }
+.git__or { color: var(--fg-subtle); font-size: 12px; }
+.git__row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.git__input {
+  flex: 1;
+  font-size: 13px;
+  padding: 6px 10px;
+}
+.git__panels {
+  display: grid;
+  gap: 16px;
+}
+.git__panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: grid;
+  gap: 10px;
+}
+.git__panel h4 {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+.git__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.git__log {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.git__log-row {
+  display: grid;
+  grid-template-columns: 80px 1fr auto;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 6px;
+  border-radius: 3px;
+}
+.git__log-row:hover { background: var(--bg-hover); }
+.git__sha { color: var(--accent); }
+.git__log-subject { color: var(--fg); }
+.git__log-meta { color: var(--fg-subtle); white-space: nowrap; }
 </style>
