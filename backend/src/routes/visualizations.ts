@@ -11,6 +11,7 @@ interface VizRow {
   id: number;
   user_id: number;
   connection_id: number | null;
+  folder_id: number | null;
   name: string;
   sql: string;
   chart_type: string;
@@ -25,6 +26,7 @@ function rowToViz(row: VizRow) {
   return {
     id: row.id,
     connection_id: row.connection_id,
+    folder_id: row.folder_id,
     name: row.name,
     sql: row.sql,
     chart_type: row.chart_type,
@@ -39,6 +41,7 @@ function rowToViz(row: VizRow) {
 const upsertSchema = z.object({
   name: z.string().min(1),
   connection_id: z.number().int().nullable(),
+  folder_id: z.number().int().nullable().optional(),
   sql: z.string().min(1),
   chart_type: z.string().min(1),
   renderer: z.string().optional(),
@@ -72,11 +75,12 @@ visualizationsRouter.post("/", (req, res) => {
   }
   const info = db
     .prepare(
-      "INSERT INTO visualizations (user_id, connection_id, name, sql, chart_type, renderer, config_json, python_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO visualizations (user_id, connection_id, folder_id, name, sql, chart_type, renderer, config_json, python_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .run(
       req.user!.sub,
       parsed.data.connection_id,
+      parsed.data.folder_id ?? null,
       parsed.data.name,
       parsed.data.sql,
       parsed.data.chart_type,
@@ -122,6 +126,10 @@ visualizationsRouter.put("/:id", (req, res) => {
   if (parsed.data.python_code !== undefined) {
     fields.push("python_code = ?");
     values.push(parsed.data.python_code);
+  }
+  if (parsed.data.folder_id !== undefined) {
+    fields.push("folder_id = ?");
+    values.push(parsed.data.folder_id);
   }
   if (fields.length === 0) {
     res.json({ ok: true });

@@ -10,6 +10,7 @@ queriesRouter.use(requireAuth);
 interface QueryRow {
   id: number;
   connection_id: number | null;
+  folder_id: number | null;
   name: string;
   sql: string;
   created_at: number;
@@ -24,7 +25,9 @@ interface ConnectionRow {
 
 queriesRouter.get("/", (req, res) => {
   const rows = db
-    .prepare("SELECT id, connection_id, name, sql, created_at, updated_at FROM queries WHERE user_id = ? ORDER BY updated_at DESC")
+    .prepare(
+      "SELECT id, connection_id, folder_id, name, sql, created_at, updated_at FROM queries WHERE user_id = ? ORDER BY updated_at DESC",
+    )
     .all(req.user!.sub) as QueryRow[];
   res.json(rows);
 });
@@ -35,6 +38,7 @@ queriesRouter.post("/", (req, res) => {
       name: z.string().min(1),
       sql: z.string(),
       connection_id: z.number().nullable().optional(),
+      folder_id: z.number().int().nullable().optional(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -42,8 +46,16 @@ queriesRouter.post("/", (req, res) => {
     return;
   }
   const info = db
-    .prepare("INSERT INTO queries (user_id, connection_id, name, sql) VALUES (?, ?, ?, ?)")
-    .run(req.user!.sub, parsed.data.connection_id ?? null, parsed.data.name, parsed.data.sql);
+    .prepare(
+      "INSERT INTO queries (user_id, connection_id, folder_id, name, sql) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run(
+      req.user!.sub,
+      parsed.data.connection_id ?? null,
+      parsed.data.folder_id ?? null,
+      parsed.data.name,
+      parsed.data.sql,
+    );
   res.json({ id: Number(info.lastInsertRowid) });
 });
 
@@ -60,15 +72,27 @@ queriesRouter.delete("/:id", (req, res) => {
 
 queriesRouter.put("/:id", (req, res) => {
   const parsed = z
-    .object({ name: z.string().optional(), sql: z.string().optional() })
+    .object({
+      name: z.string().optional(),
+      sql: z.string().optional(),
+      folder_id: z.number().int().nullable().optional(),
+      connection_id: z.number().int().nullable().optional(),
+    })
     .safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  db.prepare(
-    "UPDATE queries SET name = COALESCE(?, name), sql = COALESCE(?, sql), updated_at = strftime('%s', 'now') WHERE id = ? AND user_id = ?",
-  ).run(parsed.data.name ?? null, parsed.data.sql ?? null, req.params.id, req.user!.sub);
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  if (parsed.data.name !== undefined) { fields.push("name = ?"); values.push(parsed.data.name); }
+  if (parsed.data.sql !== undefined) { fields.push("sql = ?"); values.push(parsed.data.sql); }
+  if (parsed.data.folder_id !== undefined) { fields.push("folder_id = ?"); values.push(parsed.data.folder_id); }
+  if (parsed.data.connection_id !== undefined) { fields.push("connection_id = ?"); values.push(parsed.data.connection_id); }
+  if (fields.length === 0) { res.json({ ok: true }); return; }
+  fields.push("updated_at = strftime('%s', 'now')");
+  values.push(req.params.id, req.user!.sub);
+  db.prepare(`UPDATE queries SET ${fields.join(", ")} WHERE id = ? AND user_id = ?`).run(...values);
   res.json({ ok: true });
 });
 

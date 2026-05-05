@@ -28,7 +28,7 @@ interface WidgetRow {
 
 dashboardsRouter.get("/", (req, res) => {
   const rows = db
-    .prepare("SELECT id, name, description, updated_at FROM dashboards WHERE user_id = ? ORDER BY updated_at DESC")
+    .prepare("SELECT id, name, description, folder_id, updated_at FROM dashboards WHERE user_id = ? ORDER BY updated_at DESC")
     .all(req.user!.sub);
   res.json(rows);
 });
@@ -60,6 +60,7 @@ dashboardsRouter.post("/", (req, res) => {
     .object({
       name: z.string().min(1),
       description: z.string().optional(),
+      folder_id: z.number().int().nullable().optional(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -67,8 +68,15 @@ dashboardsRouter.post("/", (req, res) => {
     return;
   }
   const info = db
-    .prepare("INSERT INTO dashboards (user_id, name, description) VALUES (?, ?, ?)")
-    .run(req.user!.sub, parsed.data.name, parsed.data.description ?? null);
+    .prepare(
+      "INSERT INTO dashboards (user_id, name, description, folder_id) VALUES (?, ?, ?, ?)",
+    )
+    .run(
+      req.user!.sub,
+      parsed.data.name,
+      parsed.data.description ?? null,
+      parsed.data.folder_id ?? null,
+    );
   res.json({ id: Number(info.lastInsertRowid) });
 });
 
@@ -77,6 +85,7 @@ dashboardsRouter.put("/:id", (req, res) => {
     .object({
       name: z.string().optional(),
       description: z.string().nullable().optional(),
+      folder_id: z.number().int().nullable().optional(),
       layout: z.record(z.unknown()).optional(),
     })
     .safeParse(req.body);
@@ -93,6 +102,10 @@ dashboardsRouter.put("/:id", (req, res) => {
   if (parsed.data.description !== undefined) {
     fields.push("description = ?");
     values.push(parsed.data.description);
+  }
+  if (parsed.data.folder_id !== undefined) {
+    fields.push("folder_id = ?");
+    values.push(parsed.data.folder_id);
   }
   if (parsed.data.layout !== undefined) {
     fields.push("layout_json = ?");

@@ -7,6 +7,7 @@ import { authRouter } from "./routes/auth.js";
 import { chatRouter } from "./routes/chat.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { dashboardsRouter } from "./routes/dashboards.js";
+import { foldersRouter } from "./routes/folders.js";
 import { queriesRouter } from "./routes/queries.js";
 import { visualizationsRouter } from "./routes/visualizations.js";
 import { vizRouter } from "./routes/viz.js";
@@ -27,6 +28,7 @@ app.get("/api/health", async (_req, res) => {
 
 app.use("/api/auth", authRouter);
 app.use("/api/connections", connectionsRouter);
+app.use("/api/folders", foldersRouter);
 app.use("/api/queries", queriesRouter);
 app.use("/api/viz", vizRouter);
 app.use("/api/visualizations", visualizationsRouter);

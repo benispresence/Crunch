@@ -35,7 +35,7 @@ async function save() {
   saving.value = true;
   error.value = "";
   try {
-    const payload = {
+    const payload: Record<string, unknown> = {
       name: name.value.trim(),
       connection_id: ws.activeConnectionId,
       sql: ws.sql,
@@ -44,6 +44,9 @@ async function save() {
       config: ws.chartMode === "python" ? {} : ws.chartConfig,
       python_code: ws.chartMode === "python" ? ws.pythonCode : null,
     };
+    if (!ws.activeVizId) {
+      payload.folder_id = ws.activeFolderId && ws.activeFolderId > 0 ? ws.activeFolderId : null;
+    }
     let id: number;
     if (ws.activeVizId) {
       await api.put(`/visualizations/${ws.activeVizId}`, payload);

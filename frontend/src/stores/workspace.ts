@@ -8,9 +8,18 @@ export interface Connection {
   config: Record<string, unknown>;
 }
 
+export interface Folder {
+  id: number;
+  parent_id: number | null;
+  name: string;
+  sort_order: number;
+  created_at: number;
+}
+
 export interface SavedQuery {
   id: number;
   connection_id: number | null;
+  folder_id: number | null;
   name: string;
   sql: string;
   created_at: number;
@@ -32,6 +41,7 @@ export interface ChartTypeMeta {
 export interface SavedVisualization {
   id: number;
   connection_id: number | null;
+  folder_id: number | null;
   name: string;
   sql: string;
   chart_type: string;
@@ -39,6 +49,14 @@ export interface SavedVisualization {
   config: Record<string, unknown>;
   python_code: string | null;
   created_at: number;
+  updated_at: number;
+}
+
+export interface SavedDashboard {
+  id: number;
+  name: string;
+  description: string | null;
+  folder_id: number | null;
   updated_at: number;
 }
 
@@ -61,10 +79,13 @@ export const useWorkspaceStore = defineStore("workspace", {
     connections: [] as Connection[],
     savedQueries: [] as SavedQuery[],
     visualizations: [] as SavedVisualization[],
+    dashboards: [] as SavedDashboard[],
+    folders: [] as Folder[],
     chartTypes: [] as ChartTypeMeta[],
     activeConnectionId: null as number | null,
     activeQueryId: null as number | null,
     activeVizId: null as number | null,
+    activeFolderId: null as number | null, // null = "All" view
     sql: "SELECT 1 AS hello",
     chartType: "bar",
     chartConfig: {} as Record<string, string>,
@@ -87,6 +108,43 @@ export const useWorkspaceStore = defineStore("workspace", {
     },
     async loadSavedQueries() {
       this.savedQueries = await api.get<SavedQuery[]>("/queries");
+    },
+    async loadFolders() {
+      this.folders = await api.get<Folder[]>("/folders");
+    },
+    async loadDashboards() {
+      this.dashboards = await api.get<SavedDashboard[]>("/dashboards");
+    },
+    async createFolder(name: string, parentId: number | null = null) {
+      const r = await api.post<{ id: number }>("/folders", { name, parent_id: parentId });
+      await this.loadFolders();
+      return r.id;
+    },
+    async renameFolder(id: number, name: string) {
+      await api.put(`/folders/${id}`, { name });
+      await this.loadFolders();
+    },
+    async deleteFolder(id: number) {
+      await api.del(`/folders/${id}`);
+      if (this.activeFolderId === id) this.activeFolderId = null;
+      await Promise.all([
+        this.loadFolders(),
+        this.loadSavedQueries(),
+        this.loadVisualizations(),
+        this.loadDashboards(),
+      ]);
+    },
+    async moveQueryToFolder(queryId: number, folderId: number | null) {
+      await api.put(`/queries/${queryId}`, { folder_id: folderId });
+      await this.loadSavedQueries();
+    },
+    async moveVisualizationToFolder(vizId: number, folderId: number | null) {
+      await api.put(`/visualizations/${vizId}`, { folder_id: folderId });
+      await this.loadVisualizations();
+    },
+    async moveDashboardToFolder(dashId: number, folderId: number | null) {
+      await api.put(`/dashboards/${dashId}`, { folder_id: folderId });
+      await this.loadDashboards();
     },
     async loadChartTypes() {
       if (this.chartTypes.length > 0) return;
@@ -188,10 +246,12 @@ export const useWorkspaceStore = defineStore("workspace", {
       if (this.activeQueryId != null) {
         await api.put(`/queries/${this.activeQueryId}`, { name: trimmed, sql: this.sql });
       } else {
+        const folderId = this.activeFolderId && this.activeFolderId > 0 ? this.activeFolderId : null;
         const res = await api.post<{ id: number }>("/queries", {
           name: trimmed,
           sql: this.sql,
           connection_id: this.activeConnectionId,
+          folder_id: folderId,
         });
         this.activeQueryId = res.id;
       }

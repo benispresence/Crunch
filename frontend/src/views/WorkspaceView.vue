@@ -35,6 +35,8 @@ onMounted(async () => {
       ws.loadConnections(),
       ws.loadSavedQueries(),
       ws.loadVisualizations(),
+      ws.loadDashboards(),
+      ws.loadFolders(),
       ws.loadChartTypes(),
       chat.loadConversations(),
     ]);
