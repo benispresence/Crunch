@@ -1,184 +1,143 @@
 # NiceMeta
 
-**Open-source Business Intelligence Platform** - A powerful Metabase alternative built entirely in Python.
+**Open-source Business Intelligence platform** — a Metabase alternative.
 
-NiceMeta provides a modern, intuitive interface for querying databases, building visualizations, and creating interactive dashboards. Built with NiceGUI, SQLAlchemy, and comprehensive Python visualization libraries.
+NiceMeta now runs as three cooperating services:
 
-## Features
-
-- **SQL Editor** - Write and execute SQL queries with syntax highlighting
-- **Visual Query Builder** - Build queries without writing SQL
-- **30+ Visualization Types** - Powered by Plotly, Matplotlib, Seaborn, Altair, and Bokeh
-- **Dashboard Builder** - Create interactive dashboards with drag-and-drop
-- **Multi-Database Support** - PostgreSQL, MySQL, SQLite, SQL Server
-- **User Management** - Role-based access control with JWT authentication
-- **Folder Organization** - Organize queries and dashboards hierarchically
-- **Docker Ready** - Easy deployment with Docker Compose
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.11+
-- PostgreSQL (recommended) or SQLite for internal database
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/nicemeta/nicemeta.git
-cd nicemeta
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -e .
-
-# Copy example configuration
-cp config/settings.example.toml config/settings.toml
-cp config/connections.example.yaml config/connections.yaml
-
-# Edit configuration files with your settings
-# Then run the application
-nicemeta
+```
+┌──────────────────┐    HTTP      ┌──────────────────┐   HTTP    ┌──────────────────┐
+│  Vue 3 frontend  │  ───────►   │  Express + TS    │  ──────► │  Python engine   │
+│  (Vite, Pinia,   │   /api      │  backend         │          │  (FastAPI; SQL   │
+│  Monaco, Plotly) │              │  + Anthropic SSE │          │  + visualization │
+└──────────────────┘              └──────────────────┘          │  + sandbox)      │
+                                                                 └──────────────────┘
 ```
 
-### Docker
+- The **Python engine** keeps the existing SQL execution, visualization
+  rendering (Plotly et al.), and sandboxed user-Python features. It is now
+  a thin FastAPI service with no UI.
+- The **Express/TypeScript backend** owns auth, persistent state, the AI
+  chat orchestration loop, and proxies compute-heavy work to the engine.
+- The **Vue 3/TypeScript frontend** is a Cursor-style workspace with
+  resizable panes, an Anthropic-style chat experience, and confirmations
+  before any AI-proposed change touches your editor.
 
-```bash
-# Build and run with Docker Compose
-docker-compose -f docker/docker-compose.yml up -d
-
-# Access the application
-open http://localhost:8080
-```
-
-## Configuration
-
-### Application Settings (`config/settings.toml`)
-
-```toml
-[app]
-title = "NiceMeta"
-host = "0.0.0.0"
-port = 8080
-debug = false
-secret_key = "your-secret-key-change-in-production"
-
-[database]
-driver = "postgresql"
-host = "localhost"
-port = 5432
-name = "nicemeta"
-user = "nicemeta"
-password = "your-password"
-
-[auth]
-jwt_lifetime_seconds = 3600
-allow_registration = true
-```
-
-### Data Connections (`config/connections.yaml`)
-
-```yaml
-connections:
-  - name: "My PostgreSQL"
-    type: postgresql
-    host: localhost
-    port: 5432
-    database: mydata
-    user: analyst
-    password: secret
-    
-  - name: "Analytics MySQL"
-    type: mysql
-    host: mysql.example.com
-    port: 3306
-    database: analytics
-    user: readonly
-    password: secret
-```
-
-## Project Structure
+## Layout
 
 ```
 nicemeta/
-├── pyproject.toml           # Project dependencies
-├── config/
-│   ├── settings.toml        # Application settings
-│   └── connections.yaml     # Database connections
-├── docker/
-│   ├── Dockerfile
-│   └── docker-compose.yml
-├── src/nicemeta/
-│   ├── main.py              # Entry point
-│   ├── config/              # Configuration management
-│   ├── core/                # Domain models
-│   ├── connections/         # Database adapters
-│   ├── query/               # Query execution
-│   ├── visualization/       # Chart renderers
-│   ├── auth/                # User management
-│   ├── ui/                  # NiceGUI components
-│   └── services/            # Business logic
-└── tests/
+├── python-engine/     FastAPI service (re-exports src/nicemeta/{query,visualization,connections})
+├── backend/           Express + TypeScript API + Anthropic chat orchestrator
+├── frontend/          Vue 3 + TypeScript + Vite UI
+├── src/nicemeta/      Original Python package (still imported by python-engine)
+├── config/            Engine config (existing)
+└── docker/            Existing Docker assets
 ```
 
-## Visualization Types
+## Quick start (dev)
 
-### Plotly (Interactive)
-Line, Bar, Scatter, Pie, Donut, Funnel, Treemap, Sunburst, Sankey, Gauge, Choropleth Map, 3D Surface, 3D Scatter, Waterfall, Candlestick, OHLC, Box, Violin, Histogram, Heatmap, Contour
-
-### Matplotlib/Seaborn (Statistical)
-Distribution plots, Regression plots, Pair plots, Joint plots, Swarm plots, Strip plots, KDE plots, Rug plots, Cluster maps
-
-### Altair (Declarative)
-Faceted charts, Interactive selections, Layered views, Concatenated charts
-
-### Bokeh (Dashboards)
-Interactive plots with linked brushing, Streaming data support
-
-## Development
+Three terminals, in order:
 
 ```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
+# 1. Python engine (port 8765)
+cd python-engine
+pip install -r requirements.txt -e ../.
+PYTHON_ENGINE_TOKEN=dev-engine-token python server.py
 
-# Run tests
-pytest
+# 2. Express backend (port 3691)
+cd backend
+cp .env.example .env          # set ANTHROPIC_API_KEY
+npm install
+npm run dev
 
-# Format code
-black src tests
-ruff check src tests --fix
-
-# Type checking
-mypy src
+# 3. Vue frontend (port 5173)
+cd frontend
+npm install
+npm run dev
 ```
 
-## Architecture
+Open `http://localhost:5173`, register, add a connection, run SQL, ask the
+assistant for a chart.
 
-NiceMeta follows modern software design patterns:
+## What the new UX gives you
 
-- **Repository Pattern** - Data access abstraction
-- **Strategy Pattern** - Swappable visualization renderers
-- **Factory Pattern** - Chart and connection creation
-- **Adapter Pattern** - Database-specific adapters
-- **Dependency Injection** - Via FastAPI's dependency system
+- **Adjustable panes (Cursor-style).** Sidebar / editor / results / chart /
+  chat are all `splitpanes` regions. Drag any divider; layouts are
+  remembered for the session. The top bar can hide either side panel for a
+  full-bleed editor.
+- **Adaptive layout.** A breakpoint at 1100px reflows pane sizes so the
+  workspace stays usable on laptops without sacrificing density.
+- **Anthropic-style assistant.**
+  - Streamed reasoning shows in a quiet *Thinking* block (collapses when
+    the answer arrives).
+  - Tool calls display as inline cards with running / ok / error dots and
+    expandable input + result panels.
+  - When more than 5 tool calls happen in one turn, they collapse into a
+    single summary chip ("Used 8 tools — `execute_sql ×4` `render_chart ×2`
+    …") with a *Show all* affordance.
+  - Code blocks are wrapped in a header (language label + copy button) and
+    rendered with `highlight.js` using the warm Anthropic palette.
+  - When the model proposes SQL the editor should accept, a confirmation
+    bar appears at the bottom of the editor with **Accept & replace** and
+    **Reject** — no silent overwrites.
+- **Tool side effects flow into the workspace.** When the assistant runs
+  `execute_sql`, the results table updates. When it calls `render_chart`,
+  the visualization panel renders the Plotly spec.
+
+## Tools the assistant has
+
+| Tool             | Purpose                                                  |
+| ---------------- | -------------------------------------------------------- |
+| `list_connections` | Browse the user's saved connections                    |
+| `execute_sql`    | Run a read-only query through the Python engine          |
+| `render_chart`   | Render a chart spec from columnar data                   |
+| `run_python`     | Execute sandboxed Python (the existing CodeExecutor)     |
+
+Destructive SQL is rejected by the engine's existing validator before any
+adapter sees it.
+
+## Environment
+
+`backend/.env`:
+
+```
+PORT=3691
+JWT_SECRET=change-me
+PYTHON_ENGINE_URL=http://127.0.0.1:8765
+PYTHON_ENGINE_TOKEN=dev-engine-token
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-opus-4-7
+DATABASE_FILE=./nicemeta.sqlite
+CORS_ORIGIN=http://localhost:5173
+```
+
+## Surfaces
+
+Top-bar nav routes:
+
+- **Workspace** — connections sidebar, Monaco SQL editor, results table,
+  chart panel, AI chat. `Save` on the chart panel persists a
+  Visualization (SQL + chart type + column mapping).
+- **Dashboards** — grid of dashboards. Each dashboard is a 12-column
+  layout of widgets that point at saved visualizations. Toggle **Edit
+  layout** to drag and resize widgets on the grid (cell-snapped, with
+  guides), then **Save layout** persists positions. Adding a widget
+  picks from your saved visualizations.
+- **Admin** (only for users with `role = "admin"`):
+  - Allowed packages table — add a pip package, install/uninstall via the
+    Python engine (`/packages/install`, `/packages/uninstall`),
+    enable/disable per package. Defaults (pandas, numpy, plotly, matplotlib,
+    seaborn, scipy, altair) cannot be deleted.
+  - Users table — flip roles between `viewer`, `editor`, and `admin`.
+    The first registered user is auto-promoted to admin.
+
+## Migration status
+
+The TypeScript/Vue/Express stack now covers every surface from the original
+NiceGUI UI: workspace, dashboards, admin. The Python engine remains the
+authority on SQL execution, chart rendering, and sandboxed Python — Express
+proxies all of it.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions are welcome! Please read our contributing guidelines before submitting PRs.
-
-## Acknowledgments
-
-Inspired by [Metabase](https://www.metabase.com/), built with:
-- [NiceGUI](https://nicegui.io/) - Python UI framework
-- [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
-- [SQLAlchemy](https://www.sqlalchemy.org/) - Python SQL toolkit
-- [Plotly](https://plotly.com/python/) - Interactive visualizations
-
+MIT — see [LICENSE](LICENSE).

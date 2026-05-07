@@ -97,3 +97,18 @@ dmypy.json
 # ruff
 .ruff_cache/
 
+# Node / TS / Vite
+node_modules/
+backend/dist/
+frontend/dist/
+backend/*.sqlite
+backend/.env
+.vite/
+
+# NiceMeta runtime / agent state
+.claude/
+.nicegui/
+# nicemeta-workspace/ is the user's git-backed collections workspace.
+# It manages its own git history (see Admin → Git), so don't commit it
+# into the main NiceMeta repo.
+nicemeta-workspace/
