@@ -2,6 +2,9 @@
 import { computed } from "vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 
+const props = defineProps<{ collapsed?: boolean }>();
+const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
+
 const ws = useWorkspaceStore();
 
 const result = computed(() => ws.result);
@@ -18,8 +21,17 @@ function formatCell(value: unknown): string {
 </script>
 
 <template>
-  <section class="results">
+  <section class="results" :class="{ 'results--collapsed': props.collapsed }">
     <header class="results__bar">
+      <button
+        class="pane-toggle"
+        :title="props.collapsed ? 'Expand results' : 'Collapse results'"
+        @click="emit('toggle-collapse')"
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" :class="{ 'pane-toggle--collapsed': props.collapsed }">
+          <path d="M2 3.5 L5 6.5 L8 3.5" stroke="currentColor" fill="none" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
       <div class="results__title">Results</div>
       <div v-if="result" class="results__meta">
         <span>{{ result.row_count.toLocaleString() }} rows</span>
@@ -28,27 +40,29 @@ function formatCell(value: unknown): string {
       </div>
     </header>
 
-    <div v-if="ws.running" class="results__state">Running query…</div>
-    <div v-else-if="!result" class="results__state results__state--muted">
-      Run a query to see results here.
-    </div>
-    <div v-else-if="!result.success" class="results__state results__state--error">
-      {{ result.error || "Query failed" }}
-    </div>
-    <div v-else class="results__scroll">
-      <table class="results__table">
-        <thead>
-          <tr>
-            <th v-for="col in result.columns" :key="col">{{ col }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(row, i) in result.rows" :key="i">
-            <td v-for="(val, j) in row" :key="j">{{ formatCell(val) }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <template v-if="!props.collapsed">
+      <div v-if="ws.running" class="results__state">Running query…</div>
+      <div v-else-if="!result" class="results__state results__state--muted">
+        Run a query to see results here.
+      </div>
+      <div v-else-if="!result.success" class="results__state results__state--error">
+        {{ result.error || "Query failed" }}
+      </div>
+      <div v-else class="results__scroll">
+        <table class="results__table">
+          <thead>
+            <tr>
+              <th v-for="col in result.columns" :key="col">{{ col }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, i) in result.rows" :key="i">
+              <td v-for="(val, j) in row" :key="j">{{ formatCell(val) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
   </section>
 </template>
 
@@ -57,19 +71,43 @@ function formatCell(value: unknown): string {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   background: var(--bg);
-  border-top: 1px solid var(--border);
 }
+.results--collapsed { height: auto; }
 .results__bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
   flex-shrink: 0;
 }
-.results__title { font-size: 12px; color: var(--fg-muted); }
+.results--collapsed .results__bar { border-bottom: none; }
+.pane-toggle {
+  background: transparent;
+  border: none;
+  color: var(--fg-subtle);
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+.pane-toggle:hover { background: var(--bg-hover); color: var(--fg); }
+.pane-toggle svg { transition: transform 150ms; }
+.pane-toggle--collapsed { transform: rotate(-90deg); }
+.results__title {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  flex: 1;
+}
 .results__meta {
   display: flex;
   gap: 6px;

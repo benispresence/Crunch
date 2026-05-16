@@ -3,6 +3,9 @@ import * as monaco from "monaco-editor";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 
+const props = defineProps<{ collapsed?: boolean }>();
+const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
+
 const ws = useWorkspaceStore();
 const host = ref<HTMLDivElement | null>(null);
 let editor: monaco.editor.IStandaloneCodeEditor | null = null;
@@ -111,6 +114,16 @@ watch(
   },
 );
 
+watch(
+  () => props.collapsed,
+  async (collapsed) => {
+    if (!collapsed) {
+      await new Promise((r) => requestAnimationFrame(r));
+      editor?.layout();
+    }
+  },
+);
+
 onBeforeUnmount(() => editor?.dispose());
 
 function accept() {
@@ -122,11 +135,21 @@ function reject() {
 </script>
 
 <template>
-  <div class="editor">
+  <div class="editor" :class="{ 'editor--collapsed': props.collapsed }">
     <div class="editor__bar">
+      <button
+        class="pane-toggle"
+        :title="props.collapsed ? 'Expand query' : 'Collapse query'"
+        @click="emit('toggle-collapse')"
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" :class="{ 'pane-toggle--collapsed': props.collapsed }">
+          <path d="M2 3.5 L5 6.5 L8 3.5" stroke="currentColor" fill="none" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
       <div class="editor__title">
-        <span class="editor__name">{{ activeQuery ? activeQuery.name : "Untitled query" }}</span>
-        <span class="editor__hint">⌘ + Enter to run</span>
+        <span class="editor__label">Query</span>
+        <span class="editor__name">{{ activeQuery ? activeQuery.name : "Untitled" }}</span>
+        <span v-if="!props.collapsed" class="editor__hint">⌘ + Enter to run</span>
       </div>
       <div class="editor__actions">
         <button
@@ -144,7 +167,7 @@ function reject() {
       </div>
     </div>
 
-    <div v-if="showSaveAs" class="save-as">
+    <div v-if="showSaveAs && !props.collapsed" class="save-as">
       <input
         v-model="saveAsName"
         class="save-as__input"
@@ -158,11 +181,11 @@ function reject() {
         {{ saving ? "Saving..." : "Save" }}
       </button>
     </div>
-    <p v-if="saveError" class="save-as__error">{{ saveError }}</p>
+    <p v-if="saveError && !props.collapsed" class="save-as__error">{{ saveError }}</p>
 
-    <div ref="host" class="editor__host" />
+    <div v-show="!props.collapsed" ref="host" class="editor__host" />
 
-    <div v-if="ws.pendingProposal" class="proposal">
+    <div v-if="ws.pendingProposal && !props.collapsed" class="proposal">
       <div class="proposal__head">
         <span class="proposal__dot" />
         <span>NiceMeta proposed a SQL change</span>
@@ -181,17 +204,35 @@ function reject() {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   background: var(--bg);
 }
+.editor--collapsed { height: auto; }
 .editor__bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
   flex-shrink: 0;
 }
+.editor--collapsed .editor__bar { border-bottom: none; }
+.pane-toggle {
+  background: transparent;
+  border: none;
+  color: var(--fg-subtle);
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+.pane-toggle:hover { background: var(--bg-hover); color: var(--fg); }
+.pane-toggle svg { transition: transform 150ms; }
+.pane-toggle--collapsed { transform: rotate(-90deg); }
 .editor__title {
   display: flex;
   align-items: center;
@@ -199,6 +240,15 @@ function reject() {
   font-size: 12px;
   color: var(--fg-muted);
   min-width: 0;
+  flex: 1;
+}
+.editor__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-subtle);
+  font-weight: 600;
+  flex-shrink: 0;
 }
 .editor__name {
   color: var(--fg);
