@@ -1,108 +1,225 @@
 # NiceMeta
 
-**Open-source Business Intelligence platform** — a Metabase alternative.
-
-NiceMeta now runs as three cooperating services:
-
-```
-┌──────────────────┐    HTTP      ┌──────────────────┐   HTTP    ┌──────────────────┐
-│  Vue 3 frontend  │  ───────►   │  Express + TS    │  ──────► │  Python engine   │
-│  (Vite, Pinia,   │   /api      │  backend         │          │  (FastAPI; SQL   │
-│  Monaco, Plotly) │              │  + Anthropic SSE │          │  + visualization │
-└──────────────────┘              └──────────────────┘          │  + sandbox)      │
-                                                                 └──────────────────┘
-```
-
-- The **Python engine** keeps the existing SQL execution, visualization
-  rendering (Plotly et al.), and sandboxed user-Python features. It is now
-  a thin FastAPI service with no UI.
-- The **Express/TypeScript backend** owns auth, persistent state, the AI
-  chat orchestration loop, and proxies compute-heavy work to the engine.
-- The **Vue 3/TypeScript frontend** is a Cursor-style workspace with
-  resizable panes, an Anthropic-style chat experience, and confirmations
-  before any AI-proposed change touches your editor.
-
-## Layout
+**Open-source Business Intelligence platform** — a Metabase alternative with a
+Cursor-style workspace and a built-in Anthropic-powered assistant.
 
 ```
-nicemeta/
-├── python-engine/     FastAPI service (re-exports src/nicemeta/{query,visualization,connections})
-├── backend/           Express + TypeScript API + Anthropic chat orchestrator
-├── frontend/          Vue 3 + TypeScript + Vite UI
-├── src/nicemeta/      Original Python package (still imported by python-engine)
-├── config/            Engine config (existing)
-└── docker/            Existing Docker assets
+┌──────────────────┐   HTTP    ┌──────────────────┐   HTTP   ┌──────────────────┐
+│  Vue 3 frontend  │  ──────►  │  Express + TS    │  ──────► │  Python engine   │
+│  (Vite, Pinia,   │  /api     │  backend         │          │  (FastAPI; SQL   │
+│  Monaco, Plotly) │           │  + Anthropic SSE │          │  + visualization │
+└──────────────────┘           └──────────────────┘          │  + sandbox)      │
+                                                              └──────────────────┘
 ```
 
-## Quick start (dev)
+- **Python engine** — SQL execution, chart rendering (Plotly et al.), and the
+  sandboxed user-Python executor, exposed as a small FastAPI service.
+- **Express/TypeScript backend** — auth, persistent state (SQLite), AI chat
+  orchestration; proxies compute-heavy work to the engine.
+- **Vue 3 / TypeScript frontend** — a Cursor-style workspace: SQL editor,
+  visualization panel, results table, and assistant — every panel is
+  resizable and collapsible.
 
-Three terminals, in order:
+---
+
+## Quick start
+
+Pick one of the two paths:
+
+- [**Docker** — one command, no toolchain setup](#run-with-docker)
+- [**Native** — full local dev loop with hot reload](#run-natively)
+
+You'll need an **Anthropic API key** for the AI assistant. The rest of the
+app works without one.
+
+---
+
+## Run with Docker
+
+The simplest way to try NiceMeta. Requires
+[Docker Desktop](https://docs.docker.com/get-docker/) (macOS / Windows) or a
+recent Docker Engine + Compose plugin (Linux).
 
 ```bash
-# 1. Python engine (port 8765)
+# From the repo root
+cp docker/.env.example docker/.env
+# edit docker/.env — at minimum set ANTHROPIC_API_KEY
+
+docker compose -f docker/docker-compose.yml --env-file docker/.env up --build
+```
+
+Then open <http://localhost:8080>.
+
+What's running:
+
+| Service    | Container port | Host port    | Notes                                  |
+| ---------- | -------------- | ------------ | -------------------------------------- |
+| `frontend` | 80             | **8080**     | nginx; serves the SPA, proxies `/api`  |
+| `backend`  | 3691           | (internal)   | Express + Anthropic SSE                |
+| `engine`   | 8765           | (internal)   | FastAPI                                |
+
+Data is persisted in named volumes (`nicemeta-data`, `nicemeta-workspace`).
+Bring it down with `docker compose -f docker/docker-compose.yml down`; add
+`-v` to also wipe the volumes.
+
+**First-run credentials.** The backend seeds a default admin on first start
+and prints the email + temporary password to its container logs:
+
+```bash
+docker compose -f docker/docker-compose.yml logs backend | grep -A4 "Default admin"
+```
+
+Sign in, then change the password via the **Change password** form on the
+login screen.
+
+---
+
+## Run natively
+
+You'll run three processes side by side: the Python engine, the Express
+backend, and the Vite dev server. All three support hot reload.
+
+Prerequisites (every OS):
+
+- **Python ≥ 3.11** ([python.org](https://www.python.org/downloads/))
+- **Node.js ≥ 20** ([nodejs.org](https://nodejs.org/) — LTS is fine)
+- **git**
+- An **Anthropic API key** (optional, needed only for the assistant)
+
+OS-specific setup below.
+
+### macOS
+
+```bash
+# One-time toolchain (Homebrew)
+brew install python@3.11 node@20 git
+# Make sure Xcode CLT is installed for the better-sqlite3 native build:
+xcode-select --install || true
+
+# Clone and enter the repo
+git clone https://github.com/benispresence/NiceMeta.git
+cd NiceMeta
+```
+
+Three terminals — one per service. From the repo root:
+
+**Terminal 1 — Python engine (port 8765)**
+
+```bash
 cd python-engine
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -e ../.
 PYTHON_ENGINE_TOKEN=dev-engine-token python server.py
+```
 
-# 2. Express backend (port 3691)
+**Terminal 2 — Express backend (port 3691)**
+
+```bash
 cd backend
-cp .env.example .env          # set ANTHROPIC_API_KEY
+cp .env.example .env
+# Edit .env and paste your ANTHROPIC_API_KEY
 npm install
 npm run dev
+```
 
-# 3. Vue frontend (port 5173)
+The first start prints a default admin email and temporary password to the
+terminal — write it down.
+
+**Terminal 3 — Vue frontend (port 5173)**
+
+```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`, register, add a connection, run SQL, ask the
-assistant for a chart.
+Open <http://localhost:5173>.
 
-## What the new UX gives you
+### Linux (Debian / Ubuntu)
 
-- **Adjustable panes (Cursor-style).** Sidebar / editor / results / chart /
-  chat are all `splitpanes` regions. Drag any divider; layouts are
-  remembered for the session. The top bar can hide either side panel for a
-  full-bleed editor.
-- **Adaptive layout.** A breakpoint at 1100px reflows pane sizes so the
-  workspace stays usable on laptops without sacrificing density.
-- **Anthropic-style assistant.**
-  - Streamed reasoning shows in a quiet *Thinking* block (collapses when
-    the answer arrives).
-  - Tool calls display as inline cards with running / ok / error dots and
-    expandable input + result panels.
-  - When more than 5 tool calls happen in one turn, they collapse into a
-    single summary chip ("Used 8 tools — `execute_sql ×4` `render_chart ×2`
-    …") with a *Show all* affordance.
-  - Code blocks are wrapped in a header (language label + copy button) and
-    rendered with `highlight.js` using the warm Anthropic palette.
-  - When the model proposes SQL the editor should accept, a confirmation
-    bar appears at the bottom of the editor with **Accept & replace** and
-    **Reject** — no silent overwrites.
-- **Tool side effects flow into the workspace.** When the assistant runs
-  `execute_sql`, the results table updates. When it calls `render_chart`,
-  the visualization panel renders the Plotly spec.
+```bash
+# One-time toolchain
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv python3-pip nodejs npm git build-essential libpq-dev
+# Ubuntu 22.04 ships an older nodejs — for Node 20 use NodeSource:
+#   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+#   sudo apt install -y nodejs
 
-## Tools the assistant has
+git clone https://github.com/benispresence/NiceMeta.git
+cd NiceMeta
+```
 
-| Tool             | Purpose                                                  |
-| ---------------- | -------------------------------------------------------- |
-| `list_connections` | Browse the user's saved connections                    |
-| `execute_sql`    | Run a read-only query through the Python engine          |
-| `render_chart`   | Render a chart spec from columnar data                   |
-| `run_python`     | Execute sandboxed Python (the existing CodeExecutor)     |
+Then run the three terminals exactly as in the macOS section above.
 
-Destructive SQL is rejected by the engine's existing validator before any
-adapter sees it.
+**Note on `better-sqlite3`.** The backend uses a native binding that
+compiles on first `npm install`. `build-essential` (gcc, make) covers
+this on Debian/Ubuntu; on Fedora/RHEL install `gcc-c++ make` and the
+Python 3 development headers.
+
+### Windows
+
+The recommended path on Windows is **WSL 2 + Ubuntu** — follow the Linux
+instructions inside WSL. You'll get the same fast hot-reload loop with no
+toolchain pain.
+
+If you'd rather run natively on Windows:
+
+1. **Install prerequisites**
+   - [Python 3.11](https://www.python.org/downloads/windows/) — tick *Add to
+     PATH* in the installer.
+   - [Node.js 20 LTS](https://nodejs.org/) — the installer offers to add the
+     C++ build tools needed by native modules; **accept that option**, or
+     install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+     manually (the *Desktop development with C++* workload).
+   - [Git for Windows](https://git-scm.com/download/win).
+2. **Clone the repo**
+   ```powershell
+   git clone https://github.com/benispresence/NiceMeta.git
+   cd NiceMeta
+   ```
+3. **Run the three services in three PowerShell windows** (commands below
+   use `python` — on some systems it's `py -3.11`):
+
+   **PowerShell 1 — Python engine**
+   ```powershell
+   cd python-engine
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   pip install -r requirements.txt -e ..\
+   $env:PYTHON_ENGINE_TOKEN = "dev-engine-token"
+   python server.py
+   ```
+   *If `Activate.ps1` is blocked*, run
+   `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, in an
+   elevated PowerShell.
+
+   **PowerShell 2 — Express backend**
+   ```powershell
+   cd backend
+   Copy-Item .env.example .env
+   # Open .env in your editor and paste your ANTHROPIC_API_KEY
+   npm install
+   npm run dev
+   ```
+
+   **PowerShell 3 — Vue frontend**
+   ```powershell
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+Open <http://localhost:5173>.
+
+---
 
 ## Environment
 
-`backend/.env`:
+`backend/.env` (created from `backend/.env.example`):
 
 ```
 PORT=3691
-JWT_SECRET=change-me
+JWT_SECRET=change-me-in-production
 PYTHON_ENGINE_URL=http://127.0.0.1:8765
 PYTHON_ENGINE_TOKEN=dev-engine-token
 ANTHROPIC_API_KEY=sk-ant-...
@@ -111,32 +228,63 @@ DATABASE_FILE=./nicemeta.sqlite
 CORS_ORIGIN=http://localhost:5173
 ```
 
+When running with Docker, the equivalent values come from `docker/.env`
+(see `docker/.env.example`). The backend reads them as container environment
+variables — there's no need to mount `.env` files into the containers.
+
+---
+
+## Workspace UX
+
+- **Three collapsible panes** stacked in the centre — SQL/Python editor on
+  top, the big chart in the middle, results at the bottom. Each pane has a
+  chevron on its header to focus on a single surface.
+- **SQL ↔ Visualization Python tabs** in the top pane. Picking any standard
+  chart type generates editable starter Python code that reproduces it; edit
+  freely and save it as a custom Python visualization.
+- **Sidebar** lists connections, saved queries, saved visualizations, and
+  folders. **Chat** sits on the right.
+- **Assistant** streams thinking + tool calls inline. When it proposes a SQL
+  change, a confirmation bar appears at the bottom of the editor — no silent
+  overwrites.
+
+## Tools the assistant has
+
+| Tool               | Purpose                                              |
+| ------------------ | ---------------------------------------------------- |
+| `list_connections` | Browse the user's saved connections                  |
+| `execute_sql`      | Run a read-only query through the Python engine      |
+| `render_chart`     | Render a chart spec from columnar data               |
+| `run_python`       | Execute sandboxed Python (the existing CodeExecutor) |
+
+Destructive SQL is rejected by the engine's validator before any adapter
+sees it.
+
 ## Surfaces
 
-Top-bar nav routes:
+- **Workspace** — connections sidebar, SQL/Python editor, results, chart,
+  chat. `Save` on the chart panel persists a Visualization.
+- **Dashboards** — 12-column grid; toggle **Edit layout** to drag/resize
+  widgets that point at saved visualizations.
+- **Admin** (role = `admin` only):
+  - *Allowed packages* — install/uninstall pip packages on the engine, toggle
+    enablement; defaults (pandas, numpy, plotly, matplotlib, seaborn, scipy,
+    altair) can't be deleted.
+  - *Users* — flip roles between `viewer`, `editor`, `admin`. The first
+    registered user is auto-promoted to admin.
 
-- **Workspace** — connections sidebar, Monaco SQL editor, results table,
-  chart panel, AI chat. `Save` on the chart panel persists a
-  Visualization (SQL + chart type + column mapping).
-- **Dashboards** — grid of dashboards. Each dashboard is a 12-column
-  layout of widgets that point at saved visualizations. Toggle **Edit
-  layout** to drag and resize widgets on the grid (cell-snapped, with
-  guides), then **Save layout** persists positions. Adding a widget
-  picks from your saved visualizations.
-- **Admin** (only for users with `role = "admin"`):
-  - Allowed packages table — add a pip package, install/uninstall via the
-    Python engine (`/packages/install`, `/packages/uninstall`),
-    enable/disable per package. Defaults (pandas, numpy, plotly, matplotlib,
-    seaborn, scipy, altair) cannot be deleted.
-  - Users table — flip roles between `viewer`, `editor`, and `admin`.
-    The first registered user is auto-promoted to admin.
+## Repository layout
 
-## Migration status
-
-The TypeScript/Vue/Express stack now covers every surface from the original
-NiceGUI UI: workspace, dashboards, admin. The Python engine remains the
-authority on SQL execution, chart rendering, and sandboxed Python — Express
-proxies all of it.
+```
+nicemeta/
+├── python-engine/   FastAPI service (server.py + requirements)
+├── backend/         Express + TypeScript API + Anthropic chat
+├── frontend/        Vue 3 + TypeScript + Vite UI
+├── src/nicemeta/    Original Python package (SQL, viz, connections)
+├── docker/          Dockerfile.{engine,backend,frontend}, compose, nginx
+├── config/          Engine config
+└── scripts/         Maintenance scripts
+```
 
 ## License
 

@@ -1,108 +1,77 @@
-# NiceMeta Docker Compose Configuration
-# 
-# Usage:
-#   Development:  docker-compose up
-#   Production:   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# NiceMeta — 3-service stack (frontend / backend / python-engine)
 #
-# Access the application at http://localhost:8080
-
-version: "3.8"
+# Usage (from the repo root):
+#   cp docker/.env.example docker/.env   # then edit ANTHROPIC_API_KEY
+#   docker compose -f docker/docker-compose.yml --env-file docker/.env up --build
+#
+# Open http://localhost:8080
+#
+# Volumes:
+#   nicemeta-data       — backend SQLite DB (users, queries, viz metadata)
+#   nicemeta-workspace  — git-backed workspace for saved collections
 
 services:
-  # NiceMeta Application
-  nicemeta:
+  engine:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
-    container_name: nicemeta-app
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
+      dockerfile: docker/Dockerfile.engine
+    image: nicemeta/engine:local
     environment:
-      # Application settings
-      NICEMETA_APP__TITLE: "NiceMeta"
-      NICEMETA_APP__HOST: "0.0.0.0"
-      NICEMETA_APP__PORT: "8080"
-      NICEMETA_APP__DEBUG: "false"
-      NICEMETA_APP__SECRET_KEY: "${SECRET_KEY:-change-this-in-production}"
-      
-      # Database settings (PostgreSQL)
-      NICEMETA_DATABASE__DRIVER: "postgresql"
-      NICEMETA_DATABASE__HOST: "postgres"
-      NICEMETA_DATABASE__PORT: "5432"
-      NICEMETA_DATABASE__NAME: "nicemeta"
-      NICEMETA_DATABASE__USER: "nicemeta"
-      NICEMETA_DATABASE__PASSWORD: "${DB_PASSWORD:-nicemeta}"
-      
-      # Auth settings
-      NICEMETA_AUTH__JWT_LIFETIME_SECONDS: "3600"
-      NICEMETA_AUTH__ALLOW_REGISTRATION: "true"
-    volumes:
-      # Mount config for customization
-      - ../config:/app/config:ro
-      # Persist SQLite database if using SQLite
-      - nicemeta-data:/app/data
-    depends_on:
-      postgres:
-        condition: service_healthy
+      PYTHON_ENGINE_HOST: "0.0.0.0"
+      PYTHON_ENGINE_PORT: "8765"
+      PYTHON_ENGINE_TOKEN: "${PYTHON_ENGINE_TOKEN:-dev-engine-token}"
+    expose:
+      - "8765"
     networks:
-      - nicemeta-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      - nicemeta
+    restart: unless-stopped
 
-  # PostgreSQL Database (Internal)
-  postgres:
-    image: postgres:16-alpine
-    container_name: nicemeta-postgres
-    restart: unless-stopped
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    image: nicemeta/backend:local
     environment:
-      POSTGRES_DB: nicemeta
-      POSTGRES_USER: nicemeta
-      POSTGRES_PASSWORD: "${DB_PASSWORD:-nicemeta}"
+      PORT: "3691"
+      JWT_SECRET: "${JWT_SECRET:-change-me-in-production}"
+      PYTHON_ENGINE_URL: "http://engine:8765"
+      PYTHON_ENGINE_TOKEN: "${PYTHON_ENGINE_TOKEN:-dev-engine-token}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-opus-4-7}"
+      DATABASE_FILE: "/data/nicemeta.sqlite"
+      CORS_ORIGIN: "http://localhost:${FRONTEND_PORT:-8080}"
+      NICEMETA_WORKSPACE_DIR: "/workspace"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - nicemeta-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nicemeta -d nicemeta"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Optional: pgAdmin for database management
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: nicemeta-pgadmin
-    restart: unless-stopped
-    profiles:
-      - admin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_EMAIL:-admin@nicemeta.local}"
-      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_PASSWORD:-admin}"
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-    ports:
-      - "5050:80"
-    volumes:
-      - pgadmin-data:/var/lib/pgadmin
-    networks:
-      - nicemeta-network
+      - nicemeta-data:/data
+      - nicemeta-workspace:/workspace
+    expose:
+      - "3691"
     depends_on:
-      - postgres
+      - engine
+    networks:
+      - nicemeta
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    image: nicemeta/frontend:local
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - backend
+    networks:
+      - nicemeta
+    restart: unless-stopped
 
 volumes:
-  postgres-data:
-    name: nicemeta-postgres-data
-  pgadmin-data:
-    name: nicemeta-pgadmin-data
   nicemeta-data:
-    name: nicemeta-app-data
+    name: nicemeta-data
+  nicemeta-workspace:
+    name: nicemeta-workspace
 
 networks:
-  nicemeta-network:
+  nicemeta:
     name: nicemeta-network
     driver: bridge
-

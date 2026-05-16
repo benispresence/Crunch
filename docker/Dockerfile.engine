@@ -1,0 +1,40 @@
+# NiceMeta — Python engine (FastAPI)
+#
+# Hosts SQL execution, chart rendering, and the sandboxed Python
+# executor. The Express backend talks to this service over the
+# internal Docker network.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the package (pulls in all dataviz + driver deps via
+# pyproject.toml) plus the engine-specific extras.
+COPY pyproject.toml ./
+COPY src ./src
+COPY python-engine/requirements.txt ./python-engine/requirements.txt
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -e . && \
+    pip install --no-cache-dir -r python-engine/requirements.txt
+
+COPY python-engine/server.py ./python-engine/server.py
+COPY config ./config
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHON_ENGINE_HOST=0.0.0.0 \
+    PYTHON_ENGINE_PORT=8765
+
+EXPOSE 8765
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS http://localhost:8765/health || exit 1
+
+CMD ["python", "python-engine/server.py"]
