@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 import { bindCopyButtons, renderMarkdown } from "@/composables/markdown";
 import type { ChatTurn } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -16,6 +17,26 @@ const proposal = computed(() => {
   const m = props.turn.text.match(/```sql[^\n]*\n([\s\S]*?)```/);
   if (m && /-- proposed/i.test(m[0])) return m[1]!.trim();
   return null;
+});
+
+const errorKind = computed(() => {
+  const e = props.turn.error ?? "";
+  if (/invalid x-api-key|authentication_error|unauthor/i.test(e)) return "api_key";
+  if (/quota|insufficient|rate_limit/i.test(e)) return "rate";
+  if (/not configured/i.test(e)) return "not_configured";
+  return "generic";
+});
+const errorHeadline = computed(() => {
+  switch (errorKind.value) {
+    case "api_key":
+      return "Anthropic rejected the API key";
+    case "not_configured":
+      return "No Anthropic API key configured";
+    case "rate":
+      return "Anthropic rate/quota limit hit";
+    default:
+      return "Request failed";
+  }
 });
 
 watch(
@@ -51,7 +72,27 @@ watch(
         <span /><span /><span />
       </div>
 
-      <div v-if="turn.error" class="msg__error">{{ turn.error }}</div>
+      <div v-if="turn.status === 'stopped'" class="msg__stopped">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor" />
+        </svg>
+        <span>Stopped by you.</span>
+      </div>
+
+      <div v-if="turn.error" class="msg__error" role="alert">
+        <div class="msg__error-head">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" />
+            <path d="M8 4.5v4M8 11v.5" stroke="currentColor" stroke-linecap="round" />
+          </svg>
+          <strong>{{ errorHeadline }}</strong>
+        </div>
+        <div class="msg__error-body">{{ turn.error }}</div>
+        <div v-if="errorKind === 'api_key' || errorKind === 'not_configured'" class="msg__error-action">
+          Fix it in
+          <RouterLink to="/admin" class="msg__error-link">Admin → Settings</RouterLink>.
+        </div>
+      </div>
 
       <div v-if="proposal && turn.role === 'assistant' && turn.status === 'done'" class="msg__accept">
         <button class="btn btn-sm" @click="ws.proposeSql(proposal)">Open in editor for review</button>
@@ -205,13 +246,47 @@ watch(
   50% { opacity: 1; transform: translateY(-2px); }
 }
 .msg__error {
-  margin-top: 8px;
-  padding: 8px 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
-  background: rgba(224, 122, 95, 0.08);
-  border: 1px solid rgba(224, 122, 95, 0.3);
+  background: rgba(224, 122, 95, 0.1);
+  border: 1px solid rgba(224, 122, 95, 0.45);
+  border-left-width: 3px;
   color: var(--error);
-  font-size: 12px;
+  font-size: 13px;
+  display: grid;
+  gap: 6px;
+}
+.msg__error-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.msg__error-head svg { flex-shrink: 0; }
+.msg__error-body {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg__error-action { font-size: 12px; color: var(--fg-muted); }
+.msg__error-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.msg__stopped {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  font-size: 11px;
 }
 .msg__accept {
   margin-top: 10px;

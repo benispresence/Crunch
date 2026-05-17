@@ -26,10 +26,12 @@ export const api = {
 
   /**
    * POST that returns an SSE stream. Caller receives parsed events one at a time.
+   * Pass `signal` to abort the underlying request (e.g. a Stop button).
    */
   async *stream(
     path: string,
     body: unknown,
+    opts: { signal?: AbortSignal } = {},
   ): AsyncGenerator<{ event: string; data: unknown }, void, void> {
     const auth = useAuthStore();
     const headers = new Headers({
@@ -41,6 +43,7 @@ export const api = {
       method: "POST",
       headers,
       body: JSON.stringify(body),
+      signal: opts.signal,
     });
     if (!res.ok || !res.body) throw new Error(await res.text());
 

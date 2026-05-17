@@ -99,17 +99,31 @@ function resize() {
           @keydown="onKey"
         />
         <button
+          v-if="chat.sending"
+          class="btn btn-primary chat__send chat__send--stop"
+          title="Stop"
+          @click="chat.stop"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12">
+            <rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor" />
+          </svg>
+        </button>
+        <button
+          v-else
           class="btn btn-primary chat__send"
-          :disabled="chat.sending || !input.trim()"
+          :disabled="!input.trim()"
+          title="Send"
           @click="send"
         >
-          <svg v-if="!chat.sending" width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <path d="M2 8 L14 8 M9 3 L14 8 L9 13" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
-          <span v-else class="chat__spin" />
         </button>
       </div>
-      <div class="chat__hint">Enter to send · Shift+Enter for newline</div>
+      <div class="chat__hint">
+        <span v-if="chat.sending">Streaming… click ▪ to stop</span>
+        <span v-else>Enter to send · Shift+Enter for newline</span>
+      </div>
     </footer>
   </section>
 </template>
@@ -245,6 +259,16 @@ function resize() {
 .chat__send:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.chat__send--stop {
+  background: var(--error);
+  border-color: var(--error);
+  color: #1a1815;
+}
+.chat__send--stop:hover {
+  background: var(--error);
+  border-color: var(--error);
+  filter: brightness(1.08);
 }
 .chat__spin {
   width: 12px;

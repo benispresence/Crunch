@@ -19,7 +19,7 @@ export interface ChatTurn {
   toolCalls: ToolCall[];
   toolsAggregated: boolean;
   toolsExpanded: boolean;
-  status: "streaming" | "done" | "error";
+  status: "streaming" | "done" | "error" | "stopped";
   error?: string;
 }
 
@@ -30,6 +30,7 @@ interface ConversationSummary {
 }
 
 let nextId = 1;
+let activeController: AbortController | null = null;
 
 export const useChatStore = defineStore("chat", {
   state: () => ({
@@ -88,24 +89,40 @@ export const useChatStore = defineStore("chat", {
       const assistant = this.makeTurn("assistant");
       this.turns.push(assistant);
 
+      const controller = new AbortController();
+      activeController = controller;
       try {
-        const stream = api.stream("/chat/send", {
-          conversation_id: this.conversationId,
-          message,
-          thinking: this.showThinking,
-        });
+        const stream = api.stream(
+          "/chat/send",
+          {
+            conversation_id: this.conversationId,
+            message,
+            thinking: this.showThinking,
+          },
+          { signal: controller.signal },
+        );
         for await (const evt of stream) {
           this.handleEvent(assistant, evt);
         }
-        if (assistant.status !== "error") assistant.status = "done";
+        if (assistant.status === "streaming") assistant.status = "done";
         this.detectProposal(assistant);
       } catch (err) {
-        assistant.status = "error";
-        assistant.error = (err as Error).message;
+        const e = err as Error;
+        if (e.name === "AbortError" || controller.signal.aborted) {
+          assistant.status = "stopped";
+          if (!assistant.text) assistant.text = "_(stopped)_";
+        } else {
+          assistant.status = "error";
+          assistant.error = e.message;
+        }
       } finally {
         this.sending = false;
+        if (activeController === controller) activeController = null;
         if (this.conversationId) await this.loadConversations();
       }
+    },
+    stop() {
+      activeController?.abort();
     },
     handleEvent(turn: ChatTurn, evt: { event: string; data: unknown }) {
       const d = evt.data as Record<string, unknown>;
