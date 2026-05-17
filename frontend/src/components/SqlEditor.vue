@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import * as monaco from "monaco-editor";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useTheme } from "@/composables/theme";
 import { useWorkspaceStore } from "@/stores/workspace";
 
 const props = defineProps<{ collapsed?: boolean }>();
@@ -195,12 +196,40 @@ monaco.editor.defineTheme("nicemeta-dark", {
   },
 });
 
+monaco.editor.defineTheme("nicemeta-light", {
+  base: "vs",
+  inherit: true,
+  rules: [
+    { token: "keyword.sql", foreground: "9b5a2c", fontStyle: "bold" },
+    { token: "string.sql", foreground: "5c8a3a" },
+    { token: "number.sql", foreground: "8b5fa3" },
+    { token: "comment.sql", foreground: "8a8278", fontStyle: "italic" },
+  ],
+  colors: {
+    "editor.background": "#faf9f7",
+    "editor.foreground": "#1a1815",
+    "editorLineNumber.foreground": "#c9c0b1",
+    "editorLineNumber.activeForeground": "#5a544c",
+    "editor.selectionBackground": "#d9775733",
+    "editor.lineHighlightBackground": "#f3f0eb",
+    "editorCursor.foreground": "#d97757",
+    "editorBracketMatch.background": "#d9775722",
+    "editorBracketMatch.border": "#d97757",
+    "editorWidget.background": "#ffffff",
+    "editorWidget.border": "#e3ddd2",
+  },
+});
+
+const { theme } = useTheme();
+const monacoTheme = computed(() => (theme.value === "light" ? "nicemeta-light" : "nicemeta-dark"));
+watch(monacoTheme, (t) => monaco.editor.setTheme(t));
+
 function mountSqlEditor() {
   if (!sqlHost.value || sqlEditor) return;
   sqlEditor = monaco.editor.create(sqlHost.value, {
     value: ws.sql,
     language: "sql",
-    theme: "nicemeta-dark",
+    theme: monacoTheme.value,
     fontFamily: "JetBrains Mono, SF Mono, monospace",
     fontSize: 13,
     minimap: { enabled: false },
@@ -228,7 +257,7 @@ function mountPyEditor() {
   pyEditor = monaco.editor.create(pyHost.value, {
     value: ws.pythonCode,
     language: "python",
-    theme: "nicemeta-dark",
+    theme: monacoTheme.value,
     fontFamily: "JetBrains Mono, SF Mono, monospace",
     fontSize: 13,
     minimap: { enabled: false },
