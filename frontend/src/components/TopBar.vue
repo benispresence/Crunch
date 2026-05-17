@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { api } from "@/api/client";
+import { useTheme } from "@/composables/theme";
 import { useAuthStore } from "@/stores/auth";
 
 defineProps<{ sidebarOpen?: boolean; chatOpen?: boolean }>();
@@ -13,6 +14,7 @@ const emit = defineEmits<{
 const auth = useAuthStore();
 const router = useRouter();
 const route = useRoute();
+const { theme, toggle: toggleTheme } = useTheme();
 
 function logout() {
   auth.logout();
@@ -94,6 +96,27 @@ async function submitChangePassword() {
           />
         </svg>
         <span>Chat</span>
+      </button>
+      <button
+        class="btn btn-ghost btn-icon"
+        :title="theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+        @click="toggleTheme"
+      >
+        <svg v-if="theme === 'dark'" width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path
+            d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"
+            stroke="currentColor"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <svg v-else width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="3" stroke="currentColor" />
+          <path
+            d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.4 1.4M11.55 11.55l1.4 1.4M3.05 12.95l1.4-1.4M11.55 4.45l1.4-1.4"
+            stroke="currentColor"
+            stroke-linecap="round"
+          />
+        </svg>
       </button>
       <span class="topbar__user">{{ auth.user?.email ?? "" }}</span>
       <span v-if="auth.user?.role === 'admin'" class="topbar__role">admin</span>

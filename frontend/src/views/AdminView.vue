@@ -23,7 +23,66 @@ interface AdminUser {
 }
 
 const auth = useAuthStore();
-const tab = ref<"packages" | "users" | "git">("packages");
+const tab = ref<"settings" | "packages" | "users" | "git">("settings");
+
+interface ModelOption { id: string; label: string }
+interface SettingsState {
+  anthropic_api_key_masked: string;
+  anthropic_api_key_set: boolean;
+  anthropic_model: string;
+  known_models: ModelOption[];
+}
+const settings = ref<SettingsState | null>(null);
+const apiKeyInput = ref("");
+const modelInput = ref("");
+const settingsBusy = ref(false);
+const settingsToast = ref("");
+
+async function loadSettings() {
+  try {
+    const s = await api.get<SettingsState>("/admin/settings");
+    settings.value = s;
+    modelInput.value = s.anthropic_model;
+    apiKeyInput.value = "";
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
+
+async function saveSettings() {
+  settingsBusy.value = true;
+  settingsToast.value = "";
+  error.value = "";
+  try {
+    const body: Record<string, string> = { anthropic_model: modelInput.value };
+    if (apiKeyInput.value.trim() !== "") body.anthropic_api_key = apiKeyInput.value.trim();
+    const s = await api.put<SettingsState>("/admin/settings", body);
+    settings.value = s;
+    apiKeyInput.value = "";
+    modelInput.value = s.anthropic_model;
+    settingsToast.value = "Saved.";
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    settingsBusy.value = false;
+  }
+}
+
+async function clearApiKey() {
+  if (!confirm("Remove the stored Anthropic API key?")) return;
+  settingsBusy.value = true;
+  error.value = "";
+  try {
+    const s = await api.put<SettingsState>("/admin/settings", { anthropic_api_key: "" });
+    settings.value = s;
+    apiKeyInput.value = "";
+    settingsToast.value = "API key cleared.";
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    settingsBusy.value = false;
+  }
+}
 
 const packages = ref<Pkg[]>([]);
 const users = ref<AdminUser[]>([]);
@@ -147,7 +206,7 @@ async function loadAll() {
   } catch (e) {
     error.value = (e as Error).message;
   }
-  await loadGit();
+  await Promise.all([loadGit(), loadSettings()]);
 }
 
 onMounted(loadAll);
@@ -230,6 +289,13 @@ async function setRole(u: AdminUser, role: string) {
     </header>
 
     <div class="admin__tabs">
+      <button
+        class="admin__tab"
+        :class="{ 'admin__tab--active': tab === 'settings' }"
+        @click="tab = 'settings'"
+      >
+        Settings
+      </button>
       <button
         class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'packages' }"
@@ -341,8 +407,70 @@ async function setRole(u: AdminUser, role: string) {
       </table>
     </section>
 
+    <!-- Settings -->
+    <section v-if="tab === 'settings'" class="admin__section">
+      <div v-if="settings" class="settings">
+        <div class="settings__group">
+          <h3>AI / Chat &amp; Agent</h3>
+          <p class="settings__hint">
+            Used by the Chat panel and agent tools. The key is stored locally in your
+            NiceMeta database and never leaves this machine except to call api.anthropic.com.
+          </p>
+
+          <label class="settings__field">
+            <span>Anthropic API key</span>
+            <div class="settings__row">
+              <input
+                v-model="apiKeyInput"
+                type="password"
+                autocomplete="off"
+                :placeholder="settings.anthropic_api_key_set ? settings.anthropic_api_key_masked : 'sk-ant-…'"
+              />
+              <button
+                v-if="settings.anthropic_api_key_set"
+                type="button"
+                class="btn btn-sm"
+                :disabled="settingsBusy"
+                @click="clearApiKey"
+              >
+                Clear
+              </button>
+            </div>
+            <small v-if="settings.anthropic_api_key_set">
+              Currently set: <code>{{ settings.anthropic_api_key_masked }}</code>.
+              Enter a new value to replace it.
+            </small>
+            <small v-else class="settings__warn">
+              Not configured — Chat / Agent calls will fail until you set this.
+            </small>
+          </label>
+
+          <label class="settings__field">
+            <span>Model</span>
+            <select v-model="modelInput">
+              <option v-for="m in settings.known_models" :key="m.id" :value="m.id">
+                {{ m.label }}
+              </option>
+            </select>
+            <small>Applied to every Chat and Agent request from now on.</small>
+          </label>
+
+          <div class="settings__row settings__row--end">
+            <span v-if="settingsToast" class="settings__toast">{{ settingsToast }}</span>
+            <button
+              class="btn btn-primary btn-sm"
+              :disabled="settingsBusy"
+              @click="saveSettings"
+            >
+              {{ settingsBusy ? "Saving…" : "Save settings" }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Users -->
-    <section v-else class="admin__section">
+    <section v-if="tab === 'users'" class="admin__section">
       <table class="admin__table">
         <thead>
           <tr>
@@ -655,6 +783,42 @@ async function setRole(u: AdminUser, role: string) {
 .admin__toggle--on span { transform: translateX(14px); }
 
 .admin__actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+.settings { display: grid; gap: 20px; max-width: 640px; }
+.settings__group {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 18px 20px;
+  display: grid;
+  gap: 14px;
+}
+.settings__group h3 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 500;
+}
+.settings__hint { margin: 0; font-size: 12px; color: var(--fg-muted); line-height: 1.5; }
+.settings__field { display: grid; gap: 6px; font-size: 12px; color: var(--fg-muted); }
+.settings__field > span { color: var(--fg); font-weight: 500; font-size: 13px; }
+.settings__field small { font-size: 11px; color: var(--fg-subtle); }
+.settings__field small code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-elev-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.settings__warn { color: var(--warn) !important; }
+.settings__row { display: flex; gap: 8px; align-items: center; }
+.settings__row--end { justify-content: flex-end; }
+.settings__row input { flex: 1; }
+.settings__toast {
+  color: var(--success);
+  font-size: 12px;
+  margin-right: auto;
+}
 
 .git__intro { color: var(--fg-muted); font-size: 13px; margin: 0 0 16px; line-height: 1.5; }
 .git__intro code {

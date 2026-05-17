@@ -3,6 +3,13 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAdmin, requireAuth } from "../middleware/auth.js";
 import { pythonEngine } from "../services/pythonEngine.js";
+import {
+  KNOWN_MODELS,
+  getAnthropicApiKey,
+  getAnthropicModel,
+  maskApiKey,
+  setSetting,
+} from "../services/settings.js";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireAdmin);
@@ -181,6 +188,48 @@ adminRouter.get("/users", (_req, res) => {
     .prepare("SELECT id, email, role, created_at FROM users ORDER BY id ASC")
     .all() as UserRow[];
   res.json(rows);
+});
+
+adminRouter.get("/settings", (_req, res) => {
+  const key = getAnthropicApiKey();
+  res.json({
+    anthropic_api_key_masked: maskApiKey(key),
+    anthropic_api_key_set: !!key,
+    anthropic_model: getAnthropicModel(),
+    known_models: KNOWN_MODELS,
+  });
+});
+
+adminRouter.put("/settings", (req, res) => {
+  const parsed = z
+    .object({
+      anthropic_api_key: z.string().optional(),
+      anthropic_model: z.string().optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  // Empty string means "clear"; undefined means "leave alone".
+  if (parsed.data.anthropic_api_key !== undefined) {
+    setSetting("anthropic_api_key", parsed.data.anthropic_api_key.trim());
+  }
+  if (parsed.data.anthropic_model !== undefined) {
+    const allowed = KNOWN_MODELS.some((m) => m.id === parsed.data.anthropic_model);
+    if (!allowed) {
+      res.status(400).json({ error: `unknown model: ${parsed.data.anthropic_model}` });
+      return;
+    }
+    setSetting("anthropic_model", parsed.data.anthropic_model);
+  }
+  const key = getAnthropicApiKey();
+  res.json({
+    anthropic_api_key_masked: maskApiKey(key),
+    anthropic_api_key_set: !!key,
+    anthropic_model: getAnthropicModel(),
+    known_models: KNOWN_MODELS,
+  });
 });
 
 adminRouter.put("/users/:id/role", (req, res) => {

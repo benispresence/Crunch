@@ -9,10 +9,10 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { Router } from "express";
 import { z } from "zod";
-import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { chatTools, runTool } from "../services/chatTools.js";
+import { getAnthropicApiKey, getAnthropicModel } from "../services/settings.js";
 
 export const chatRouter = Router();
 chatRouter.use(requireAuth);
@@ -97,8 +97,12 @@ chatRouter.post("/send", async (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  if (!config.anthropicApiKey) {
-    res.status(503).json({ error: "ANTHROPIC_API_KEY not configured" });
+  const apiKey = getAnthropicApiKey();
+  const model = getAnthropicModel();
+  if (!apiKey) {
+    res.status(503).json({
+      error: "Anthropic API key not configured. Set it in Admin → Settings.",
+    });
     return;
   }
 
@@ -119,7 +123,7 @@ chatRouter.post("/send", async (req, res) => {
   history.push({ role: "user", content: parsed.data.message });
   send("user_saved", { conversation_id: conv.id });
 
-  const client = new Anthropic({ apiKey: config.anthropicApiKey });
+  const client = new Anthropic({ apiKey });
   const wantThinking = parsed.data.thinking ?? true;
 
   let turn = 0;
@@ -131,7 +135,7 @@ chatRouter.post("/send", async (req, res) => {
       send("turn_start", { turn });
 
       const stream = client.messages.stream({
-        model: config.anthropicModel,
+        model,
         max_tokens: 4096,
         system: [
           { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
