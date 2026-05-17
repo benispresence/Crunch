@@ -6,19 +6,20 @@ const props = defineProps<{ turn: ChatTurn }>();
 
 const expandedIds = ref<Set<string>>(new Set());
 
+// When >5 tool calls are present, collapse them into a single bar so the
+// chat doesn't drown in scaffolding. The user expands the bar to see all.
 const aggregated = computed(() => props.turn.toolCalls.length > 5);
-const showAll = ref(!aggregated.value);
-
-const visible = computed<ToolCall[]>(() =>
-  showAll.value ? props.turn.toolCalls : props.turn.toolCalls.slice(0, 3),
-);
-const hiddenCount = computed(() => props.turn.toolCalls.length - visible.value.length);
+const barExpanded = ref(false);
 
 const grouped = computed(() => {
   const counts: Record<string, number> = {};
   for (const c of props.turn.toolCalls) counts[c.name] = (counts[c.name] ?? 0) + 1;
   return Object.entries(counts).sort((a, b) => b[1] - a[1]);
 });
+
+const successCount = computed(() => props.turn.toolCalls.filter((c) => c.status === "ok").length);
+const errorCount = computed(() => props.turn.toolCalls.filter((c) => c.status === "error").length);
+const runningCount = computed(() => props.turn.toolCalls.filter((c) => c.status === "running").length);
 
 function toggle(id: string) {
   if (expandedIds.value.has(id)) expandedIds.value.delete(id);
@@ -47,50 +48,72 @@ function formatResult(result: unknown): string {
 
 <template>
   <div v-if="turn.toolCalls.length > 0" class="tools">
-    <div v-if="aggregated && !showAll" class="tools__summary">
-      <div class="tools__summary-head">
-        <span class="tools__icon">⚙</span>
-        <span class="tools__summary-text">
-          Used <strong>{{ turn.toolCalls.length }}</strong> tools
+    <template v-if="aggregated">
+      <button
+        class="tools__bar"
+        :class="{ 'tools__bar--open': barExpanded }"
+        type="button"
+        @click="barExpanded = !barExpanded"
+      >
+        <span class="tools__bar-chev">{{ barExpanded ? "▾" : "▸" }}</span>
+        <span class="tools__bar-icon">⚙</span>
+        <span class="tools__bar-text">
+          <strong>{{ turn.toolCalls.length }}</strong> tool calls
         </span>
-      </div>
-      <div class="tools__chips">
-        <span v-for="[name, count] in grouped" :key="name" class="tools__chip">
-          {{ name }} <span class="tools__chip-count">×{{ count }}</span>
+        <span class="tools__bar-stats">
+          <span v-if="runningCount" class="tools__pill tools__pill--running">{{ runningCount }} running</span>
+          <span v-if="successCount" class="tools__pill tools__pill--ok">{{ successCount }} ok</span>
+          <span v-if="errorCount" class="tools__pill tools__pill--err">{{ errorCount }} failed</span>
         </span>
-      </div>
-      <button class="btn-ghost tools__expand" type="button" @click="showAll = true">
-        Show all calls
+        <span class="tools__bar-chips">
+          <span v-for="[name, count] in grouped.slice(0, 4)" :key="name" class="tools__chip">
+            {{ name }}<span class="tools__chip-count">×{{ count }}</span>
+          </span>
+          <span v-if="grouped.length > 4" class="tools__chip-more">+{{ grouped.length - 4 }}</span>
+        </span>
       </button>
-    </div>
-
-    <div v-for="call in visible" :key="call.id" class="tool" :class="`tool--${call.status}`">
-      <button class="tool__head" type="button" @click="toggle(call.id)">
-        <span class="tool__status" />
-        <span class="tool__name">{{ call.name }}</span>
-        <span class="tool__preview">{{ previewInput(call.input) }}</span>
-        <span class="tool__chev" :class="{ 'tool__chev--open': expandedIds.has(call.id) }">›</span>
-      </button>
-      <div v-if="expandedIds.has(call.id)" class="tool__body">
-        <div class="tool__section">
-          <div class="tool__label">Input</div>
-          <pre class="tool__code">{{ formatResult(call.input) }}</pre>
-        </div>
-        <div class="tool__section">
-          <div class="tool__label">Result</div>
-          <pre class="tool__code">{{ formatResult(call.result) }}</pre>
+      <div v-if="barExpanded" class="tools__bar-body">
+        <div v-for="call in turn.toolCalls" :key="call.id" class="tool" :class="`tool--${call.status}`">
+          <button class="tool__head" type="button" @click="toggle(call.id)">
+            <span class="tool__status" />
+            <span class="tool__name">{{ call.name }}</span>
+            <span class="tool__preview">{{ previewInput(call.input) }}</span>
+            <span class="tool__chev" :class="{ 'tool__chev--open': expandedIds.has(call.id) }">›</span>
+          </button>
+          <div v-if="expandedIds.has(call.id)" class="tool__body">
+            <div class="tool__section">
+              <div class="tool__label">Input</div>
+              <pre class="tool__code">{{ formatResult(call.input) }}</pre>
+            </div>
+            <div class="tool__section">
+              <div class="tool__label">Result</div>
+              <pre class="tool__code">{{ formatResult(call.result) }}</pre>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
+    </template>
 
-    <button
-      v-if="aggregated && !showAll && hiddenCount > 0"
-      class="btn-ghost tools__more"
-      type="button"
-      @click="showAll = true"
-    >
-      + {{ hiddenCount }} more
-    </button>
+    <template v-else>
+      <div v-for="call in turn.toolCalls" :key="call.id" class="tool" :class="`tool--${call.status}`">
+        <button class="tool__head" type="button" @click="toggle(call.id)">
+          <span class="tool__status" />
+          <span class="tool__name">{{ call.name }}</span>
+          <span class="tool__preview">{{ previewInput(call.input) }}</span>
+          <span class="tool__chev" :class="{ 'tool__chev--open': expandedIds.has(call.id) }">›</span>
+        </button>
+        <div v-if="expandedIds.has(call.id)" class="tool__body">
+          <div class="tool__section">
+            <div class="tool__label">Input</div>
+            <pre class="tool__code">{{ formatResult(call.input) }}</pre>
+          </div>
+          <div class="tool__section">
+            <div class="tool__label">Result</div>
+            <pre class="tool__code">{{ formatResult(call.result) }}</pre>
+          </div>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -100,44 +123,71 @@ function formatResult(result: unknown): string {
   gap: 6px;
   margin: 8px 0 6px;
 }
-.tools__summary {
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  display: grid;
-  gap: 8px;
-}
-.tools__summary-head {
+.tools__bar {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--fg-muted);
+  padding: 8px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-align: left;
 }
-.tools__icon { color: var(--accent); }
-.tools__summary-text strong { color: var(--fg); font-weight: 600; }
-.tools__chips {
+.tools__bar:hover { background: var(--bg-hover); }
+.tools__bar--open { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.tools__bar-chev {
+  font-size: 10px;
+  color: var(--fg-subtle);
+  width: 12px;
+  text-align: center;
+}
+.tools__bar-icon { color: var(--accent); }
+.tools__bar-text strong { color: var(--fg); font-weight: 600; }
+.tools__bar-stats {
   display: flex;
-  flex-wrap: wrap;
   gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.tools__pill {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.tools__pill--ok { color: var(--success); border-color: rgba(127, 176, 105, 0.4); }
+.tools__pill--err { color: var(--error); border-color: rgba(224, 122, 95, 0.4); }
+.tools__pill--running { color: var(--accent); border-color: var(--accent-border); }
+.tools__bar-chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 .tools__chip {
   font-size: 11px;
-  padding: 2px 8px;
+  padding: 1px 7px;
   border-radius: 999px;
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--fg-muted);
   font-family: var(--font-mono);
 }
-.tools__chip-count { color: var(--fg-subtle); }
-.tools__expand,
-.tools__more {
-  font-size: 11px;
-  color: var(--accent);
-  padding: 4px 0;
-  text-align: left;
+.tools__chip-count { color: var(--fg-subtle); margin-left: 3px; }
+.tools__chip-more { font-size: 10px; color: var(--fg-subtle); }
+.tools__bar-body {
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-bottom-left-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-sm);
 }
 .tool {
   border: 1px solid var(--border);

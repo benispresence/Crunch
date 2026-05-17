@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useChatStore } from "@/stores/chat";
 import ChatMessage from "./ChatMessage.vue";
 
@@ -7,8 +7,30 @@ const chat = useChatStore();
 const input = ref("");
 const scroller = ref<HTMLDivElement | null>(null);
 const textarea = ref<HTMLTextAreaElement | null>(null);
+const showHistory = ref(false);
 
-onMounted(() => textarea.value?.focus());
+onMounted(async () => {
+  textarea.value?.focus();
+  await chat.loadConversations();
+});
+
+function formatWhen(ts: number): string {
+  const d = new Date(ts * 1000);
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) {
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+async function pickConversation(id: number) {
+  showHistory.value = false;
+  await chat.openConversation(id);
+}
+
+const currentConversation = computed(() =>
+  chat.conversations.find((c) => c.id === chat.conversationId) ?? null,
+);
 
 watch(
   () => chat.turns.map((t) => t.text.length + t.thinking.length + t.toolCalls.length).join("|"),
@@ -47,20 +69,62 @@ function resize() {
     <header class="chat__head">
       <div class="chat__title">
         <span class="chat__dot" />
-        <span>Assistant</span>
+        <span class="chat__title-name">
+          {{ currentConversation?.title || "Assistant" }}
+        </span>
       </div>
       <div class="chat__head-actions">
+        <button
+          class="btn btn-ghost btn-sm"
+          :class="{ 'chat__toggle--on': showHistory }"
+          @click="showHistory = !showHistory"
+          :title="`${chat.conversations.length} past conversations`"
+        >
+          History
+          <span v-if="chat.conversations.length" class="chat__count">{{ chat.conversations.length }}</span>
+        </button>
         <button
           class="btn btn-ghost btn-sm"
           :class="{ 'chat__toggle--on': chat.showThinking }"
           @click="chat.showThinking = !chat.showThinking"
           :title="chat.showThinking ? 'Hide thinking' : 'Show thinking'"
         >
-          {{ chat.showThinking ? "Thinking on" : "Thinking off" }}
+          Thinking
         </button>
-        <button class="btn btn-ghost btn-sm" @click="chat.newConversation">New</button>
+        <button
+          class="btn btn-ghost btn-sm"
+          :class="{ 'chat__auto--on': chat.autoAccept }"
+          :title="chat.autoAccept ? 'Auto-accept ON — proposals apply immediately' : 'Auto-accept OFF — review every proposal'"
+          @click="chat.setAutoAccept(!chat.autoAccept)"
+        >
+          <span class="chat__auto-dot" :class="{ 'chat__auto-dot--on': chat.autoAccept }" />
+          {{ chat.autoAccept ? "Auto" : "Review" }}
+        </button>
+        <button class="btn btn-ghost btn-sm" @click="chat.newConversation">+ New</button>
       </div>
     </header>
+
+    <aside v-if="showHistory" class="chat__history">
+      <div class="chat__history-head">
+        <span>Past conversations</span>
+        <button class="btn btn-ghost btn-sm" @click="showHistory = false">Close</button>
+      </div>
+      <ul v-if="chat.conversations.length > 0" class="chat__history-list">
+        <li
+          v-for="c in chat.conversations"
+          :key="c.id"
+          :class="{ 'chat__history-item--active': chat.conversationId === c.id }"
+          class="chat__history-item"
+          @click="pickConversation(c.id)"
+        >
+          <span class="chat__history-title" :title="c.title || `Conversation #${c.id}`">
+            {{ c.title || `Conversation #${c.id}` }}
+          </span>
+          <span class="chat__history-when">{{ formatWhen(c.updated_at) }}</span>
+        </li>
+      </ul>
+      <p v-else class="chat__history-empty">No conversations yet. Send a message to start one.</p>
+    </aside>
 
     <div ref="scroller" class="chat__scroll">
       <div v-if="chat.turns.length === 0" class="chat__empty">
@@ -160,8 +224,87 @@ function resize() {
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent);
 }
-.chat__head-actions { display: flex; gap: 4px; }
+.chat__head-actions { display: flex; gap: 4px; align-items: center; }
 .chat__toggle--on { color: var(--accent); }
+.chat__auto--on { color: var(--error); }
+.chat__auto-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-subtle);
+  display: inline-block;
+  margin-right: 2px;
+}
+.chat__auto-dot--on { background: var(--error); box-shadow: 0 0 6px var(--error); }
+.chat__title-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+.chat__count {
+  font-size: 10px;
+  background: var(--bg);
+  color: var(--fg-subtle);
+  padding: 0 5px;
+  border-radius: 999px;
+  margin-left: 4px;
+}
+.chat__history {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  max-height: 280px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.chat__history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-subtle);
+}
+.chat__history-list {
+  list-style: none;
+  padding: 4px;
+  margin: 0;
+  display: grid;
+  gap: 1px;
+}
+.chat__history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.chat__history-item:hover { background: var(--bg-hover); }
+.chat__history-item--active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.chat__history-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat__history-when { color: var(--fg-subtle); font-size: 11px; flex-shrink: 0; }
+.chat__history-empty {
+  margin: 0;
+  padding: 14px 16px;
+  color: var(--fg-subtle);
+  font-size: 12px;
+  text-align: center;
+}
 
 .chat__scroll {
   flex: 1;

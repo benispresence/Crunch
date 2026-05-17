@@ -2,7 +2,6 @@
 import Plotly from "plotly.js-dist-min";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useWorkspaceStore } from "@/stores/workspace";
-import SaveVisualizationDialog from "./SaveVisualizationDialog.vue";
 
 const props = defineProps<{ collapsed?: boolean }>();
 const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
@@ -12,7 +11,6 @@ const chartHost = ref<HTMLDivElement | null>(null);
 const typePopover = ref<HTMLDivElement | null>(null);
 const typeButton = ref<HTMLButtonElement | null>(null);
 
-const saveOpen = ref(false);
 const typePickerOpen = ref(false);
 const configOpen = ref(true);
 
@@ -43,9 +41,31 @@ const activeChartType = computed(() =>
 
 const resultColumns = computed(() => ws.result?.columns ?? []);
 
-const visualizationName = computed(
-  () => ws.visualizations.find((v) => v.id === ws.activeVizId)?.name ?? "Untitled",
-);
+const activeQueryName = computed(() => {
+  if (ws.activeQueryId == null) return "Unsaved query";
+  return ws.savedQueries.find((q) => q.id === ws.activeQueryId)?.name ?? "Untitled";
+});
+const savingChart = ref(false);
+const chartSaveToast = ref("");
+
+async function saveChart() {
+  if (ws.activeQueryId == null) {
+    chartSaveToast.value = "Save the query first (toolbar above the SQL editor).";
+    setTimeout(() => (chartSaveToast.value = ""), 3000);
+    return;
+  }
+  savingChart.value = true;
+  try {
+    await ws.saveChartSettings();
+    chartSaveToast.value = "Chart saved.";
+    setTimeout(() => (chartSaveToast.value = ""), 1500);
+  } catch (e) {
+    chartSaveToast.value = (e as Error).message;
+    setTimeout(() => (chartSaveToast.value = ""), 3000);
+  } finally {
+    savingChart.value = false;
+  }
+}
 
 // Active spec — picker mode shows ws.chart, python mode shows the python
 // output's spec. Same canvas, same renderer.
@@ -255,25 +275,26 @@ const emptyMessage = computed(() => {
         <span class="chart__pybadge-dot" /> Custom Python
       </span>
 
-      <div class="chart__name" :title="ws.activeVizId ? `Editing visualization #${ws.activeVizId}` : 'Unsaved visualization'">
-        {{ visualizationName }}
+      <div class="chart__name" :title="ws.activeQueryId ? `Chart on query #${ws.activeQueryId}` : 'No saved query selected'">
+        {{ activeQueryName }}
       </div>
 
       <div class="chart__actions">
+        <span v-if="chartSaveToast" class="chart__toast">{{ chartSaveToast }}</span>
         <button
           class="btn btn-ghost btn-sm"
-          @click="ws.newVisualization()"
-          title="Start a fresh visualization"
+          @click="ws.newQuery()"
+          title="Start a fresh query + chart"
         >
           + New
         </button>
         <button
           class="btn btn-primary btn-sm"
-          :disabled="!ws.result?.success"
-          @click="saveOpen = true"
-          title="Save the current visualization"
+          :disabled="!ws.result?.success || savingChart"
+          @click="saveChart"
+          :title="ws.activeQueryId ? 'Save these chart settings onto the active query' : 'Save the query first to attach a chart'"
         >
-          Save
+          {{ savingChart ? "Saving…" : "Save chart" }}
         </button>
       </div>
     </header>
@@ -347,7 +368,6 @@ const emptyMessage = computed(() => {
       </div>
     </div>
 
-    <SaveVisualizationDialog :open="saveOpen" @close="saveOpen = false" @saved="saveOpen = false" />
   </section>
 </template>
 
@@ -463,7 +483,16 @@ const emptyMessage = computed(() => {
   text-overflow: ellipsis;
   text-align: right;
 }
-.chart__actions { display: flex; gap: 6px; flex-shrink: 0; }
+.chart__actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+.chart__toast {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-border);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
 
 .chart__body {
   flex: 1;

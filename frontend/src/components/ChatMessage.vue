@@ -4,6 +4,7 @@ import { RouterLink } from "vue-router";
 import { bindCopyButtons, renderMarkdown } from "@/composables/markdown";
 import type { ChatTurn } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import ProposalCard from "./ProposalCard.vue";
 import ThinkingBlock from "./ThinkingBlock.vue";
 import ToolCallList from "./ToolCallList.vue";
 
@@ -60,6 +61,13 @@ watch(
     <div class="msg__body">
       <ThinkingBlock v-if="turn.role === 'assistant'" :turn="turn" />
       <ToolCallList v-if="turn.role === 'assistant'" :turn="turn" />
+
+      <ProposalCard
+        v-for="rec in turn.proposals"
+        :key="rec.id"
+        :record="rec"
+        :turn-id="turn.id"
+      />
 
       <div
         v-if="turn.text"

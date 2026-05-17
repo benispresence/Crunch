@@ -13,6 +13,11 @@ interface QueryRow {
   folder_id: number | null;
   name: string;
   sql: string;
+  chart_type: string;
+  chart_renderer: string;
+  chart_config_json: string;
+  chart_python_code: string | null;
+  chart_mode: string;
   created_at: number;
   updated_at: number;
 }
@@ -23,14 +28,49 @@ interface ConnectionRow {
   config_json: string;
 }
 
+const SELECT_COLS = `
+  id, connection_id, folder_id, name, sql,
+  chart_type, chart_renderer, chart_config_json, chart_python_code, chart_mode,
+  created_at, updated_at
+`;
+
+function rowToQuery(row: QueryRow) {
+  return {
+    id: row.id,
+    connection_id: row.connection_id,
+    folder_id: row.folder_id,
+    name: row.name,
+    sql: row.sql,
+    chart_type: row.chart_type,
+    chart_renderer: row.chart_renderer,
+    chart_config: safeJson(row.chart_config_json),
+    chart_python_code: row.chart_python_code,
+    chart_mode: row.chart_mode,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function safeJson(s: string): Record<string, unknown> {
+  try { return JSON.parse(s) as Record<string, unknown>; } catch { return {}; }
+}
+
 queriesRouter.get("/", (req, res) => {
   const rows = db
     .prepare(
-      "SELECT id, connection_id, folder_id, name, sql, created_at, updated_at FROM queries WHERE user_id = ? ORDER BY updated_at DESC",
+      `SELECT ${SELECT_COLS} FROM queries WHERE user_id = ? ORDER BY updated_at DESC`,
     )
     .all(req.user!.sub) as QueryRow[];
-  res.json(rows);
+  res.json(rows.map(rowToQuery));
 });
+
+const chartFields = {
+  chart_type: z.string().min(1).optional(),
+  chart_renderer: z.string().min(1).optional(),
+  chart_config: z.record(z.unknown()).optional(),
+  chart_python_code: z.string().nullable().optional(),
+  chart_mode: z.enum(["picker", "python"]).optional(),
+};
 
 queriesRouter.post("/", (req, res) => {
   const parsed = z
@@ -39,6 +79,7 @@ queriesRouter.post("/", (req, res) => {
       sql: z.string(),
       connection_id: z.number().nullable().optional(),
       folder_id: z.number().int().nullable().optional(),
+      ...chartFields,
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -47,7 +88,10 @@ queriesRouter.post("/", (req, res) => {
   }
   const info = db
     .prepare(
-      "INSERT INTO queries (user_id, connection_id, folder_id, name, sql) VALUES (?, ?, ?, ?, ?)",
+      `INSERT INTO queries (
+         user_id, connection_id, folder_id, name, sql,
+         chart_type, chart_renderer, chart_config_json, chart_python_code, chart_mode
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       req.user!.sub,
@@ -55,8 +99,16 @@ queriesRouter.post("/", (req, res) => {
       parsed.data.folder_id ?? null,
       parsed.data.name,
       parsed.data.sql,
+      parsed.data.chart_type ?? "bar",
+      parsed.data.chart_renderer ?? "plotly",
+      JSON.stringify(parsed.data.chart_config ?? {}),
+      parsed.data.chart_python_code ?? null,
+      parsed.data.chart_mode ?? "picker",
     );
-  res.json({ id: Number(info.lastInsertRowid) });
+  const row = db
+    .prepare(`SELECT ${SELECT_COLS} FROM queries WHERE id = ?`)
+    .get(info.lastInsertRowid) as QueryRow;
+  res.json(rowToQuery(row));
 });
 
 queriesRouter.delete("/:id", (req, res) => {
@@ -77,6 +129,7 @@ queriesRouter.put("/:id", (req, res) => {
       sql: z.string().optional(),
       folder_id: z.number().int().nullable().optional(),
       connection_id: z.number().int().nullable().optional(),
+      ...chartFields,
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -85,15 +138,24 @@ queriesRouter.put("/:id", (req, res) => {
   }
   const fields: string[] = [];
   const values: unknown[] = [];
-  if (parsed.data.name !== undefined) { fields.push("name = ?"); values.push(parsed.data.name); }
-  if (parsed.data.sql !== undefined) { fields.push("sql = ?"); values.push(parsed.data.sql); }
-  if (parsed.data.folder_id !== undefined) { fields.push("folder_id = ?"); values.push(parsed.data.folder_id); }
-  if (parsed.data.connection_id !== undefined) { fields.push("connection_id = ?"); values.push(parsed.data.connection_id); }
+  const push = (sql: string, v: unknown) => { fields.push(sql); values.push(v); };
+  if (parsed.data.name !== undefined) push("name = ?", parsed.data.name);
+  if (parsed.data.sql !== undefined) push("sql = ?", parsed.data.sql);
+  if (parsed.data.folder_id !== undefined) push("folder_id = ?", parsed.data.folder_id);
+  if (parsed.data.connection_id !== undefined) push("connection_id = ?", parsed.data.connection_id);
+  if (parsed.data.chart_type !== undefined) push("chart_type = ?", parsed.data.chart_type);
+  if (parsed.data.chart_renderer !== undefined) push("chart_renderer = ?", parsed.data.chart_renderer);
+  if (parsed.data.chart_config !== undefined) push("chart_config_json = ?", JSON.stringify(parsed.data.chart_config));
+  if (parsed.data.chart_python_code !== undefined) push("chart_python_code = ?", parsed.data.chart_python_code);
+  if (parsed.data.chart_mode !== undefined) push("chart_mode = ?", parsed.data.chart_mode);
   if (fields.length === 0) { res.json({ ok: true }); return; }
   fields.push("updated_at = strftime('%s', 'now')");
   values.push(req.params.id, req.user!.sub);
   db.prepare(`UPDATE queries SET ${fields.join(", ")} WHERE id = ? AND user_id = ?`).run(...values);
-  res.json({ ok: true });
+  const row = db
+    .prepare(`SELECT ${SELECT_COLS} FROM queries WHERE id = ? AND user_id = ?`)
+    .get(req.params.id, req.user!.sub) as QueryRow | undefined;
+  res.json(row ? rowToQuery(row) : { ok: true });
 });
 
 queriesRouter.post("/validate", async (req, res) => {

@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useWorkspaceStore } from "@/stores/workspace";
-import type { Folder } from "@/stores/workspace";
+import type { Folder, SavedQuery } from "@/stores/workspace";
 import FolderRow from "./FolderRow.vue";
+import QueryRow from "./QueryRow.vue";
 
 const ws = useWorkspaceStore();
 
 const expanded = ref<Set<number>>(new Set());
+// Pseudo-IDs for the "All" and "Uncategorized" groups. We use negative numbers
+// so they never collide with a real folder id.
+const ALL_GROUP = -1;
+const UNCATEGORIZED_GROUP = -2;
+const groupExpanded = ref<Set<number>>(new Set([ALL_GROUP]));
 
 interface FolderNode extends Folder {
   children: FolderNode[];
@@ -29,11 +35,18 @@ const tree = computed<FolderNode[]>(() => {
   return build(null, 0);
 });
 
-function toggle(id: number) {
+function toggleFolder(id: number) {
   const next = new Set(expanded.value);
   if (next.has(id)) next.delete(id);
   else next.add(id);
   expanded.value = next;
+}
+
+function toggleGroup(id: number) {
+  const next = new Set(groupExpanded.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  groupExpanded.value = next;
 }
 
 function select(id: number | null) {
@@ -71,29 +84,18 @@ async function commitRename() {
 }
 
 async function remove(f: Folder) {
-  if (!confirm(`Delete folder "${f.name}"? Items inside become un-foldered.`)) return;
+  if (!confirm(`Delete folder "${f.name}"? Queries inside become uncategorized.`)) return;
   await ws.deleteFolder(f.id);
 }
 
-function itemCount(folderId: number): number {
-  let n = 0;
-  for (const q of ws.savedQueries) if (q.folder_id === folderId) n++;
-  for (const v of ws.visualizations) if (v.folder_id === folderId) n++;
-  for (const d of ws.dashboards) if (d.folder_id === folderId) n++;
-  return n;
+function queriesInFolder(folderId: number): SavedQuery[] {
+  return ws.savedQueries.filter((q) => q.folder_id === folderId);
 }
 
-const orphanCount = computed(() => {
-  let n = 0;
-  for (const q of ws.savedQueries) if (q.folder_id == null) n++;
-  for (const v of ws.visualizations) if (v.folder_id == null) n++;
-  for (const d of ws.dashboards) if (d.folder_id == null) n++;
-  return n;
-});
-
-const allCount = computed(() =>
-  ws.savedQueries.length + ws.visualizations.length + ws.dashboards.length,
+const uncategorized = computed<SavedQuery[]>(() =>
+  ws.savedQueries.filter((q) => q.folder_id == null),
 );
+const allCount = computed(() => ws.savedQueries.length);
 </script>
 
 <template>
@@ -102,22 +104,35 @@ const allCount = computed(() =>
       <span class="ftree__heading-title">Collections</span>
       <button
         class="btn btn-ghost btn-sm"
+        title="Start a new empty query"
+        @click="ws.newQuery()"
+      >
+        + Query
+      </button>
+      <button
+        class="btn btn-ghost btn-sm"
         @click="startAdd(null)"
         title="New top-level collection"
       >
-        + New
+        + Folder
       </button>
     </div>
 
+    <!-- All queries group -->
     <button
-      :class="{ 'ftree__row--active': ws.activeFolderId === null }"
       class="ftree__row ftree__row--all"
-      @click="select(null)"
+      @click="toggleGroup(ALL_GROUP)"
     >
-      <span class="ftree__caret-spacer" />
-      <span class="ftree__name">All</span>
+      <span class="ftree__caret">{{ groupExpanded.has(ALL_GROUP) ? "▾" : "▸" }}</span>
+      <span class="ftree__name">All queries</span>
       <span class="ftree__count">{{ allCount }}</span>
     </button>
+    <template v-if="groupExpanded.has(ALL_GROUP)">
+      <QueryRow v-for="q in ws.savedQueries" :key="`a-${q.id}`" :query="q" :depth="0" />
+      <div v-if="ws.savedQueries.length === 0" class="ftree__empty">
+        No saved queries yet. Hit <strong>Save</strong> in the editor toolbar.
+      </div>
+    </template>
 
     <div
       v-if="adding && adding.parent === null"
@@ -134,6 +149,7 @@ const allCount = computed(() =>
       />
     </div>
 
+    <!-- Folders + their queries -->
     <FolderRow
       v-for="node in tree"
       :key="node.id"
@@ -142,8 +158,8 @@ const allCount = computed(() =>
       :renaming="renaming"
       :adding="adding"
       :active-folder-id="ws.activeFolderId"
-      :item-count="itemCount"
-      @toggle="toggle"
+      :queries-in-folder="queriesInFolder"
+      @toggle="toggleFolder"
       @select="select"
       @start-add="startAdd"
       @commit-add="commitAdd"
@@ -154,17 +170,21 @@ const allCount = computed(() =>
       @remove="remove"
     />
 
+    <!-- Uncategorized group -->
     <button
-      v-if="orphanCount > 0"
-      :class="{ 'ftree__row--active': ws.activeFolderId === 0 }"
+      v-if="uncategorized.length > 0"
       class="ftree__row ftree__row--orphan"
-      @click="select(0)"
-      title="Items not in any collection"
+      @click="toggleGroup(UNCATEGORIZED_GROUP)"
     >
-      <span class="ftree__caret-spacer" />
+      <span class="ftree__caret">
+        {{ groupExpanded.has(UNCATEGORIZED_GROUP) ? "▾" : "▸" }}
+      </span>
       <span class="ftree__name">Uncategorized</span>
-      <span class="ftree__count">{{ orphanCount }}</span>
+      <span class="ftree__count">{{ uncategorized.length }}</span>
     </button>
+    <template v-if="groupExpanded.has(UNCATEGORIZED_GROUP)">
+      <QueryRow v-for="q in uncategorized" :key="`u-${q.id}`" :query="q" :depth="0" />
+    </template>
   </div>
 </template>
 
@@ -178,13 +198,14 @@ const allCount = computed(() =>
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 4px;
   padding: 6px 4px;
   color: var(--fg-muted);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.ftree__heading-title { font-weight: 600; }
+.ftree__heading-title { font-weight: 600; flex: 1; }
 .ftree__row {
   display: flex;
   align-items: center;
@@ -201,11 +222,16 @@ const allCount = computed(() =>
   min-width: 0;
 }
 .ftree__row:hover { background: var(--bg-hover); }
-.ftree__row--active { background: var(--accent-subtle); color: var(--accent); }
 .ftree__row--all { font-weight: 500; }
 .ftree__row--orphan { color: var(--fg-muted); }
 .ftree__row--input { padding: 2px 8px; }
-.ftree__caret-spacer { width: 14px; flex-shrink: 0; }
+.ftree__caret {
+  width: 14px;
+  color: var(--fg-subtle);
+  font-size: 9px;
+  flex-shrink: 0;
+  text-align: center;
+}
 .ftree__name {
   flex: 1;
   min-width: 0;
@@ -228,4 +254,11 @@ const allCount = computed(() =>
   padding: 2px 6px;
   min-width: 0;
 }
+.ftree__empty {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  padding: 8px 24px;
+  line-height: 1.5;
+}
+.ftree__empty strong { color: var(--fg-muted); }
 </style>

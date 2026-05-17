@@ -25,7 +25,15 @@ Behavior rules:
 - Always inspect the schema (\`list_connections\` then a small \`SELECT\` against information_schema-style tables) before writing larger queries.
 - For numeric results, format them readably (commas, units).
 - Wrap any SQL or Python you produce in fenced code blocks with the language tag.
-- When proposing a SQL change the user should accept into their editor, end the message with a single fenced \`\`\`sql block tagged \`-- proposed\` so the UI can offer an Accept button.`;
+
+Modifying the user's saved queries / charts:
+- NEVER mutate state silently in prose. If the user asks you to edit, create, or delete a saved query or its chart settings, you MUST call the corresponding \`propose_*\` tool. The UI renders a Cursor-style diff and lets the user Accept/Reject.
+- Discovery order: \`list_saved_queries\` (find ids) → call the relevant propose tool with a one-line \`rationale\`.
+- For editing existing query SQL/name: \`propose_query_edit\`.
+- For changing chart_type / chart_config / python code on a saved query: \`propose_chart_change\`.
+- For creating a new saved query: \`propose_new_query\` (requires connection_id from \`list_connections\`).
+- For deleting a saved query: \`propose_delete_query\`.
+- These tools DO NOT execute the change — they only produce a proposal. After calling one, briefly summarize what you proposed and stop; do not duplicate the diff in prose.`;
 
 const sendSchema = z.object({
   conversation_id: z.number().int().nullable().optional(),
@@ -142,10 +150,15 @@ chatRouter.post("/send", async (req, res) => {
         ],
         tools: chatTools,
         messages: history,
+        // Claude 4.x uses adaptive thinking with an effort knob. The older
+        // `{ type: "enabled", budget_tokens }` shape returns 400 on Sonnet 4.6+.
         ...(wantThinking
-          ? { thinking: { type: "enabled", budget_tokens: 2000 } }
+          ? {
+              thinking: { type: "adaptive" },
+              output_config: { effort: "low" },
+            }
           : {}),
-      });
+      } as Parameters<typeof client.messages.stream>[0]);
 
       stream.on("streamEvent", (event) => {
         if (event.type === "content_block_start") {

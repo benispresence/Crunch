@@ -22,6 +22,11 @@ export interface SavedQuery {
   folder_id: number | null;
   name: string;
   sql: string;
+  chart_type: string;
+  chart_renderer: string;
+  chart_config: Record<string, unknown>;
+  chart_python_code: string | null;
+  chart_mode: "picker" | "python";
   created_at: number;
   updated_at: number;
 }
@@ -98,6 +103,10 @@ export const useWorkspaceStore = defineStore("workspace", {
     chartError: "" as string,
     running: false,
     pendingProposal: null as { sql: string } | null,
+    // Per-query result+chart cache. Cleared when the query's SQL or chart
+    // config changes, so re-opening it is instant but staleness is bounded.
+    resultCache: {} as Record<number, SqlResult>,
+    chartCache: {} as Record<number, ChartSpec>,
   }),
   actions: {
     async loadConnections() {
@@ -204,6 +213,7 @@ export const useWorkspaceStore = defineStore("workspace", {
         if (r.success && r.spec) {
           this.chart = r.spec;
           this.chartError = "";
+          if (this.activeQueryId != null) this.chartCache[this.activeQueryId] = r.spec;
         } else {
           this.chartError = r.error ?? "Render failed";
         }
@@ -238,34 +248,105 @@ export const useWorkspaceStore = defineStore("workspace", {
     loadQuery(q: SavedQuery) {
       this.sql = q.sql;
       this.activeQueryId = q.id;
+      this.activeVizId = null;
       if (q.connection_id != null) this.activeConnectionId = q.connection_id;
+      this.chartType = q.chart_type;
+      this.chartConfig = { ...(q.chart_config as Record<string, string>) };
+      this.pythonCode = q.chart_python_code ?? "";
+      this.chartMode = q.chart_mode;
+      this.chartError = "";
+      this.pythonOutput = null;
+      this.result = this.resultCache[q.id] ?? null;
+      this.chart = this.chartCache[q.id] ?? null;
+    },
+    /**
+     * Open a saved query and immediately run + render it. Re-opening a query
+     * we've seen this session is instant — both the rows and the chart spec
+     * come from cache. The cache is invalidated on edit/save.
+     */
+    async openQuery(q: SavedQuery) {
+      this.loadQuery(q);
+      if (this.resultCache[q.id] && this.chartCache[q.id]) return;
+      if (this.activeConnectionId == null) {
+        this.chartError = "This query has no connection — pick one and re-run.";
+        return;
+      }
+      if (!this.resultCache[q.id]) {
+        try {
+          await this.runSql();
+        } catch (e) {
+          this.chartError = (e as Error).message;
+          return;
+        }
+      }
+      if (!this.result?.success) return;
+      if (this.chartMode === "python" && this.pythonCode.trim()) {
+        await this.runPython().catch(() => {});
+      } else {
+        await this.renderChart().catch(() => {});
+      }
+    },
+    invalidateCache(queryId?: number | null) {
+      const id = queryId ?? this.activeQueryId;
+      if (id == null) return;
+      delete this.resultCache[id];
+      delete this.chartCache[id];
     },
     async saveCurrentQuery(name: string) {
       const trimmed = name.trim();
       if (!trimmed) throw new Error("Name is required");
+      const body = {
+        name: trimmed,
+        sql: this.sql,
+        chart_type: this.chartType,
+        chart_config: this.chartConfig,
+        chart_python_code: this.pythonCode || null,
+        chart_mode: this.chartMode,
+        connection_id: this.activeConnectionId,
+      };
       if (this.activeQueryId != null) {
-        await api.put(`/queries/${this.activeQueryId}`, { name: trimmed, sql: this.sql });
+        await api.put(`/queries/${this.activeQueryId}`, body);
       } else {
         const folderId = this.activeFolderId && this.activeFolderId > 0 ? this.activeFolderId : null;
-        const res = await api.post<{ id: number }>("/queries", {
-          name: trimmed,
-          sql: this.sql,
-          connection_id: this.activeConnectionId,
-          folder_id: folderId,
-        });
+        const res = await api.post<{ id: number }>("/queries", { ...body, folder_id: folderId });
         this.activeQueryId = res.id;
       }
+      this.invalidateCache();
+      await this.loadSavedQueries();
+    },
+    /**
+     * Update only the chart-side settings of the active saved query without
+     * forcing a name prompt. No-op if no query is currently selected.
+     */
+    async saveChartSettings() {
+      if (this.activeQueryId == null) return;
+      await api.put(`/queries/${this.activeQueryId}`, {
+        chart_type: this.chartType,
+        chart_config: this.chartConfig,
+        chart_python_code: this.pythonCode || null,
+        chart_mode: this.chartMode,
+      });
+      // Result is still valid, only chart needs re-render.
+      delete this.chartCache[this.activeQueryId];
       await this.loadSavedQueries();
     },
     async deleteSavedQuery(id: number) {
       await api.del(`/queries/${id}`);
       if (this.activeQueryId === id) this.activeQueryId = null;
+      delete this.resultCache[id];
+      delete this.chartCache[id];
       await this.loadSavedQueries();
     },
     newQuery() {
       this.activeQueryId = null;
+      this.activeVizId = null;
       this.sql = "SELECT 1 AS hello";
       this.result = null;
+      this.chart = null;
+      this.chartType = "bar";
+      this.chartConfig = {};
+      this.pythonCode = "";
+      this.chartMode = "picker";
     },
     async runSql() {
       if (!this.activeConnectionId) throw new Error("Pick a connection first");
@@ -275,6 +356,9 @@ export const useWorkspaceStore = defineStore("workspace", {
           connection_id: this.activeConnectionId,
           sql: this.sql,
         });
+        if (this.activeQueryId != null && this.result?.success) {
+          this.resultCache[this.activeQueryId] = this.result;
+        }
       } finally {
         this.running = false;
       }

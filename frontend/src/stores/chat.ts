@@ -10,6 +10,54 @@ export interface ToolCall {
   status: "running" | "ok" | "error";
 }
 
+export type ChartSnapshot = {
+  chart_type: string;
+  chart_mode: string;
+  chart_config: Record<string, unknown>;
+  chart_python_code: string | null;
+};
+
+export type Proposal =
+  | {
+      kind: "query_edit";
+      query_id: number;
+      rationale?: string;
+      before: { name: string; sql: string };
+      after: { name: string; sql: string };
+    }
+  | {
+      kind: "chart_change";
+      query_id: number;
+      query_name: string;
+      rationale?: string;
+      before: ChartSnapshot;
+      after: ChartSnapshot;
+    }
+  | {
+      kind: "new_query";
+      rationale?: string;
+      query: {
+        name: string; sql: string; connection_id: number; folder_id: number | null;
+        chart_type: string; chart_config: Record<string, unknown>;
+        chart_mode: string; chart_python_code: string | null;
+      };
+    }
+  | {
+      kind: "delete_query";
+      query_id: number;
+      rationale?: string;
+      target: { name: string; sql: string };
+    };
+
+export interface ProposalRecord {
+  id: string;
+  proposal: Proposal;
+  status: "pending" | "accepted" | "rejected" | "auto-accepted" | "error";
+  error?: string;
+  // Filled in once the proposal has been applied:
+  resultId?: number;
+}
+
 export interface ChatTurn {
   id: string;
   role: "user" | "assistant";
@@ -21,7 +69,10 @@ export interface ChatTurn {
   toolsExpanded: boolean;
   status: "streaming" | "done" | "error" | "stopped";
   error?: string;
+  proposals: ProposalRecord[];
 }
+
+const AUTO_ACCEPT_KEY = "nicemeta.chat.autoAccept";
 
 interface ConversationSummary {
   id: number;
@@ -39,6 +90,9 @@ export const useChatStore = defineStore("chat", {
     turns: [] as ChatTurn[],
     sending: false,
     showThinking: true,
+    // When on, every proposal is applied automatically as soon as the agent
+    // emits it (no Accept click). Persisted per-browser.
+    autoAccept: localStorage.getItem(AUTO_ACCEPT_KEY) === "1",
   }),
   actions: {
     async loadConversations() {
@@ -80,7 +134,12 @@ export const useChatStore = defineStore("chat", {
         toolsAggregated: false,
         toolsExpanded: false,
         status: role === "assistant" ? "streaming" : "done",
+        proposals: [],
       };
+    },
+    setAutoAccept(on: boolean) {
+      this.autoAccept = on;
+      localStorage.setItem(AUTO_ACCEPT_KEY, on ? "1" : "0");
     },
     async send(message: string) {
       if (!message.trim() || this.sending) return;
@@ -118,7 +177,10 @@ export const useChatStore = defineStore("chat", {
       } finally {
         this.sending = false;
         if (activeController === controller) activeController = null;
-        if (this.conversationId) await this.loadConversations();
+        // Drip continues after the network closes so the user sees the tail
+        // of the text type out; we only force-stop the timer when it's empty
+        // or the turn moved into a terminal status.
+        await this.loadConversations();
       }
     },
     stop() {
@@ -152,9 +214,21 @@ export const useChatStore = defineStore("chat", {
           const call = turn.toolCalls.find((c) => c.id === id);
           if (call) {
             call.result = d.result;
-            const r = d.result as { error?: unknown; success?: unknown } | undefined;
+            const r = d.result as { error?: unknown; success?: unknown; proposal?: Proposal } | undefined;
             call.status = r?.error || r?.success === false ? "error" : "ok";
             this.applyToolSideEffects(call);
+            if (r?.proposal) {
+              const record: ProposalRecord = {
+                id: `${turn.id}-${id}`,
+                proposal: r.proposal,
+                status: "pending",
+              };
+              turn.proposals.push(record);
+              if (this.autoAccept) {
+                // fire and forget — UI still shows result/error
+                this.acceptProposal(turn.id, record.id).catch(() => {});
+              }
+            }
           }
           break;
         }
@@ -166,6 +240,46 @@ export const useChatStore = defineStore("chat", {
           turn.error = String(d.error ?? "unknown error");
           break;
       }
+    },
+    async acceptProposal(turnId: string, proposalId: string) {
+      const turn = this.turns.find((t) => t.id === turnId);
+      const rec = turn?.proposals.find((p) => p.id === proposalId);
+      if (!turn || !rec || rec.status !== "pending") return;
+      const auto = this.autoAccept;
+      const ws = useWorkspaceStore();
+      try {
+        const p = rec.proposal;
+        if (p.kind === "query_edit") {
+          await api.put(`/queries/${p.query_id}`, { name: p.after.name, sql: p.after.sql });
+          rec.resultId = p.query_id;
+        } else if (p.kind === "chart_change") {
+          await api.put(`/queries/${p.query_id}`, {
+            chart_type: p.after.chart_type,
+            chart_mode: p.after.chart_mode,
+            chart_config: p.after.chart_config,
+            chart_python_code: p.after.chart_python_code,
+          });
+          rec.resultId = p.query_id;
+        } else if (p.kind === "new_query") {
+          const created = await api.post<{ id: number }>("/queries", p.query);
+          rec.resultId = created.id;
+        } else if (p.kind === "delete_query") {
+          await api.del(`/queries/${p.query_id}`);
+          rec.resultId = p.query_id;
+        }
+        rec.status = auto ? "auto-accepted" : "accepted";
+        ws.invalidateCache(rec.resultId);
+        await ws.loadSavedQueries();
+      } catch (err) {
+        rec.status = "error";
+        rec.error = (err as Error).message;
+      }
+    },
+    rejectProposal(turnId: string, proposalId: string) {
+      const turn = this.turns.find((t) => t.id === turnId);
+      const rec = turn?.proposals.find((p) => p.id === proposalId);
+      if (!rec || rec.status !== "pending") return;
+      rec.status = "rejected";
     },
     applyToolSideEffects(call: ToolCall) {
       const ws = useWorkspaceStore();

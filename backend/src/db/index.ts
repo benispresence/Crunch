@@ -119,6 +119,13 @@ ensureColumn("users", "role", "role TEXT NOT NULL DEFAULT 'viewer'");
 ensureColumn("queries", "folder_id", "folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL");
 ensureColumn("visualizations", "folder_id", "folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL");
 ensureColumn("dashboards", "folder_id", "folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL");
+// Chart settings live on the query itself — one chart per saved query, so
+// the sidebar can render the chart automatically when the query is opened.
+ensureColumn("queries", "chart_type", "chart_type TEXT NOT NULL DEFAULT 'bar'");
+ensureColumn("queries", "chart_renderer", "chart_renderer TEXT NOT NULL DEFAULT 'plotly'");
+ensureColumn("queries", "chart_config_json", "chart_config_json TEXT NOT NULL DEFAULT '{}'");
+ensureColumn("queries", "chart_python_code", "chart_python_code TEXT");
+ensureColumn("queries", "chart_mode", "chart_mode TEXT NOT NULL DEFAULT 'picker'");
 
 const DEFAULT_PACKAGES = [
   { name: "pandas", importName: "pandas" },

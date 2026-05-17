@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import type { Folder } from "@/stores/workspace";
+import { computed } from "vue";
+import type { Folder, SavedQuery } from "@/stores/workspace";
+import QueryRow from "./QueryRow.vue";
 
 interface Node extends Folder {
   children: Node[];
@@ -12,7 +14,7 @@ const props = defineProps<{
   renaming: { id: number; name: string } | null;
   adding: { parent: number | null; name: string } | null;
   activeFolderId: number | null;
-  itemCount: (id: number) => number;
+  queriesInFolder: (id: number) => SavedQuery[];
 }>();
 
 const emit = defineEmits<{
@@ -27,13 +29,17 @@ const emit = defineEmits<{
   (e: "remove", f: Folder): void;
 }>();
 
-function isOpen() {
-  return props.expanded.has(props.node.id) || (props.adding && props.adding.parent === props.node.id);
-}
+const directQueries = computed(() => props.queriesInFolder(props.node.id));
+const isOpen = computed(() =>
+  props.expanded.has(props.node.id)
+  || (props.adding != null && props.adding.parent === props.node.id),
+);
 
 function totalCount(): number {
-  let n = props.itemCount(props.node.id);
-  for (const c of props.node.children) n += props.itemCount(c.id);
+  let n = directQueries.value.length;
+  for (const c of props.node.children) {
+    n += props.queriesInFolder(c.id).length;
+  }
   return n;
 }
 </script>
@@ -43,15 +49,9 @@ function totalCount(): number {
     :class="{ 'ftree__row--active': activeFolderId === node.id }"
     class="ftree__row"
     :style="{ paddingLeft: `${8 + node.depth * 12}px` }"
-    @click="emit('select', node.id)"
+    @click="emit('toggle', node.id)"
   >
-    <button
-      class="ftree__caret"
-      :style="{ visibility: node.children.length > 0 ? 'visible' : 'hidden' }"
-      @click.stop="emit('toggle', node.id)"
-    >
-      {{ isOpen() ? "▾" : "▸" }}
-    </button>
+    <span class="ftree__caret">{{ isOpen ? "▾" : "▸" }}</span>
     <input
       v-if="renaming && renaming.id === node.id"
       :value="renaming.name"
@@ -71,7 +71,7 @@ function totalCount(): number {
   </div>
 
   <div
-    v-if="isOpen() && adding && adding.parent === node.id"
+    v-if="isOpen && adding && adding.parent === node.id"
     class="ftree__row ftree__row--input"
     :style="{ paddingLeft: `${8 + node.depth * 12 + 16}px` }"
   >
@@ -87,7 +87,13 @@ function totalCount(): number {
     />
   </div>
 
-  <template v-if="isOpen()">
+  <template v-if="isOpen">
+    <QueryRow
+      v-for="q in directQueries"
+      :key="q.id"
+      :query="q"
+      :depth="node.depth + 1"
+    />
     <FolderRow
       v-for="child in node.children"
       :key="child.id"
@@ -96,7 +102,7 @@ function totalCount(): number {
       :renaming="renaming"
       :adding="adding"
       :active-folder-id="activeFolderId"
-      :item-count="itemCount"
+      :queries-in-folder="queriesInFolder"
       @toggle="(id) => emit('toggle', id)"
       @select="(id) => emit('select', id)"
       @start-add="(id) => emit('start-add', id)"
@@ -111,8 +117,6 @@ function totalCount(): number {
 </template>
 
 <style scoped>
-/* Inherits ftree__* styles from FolderTree.vue parent scope.
-   We re-define a few to be safe since scoped styles don't cross files. */
 .ftree__row {
   display: flex;
   align-items: center;
@@ -129,15 +133,11 @@ function totalCount(): number {
 .ftree__row--input { padding-top: 2px; padding-bottom: 2px; }
 .ftree__caret {
   width: 14px;
-  background: transparent;
-  border: none;
   color: var(--fg-subtle);
   font-size: 9px;
-  padding: 0;
-  cursor: pointer;
   flex-shrink: 0;
+  text-align: center;
 }
-.ftree__caret:hover { color: var(--fg); }
 .ftree__name {
   flex: 1;
   min-width: 0;

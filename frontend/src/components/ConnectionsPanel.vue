@@ -105,48 +105,6 @@ async function remove(id: number) {
   if (ws.activeConnectionId === id) ws.activeConnectionId = null;
   await ws.loadConnections();
 }
-
-function connectionName(connectionId: number | null): string | null {
-  if (connectionId == null) return null;
-  return ws.connections.find((c) => c.id === connectionId)?.name ?? null;
-}
-
-async function removeQuery(id: number) {
-  if (!confirm("Delete this query?")) return;
-  await ws.deleteSavedQuery(id);
-}
-
-async function removeViz(id: number) {
-  if (!confirm("Delete this visualization?")) return;
-  await ws.deleteVisualization(id);
-}
-
-// Filter helpers — activeFolderId: null = "All", 0 = "Uncategorized", >0 = a folder.
-function visibleByFolder<T extends { folder_id: number | null }>(items: T[]): T[] {
-  if (ws.activeFolderId === null) return items;
-  if (ws.activeFolderId === 0) return items.filter((i) => i.folder_id == null);
-  return items.filter((i) => i.folder_id === ws.activeFolderId);
-}
-
-const visibleQueries = computed(() => visibleByFolder(ws.savedQueries));
-const visibleVisualizations = computed(() => visibleByFolder(ws.visualizations));
-
-// Move-to-folder menu state
-const movingItem = ref<{ kind: "query" | "viz"; id: number } | null>(null);
-
-function openMoveMenu(kind: "query" | "viz", id: number) {
-  movingItem.value = movingItem.value && movingItem.value.id === id && movingItem.value.kind === kind
-    ? null
-    : { kind, id };
-}
-
-async function moveItemTo(folderId: number | null) {
-  if (!movingItem.value) return;
-  const m = movingItem.value;
-  movingItem.value = null;
-  if (m.kind === "query") await ws.moveQueryToFolder(m.id, folderId);
-  else await ws.moveVisualizationToFolder(m.id, folderId);
-}
 </script>
 
 <template>
@@ -260,139 +218,6 @@ async function moveItemTo(folderId: number | null) {
           No connections yet. Click <strong>+ New</strong> to add one.
         </li>
       </ul>
-
-      <div class="sidebar__heading sidebar__heading--secondary">
-        <span class="sidebar__heading-title">Saved queries</span>
-        <button
-          class="btn btn-ghost btn-sm"
-          @click="ws.newQuery()"
-          title="Start a new empty query"
-        >
-          + New
-        </button>
-      </div>
-
-      <ul class="sidebar__list">
-        <template v-for="q in visibleQueries" :key="q.id">
-          <li
-            :class="{ 'sidebar__item--active': ws.activeQueryId === q.id }"
-            class="sidebar__item"
-            @click="ws.loadQuery(q)"
-          >
-            <div class="sidebar__item-main">
-              <span class="sidebar__qicon" aria-hidden="true">
-                <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                  <path d="M2 2.5h6.5l1.5 1.5v5.5h-8z" stroke="currentColor" stroke-linejoin="round" />
-                  <line x1="3.5" y1="5" x2="8.5" y2="5" stroke="currentColor" stroke-linecap="round" />
-                  <line x1="3.5" y1="7" x2="7" y2="7" stroke="currentColor" stroke-linecap="round" />
-                </svg>
-              </span>
-              <span class="sidebar__name" :title="q.name">{{ q.name }}</span>
-              <span
-                v-if="connectionName(q.connection_id)"
-                class="sidebar__qconn"
-                :title="`Runs against ${connectionName(q.connection_id)}`"
-              >
-                {{ connectionName(q.connection_id) }}
-              </span>
-            </div>
-            <button
-              class="btn btn-ghost btn-icon sidebar__delete"
-              @click.stop="openMoveMenu('query', q.id)"
-              title="Move to collection"
-            >
-              ⇄
-            </button>
-            <button
-              class="btn btn-ghost btn-icon sidebar__delete"
-              @click.stop="removeQuery(q.id)"
-              title="Delete"
-            >
-              ×
-            </button>
-          </li>
-          <div
-            v-if="movingItem && movingItem.kind === 'query' && movingItem.id === q.id"
-            class="sidebar__move"
-          >
-            <button class="sidebar__move-item" @click="moveItemTo(null)">— Uncategorized</button>
-            <button
-              v-for="f in ws.folders"
-              :key="f.id"
-              class="sidebar__move-item"
-              @click="moveItemTo(f.id)"
-            >
-              {{ f.name }}
-            </button>
-          </div>
-        </template>
-        <li v-if="visibleQueries.length === 0" class="sidebar__empty">
-          <span v-if="ws.activeFolderId === null && ws.savedQueries.length === 0">
-            No saved queries yet. Hit <strong>Save</strong> in the editor toolbar.
-          </span>
-          <span v-else>No queries in this collection.</span>
-        </li>
-      </ul>
-
-      <div class="sidebar__heading sidebar__heading--secondary">
-        <span class="sidebar__heading-title">Visualizations</span>
-        <button
-          class="btn btn-ghost btn-sm"
-          @click="ws.newVisualization()"
-          title="Start a new visualization"
-        >
-          + New
-        </button>
-      </div>
-
-      <ul class="sidebar__list">
-        <template v-for="v in visibleVisualizations" :key="v.id">
-          <li
-            :class="{ 'sidebar__item--active': ws.activeVizId === v.id }"
-            class="sidebar__item"
-            @click="ws.loadVisualization(v)"
-          >
-            <div class="sidebar__item-main">
-              <span class="sidebar__type">{{ v.python_code ? "py" : v.chart_type }}</span>
-              <span class="sidebar__name" :title="v.name">{{ v.name }}</span>
-            </div>
-            <button
-              class="btn btn-ghost btn-icon sidebar__delete"
-              @click.stop="openMoveMenu('viz', v.id)"
-              title="Move to collection"
-            >
-              ⇄
-            </button>
-            <button
-              class="btn btn-ghost btn-icon sidebar__delete"
-              @click.stop="removeViz(v.id)"
-              title="Delete"
-            >
-              ×
-            </button>
-          </li>
-          <div
-            v-if="movingItem && movingItem.kind === 'viz' && movingItem.id === v.id"
-            class="sidebar__move"
-          >
-            <button class="sidebar__move-item" @click="moveItemTo(null)">— Uncategorized</button>
-            <button
-              v-for="f in ws.folders"
-              :key="f.id"
-              class="sidebar__move-item"
-              @click="moveItemTo(f.id)"
-            >
-              {{ f.name }}
-            </button>
-          </div>
-        </template>
-        <li v-if="visibleVisualizations.length === 0" class="sidebar__empty">
-          <span v-if="ws.activeFolderId === null && ws.visualizations.length === 0">
-            No visualizations yet. <strong>Save</strong> from the chart panel.
-          </span>
-          <span v-else>No visualizations in this collection.</span>
-        </li>
-      </ul>
     </div>
   </aside>
 </template>
@@ -411,16 +236,14 @@ async function moveItemTo(folderId: number | null) {
   justify-content: space-between;
   align-items: center;
   padding: 6px 4px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
   color: var(--fg-muted);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   flex-shrink: 0;
-}
-.sidebar__heading--secondary {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
 }
 .sidebar__heading-title { font-weight: 600; }
 .sidebar__scroll {
@@ -460,9 +283,7 @@ async function moveItemTo(folderId: number | null) {
   grid-template-columns: 1fr 90px;
   gap: 8px;
 }
-.conn-form__field--port input {
-  text-align: right;
-}
+.conn-form__field--port input { text-align: right; }
 .conn-form__error {
   color: var(--error);
   font-size: 12px;
@@ -539,45 +360,4 @@ async function moveItemTo(folderId: number | null) {
   line-height: 1.5;
 }
 .sidebar__empty strong { color: var(--fg-muted); }
-.sidebar__qicon {
-  color: var(--fg-subtle);
-  flex-shrink: 0;
-  display: inline-flex;
-}
-.sidebar__qconn {
-  font-size: 10px;
-  color: var(--fg-subtle);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  padding: 1px 5px;
-  border-radius: 3px;
-  margin-left: auto;
-  flex-shrink: 0;
-  max-width: 100px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.sidebar__move {
-  display: grid;
-  gap: 1px;
-  margin: 2px 8px 4px;
-  padding: 4px;
-  background: var(--bg);
-  border: 1px solid var(--accent-border);
-  border-radius: var(--radius-sm);
-  max-height: 180px;
-  overflow-y: auto;
-}
-.sidebar__move-item {
-  background: transparent;
-  border: none;
-  color: var(--fg-muted);
-  text-align: left;
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-.sidebar__move-item:hover { background: var(--bg-hover); color: var(--fg); }
 </style>
