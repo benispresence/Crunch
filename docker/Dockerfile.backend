@@ -1,0 +1,33 @@
+# NiceMeta — Express/TypeScript backend
+#
+# Auth, persistent state (SQLite), AI chat orchestration. Proxies
+# heavy work to the Python engine.
+
+FROM node:20-slim
+
+WORKDIR /app
+
+# better-sqlite3 builds a native binding — needs a C toolchain at install time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/package.json backend/package-lock.json* ./
+RUN npm ci
+
+COPY backend/tsconfig.json ./
+COPY backend/src ./src
+RUN npm run build
+
+ENV NODE_ENV=production \
+    PORT=3691
+
+EXPOSE 3691
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS http://localhost:3691/api/health || exit 1
+
+CMD ["node", "dist/index.js"]
