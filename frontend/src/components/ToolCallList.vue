@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { guessLanguage, highlightCode } from "@/composables/markdown";
 import type { ChatTurn, ToolCall } from "@/stores/chat";
 
 const props = defineProps<{ turn: ChatTurn }>();
@@ -29,6 +30,15 @@ function toggle(id: string) {
 function previewInput(input: unknown): string {
   if (input === undefined) return "";
   if (typeof input === "string") return input.slice(0, 80);
+  if (input && typeof input === "object") {
+    // Surface the most interesting field for a one-line preview.
+    const o = input as Record<string, unknown>;
+    if (typeof o.sql === "string") return o.sql.slice(0, 100);
+    if (typeof o.new_sql === "string") return o.new_sql.slice(0, 100);
+    if (typeof o.code === "string") return o.code.slice(0, 100);
+    if (typeof o.query_id === "number") return `query #${o.query_id}`;
+    if (typeof o.connection_id === "number") return `connection #${o.connection_id}`;
+  }
   try {
     return JSON.stringify(input).slice(0, 120);
   } catch {
@@ -36,13 +46,58 @@ function previewInput(input: unknown): string {
   }
 }
 
-function formatResult(result: unknown): string {
-  if (result === undefined) return "(running...)";
-  try {
-    return JSON.stringify(result, null, 2);
-  } catch {
-    return String(result);
+interface RenderedField {
+  label: string;
+  lang: string;
+  html: string;
+}
+
+/**
+ * Build a list of pretty-rendered fields for an input/result payload.
+ * SQL/Python/JSON fields each get their own block with syntax highlighting.
+ */
+function renderPayload(payload: unknown): RenderedField[] {
+  if (payload === undefined) return [];
+  if (payload === null) return [{ label: "value", lang: "plaintext", html: "null" }];
+  if (typeof payload === "string") {
+    const lang = guessLanguage(payload);
+    return [{ label: "value", lang, html: highlightCode(payload, lang) }];
   }
+  if (typeof payload !== "object") {
+    return [{ label: "value", lang: "plaintext", html: escapeHtml(String(payload)) }];
+  }
+  const out: RenderedField[] = [];
+  const obj = payload as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string") {
+      const lang =
+        k === "sql" || k === "new_sql"
+          ? "sql"
+          : k === "code" || k === "chart_python_code" || k === "python_code"
+          ? "python"
+          : guessLanguage(v);
+      out.push({ label: k, lang, html: highlightCode(v, lang) });
+    } else if (Array.isArray(v) && k === "rows") {
+      // Table preview: first 5 rows as JSON.
+      const preview = v.slice(0, 5);
+      const text = JSON.stringify(preview, null, 2);
+      out.push({
+        label: `${k} (${v.length} total)`,
+        lang: "json",
+        html: highlightCode(text, "json"),
+      });
+    } else {
+      const text = JSON.stringify(v, null, 2);
+      out.push({ label: k, lang: "json", html: highlightCode(text, "json") });
+    }
+  }
+  return out;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 </script>
 
@@ -83,11 +138,33 @@ function formatResult(result: unknown): string {
           <div v-if="expandedIds.has(call.id)" class="tool__body">
             <div class="tool__section">
               <div class="tool__label">Input</div>
-              <pre class="tool__code">{{ formatResult(call.input) }}</pre>
+              <div
+                v-for="(f, j) in renderPayload(call.input)"
+                :key="`in-${call.id}-${j}`"
+                class="tool__field"
+              >
+                <div class="tool__field-head">
+                  <span class="tool__field-name">{{ f.label }}</span>
+                  <span class="tool__field-lang">{{ f.lang }}</span>
+                </div>
+                <pre class="tool__code hljs" v-html="f.html" />
+              </div>
+              <div v-if="renderPayload(call.input).length === 0" class="tool__empty">(no input)</div>
             </div>
             <div class="tool__section">
               <div class="tool__label">Result</div>
-              <pre class="tool__code">{{ formatResult(call.result) }}</pre>
+              <div v-if="call.result === undefined" class="tool__empty">(running...)</div>
+              <div
+                v-for="(f, j) in renderPayload(call.result)"
+                :key="`out-${call.id}-${j}`"
+                class="tool__field"
+              >
+                <div class="tool__field-head">
+                  <span class="tool__field-name">{{ f.label }}</span>
+                  <span class="tool__field-lang">{{ f.lang }}</span>
+                </div>
+                <pre class="tool__code hljs" v-html="f.html" />
+              </div>
             </div>
           </div>
         </div>
@@ -105,11 +182,33 @@ function formatResult(result: unknown): string {
         <div v-if="expandedIds.has(call.id)" class="tool__body">
           <div class="tool__section">
             <div class="tool__label">Input</div>
-            <pre class="tool__code">{{ formatResult(call.input) }}</pre>
+            <div
+              v-for="(f, j) in renderPayload(call.input)"
+              :key="`in-${call.id}-${j}`"
+              class="tool__field"
+            >
+              <div class="tool__field-head">
+                <span class="tool__field-name">{{ f.label }}</span>
+                <span class="tool__field-lang">{{ f.lang }}</span>
+              </div>
+              <pre class="tool__code hljs" v-html="f.html" />
+            </div>
+            <div v-if="renderPayload(call.input).length === 0" class="tool__empty">(no input)</div>
           </div>
           <div class="tool__section">
             <div class="tool__label">Result</div>
-            <pre class="tool__code">{{ formatResult(call.result) }}</pre>
+            <div v-if="call.result === undefined" class="tool__empty">(running...)</div>
+            <div
+              v-for="(f, j) in renderPayload(call.result)"
+              :key="`out-${call.id}-${j}`"
+              class="tool__field"
+            >
+              <div class="tool__field-head">
+                <span class="tool__field-name">{{ f.label }}</span>
+                <span class="tool__field-lang">{{ f.lang }}</span>
+              </div>
+              <pre class="tool__code hljs" v-html="f.html" />
+            </div>
           </div>
         </div>
       </div>
@@ -252,18 +351,45 @@ function formatResult(result: unknown): string {
   letter-spacing: 0.05em;
   color: var(--fg-subtle);
 }
+.tool__field { display: grid; gap: 4px; }
+.tool__field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--fg-subtle);
+}
+.tool__field-name {
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+  color: var(--fg-muted);
+}
+.tool__field-lang {
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-elev-2);
+  color: var(--fg-subtle);
+}
+.tool__empty {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  font-style: italic;
+}
 .tool__code {
   margin: 0;
-  padding: 8px 10px;
+  padding: 10px 12px;
   background: var(--code-bg);
   border: 1px solid var(--code-border);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--code-fg);
-  max-height: 220px;
+  max-height: 260px;
   overflow: auto;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @keyframes pulse {

@@ -20,6 +20,23 @@ const proposal = computed(() => {
   return null;
 });
 
+/**
+ * Show every resolved proposal plus the first pending one. Future pending
+ * proposals stay hidden until the user clicks through the current one.
+ */
+const visibleProposals = computed(() => {
+  const out: typeof props.turn.proposals = [];
+  for (const rec of props.turn.proposals) {
+    out.push(rec);
+    if (rec.status === "pending") break;
+  }
+  return out;
+});
+
+const hiddenPendingCount = computed(
+  () => props.turn.proposals.length - visibleProposals.value.length,
+);
+
 const errorKind = computed(() => {
   const e = props.turn.error ?? "";
   if (/invalid x-api-key|authentication_error|unauthor/i.test(e)) return "api_key";
@@ -62,12 +79,25 @@ watch(
       <ThinkingBlock v-if="turn.role === 'assistant'" :turn="turn" />
       <ToolCallList v-if="turn.role === 'assistant'" :turn="turn" />
 
+      <!--
+        Sequential gating: show every resolved proposal plus the first
+        pending one. The next pending proposal only reveals after the
+        current one has been accepted, rejected, or errored — so the
+        user clicks through one decision at a time.
+      -->
       <ProposalCard
-        v-for="rec in turn.proposals"
+        v-for="rec in visibleProposals"
         :key="rec.id"
         :record="rec"
         :turn-id="turn.id"
       />
+      <div
+        v-if="hiddenPendingCount > 0"
+        class="msg__queue"
+        :title="`${hiddenPendingCount} more proposal(s) waiting`"
+      >
+        + {{ hiddenPendingCount }} more proposal{{ hiddenPendingCount === 1 ? "" : "s" }} after this one
+      </div>
 
       <div
         v-if="turn.text"
@@ -252,6 +282,16 @@ watch(
 @keyframes dot {
   0%, 100% { opacity: 0.2; transform: translateY(0); }
   50% { opacity: 1; transform: translateY(-2px); }
+}
+.msg__queue {
+  margin: 4px 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  border: 1px dashed var(--border);
+  color: var(--fg-subtle);
+  font-size: 11px;
+  text-align: center;
 }
 .msg__error {
   margin-top: 10px;

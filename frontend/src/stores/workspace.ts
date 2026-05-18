@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { markRaw } from "vue";
 import { api } from "@/api/client";
 
 export interface Connection {
@@ -211,9 +212,13 @@ export const useWorkspaceStore = defineStore("workspace", {
           config: this.chartConfig,
         });
         if (r.success && r.spec) {
-          this.chart = r.spec;
+          // markRaw — Plotly mutates the spec in place (adds _* internals)
+          // and deep reactivity on a mutating object causes an infinite
+          // watch loop.
+          const raw = markRaw(r.spec);
+          this.chart = raw;
           this.chartError = "";
-          if (this.activeQueryId != null) this.chartCache[this.activeQueryId] = r.spec;
+          if (this.activeQueryId != null) this.chartCache[this.activeQueryId] = raw;
         } else {
           this.chartError = r.error ?? "Render failed";
         }
@@ -238,7 +243,8 @@ export const useWorkspaceStore = defineStore("workspace", {
           stdout?: string;
           error?: string;
         }>("/viz/python", { code: this.pythonCode, data });
-        this.pythonOutput = r;
+        // python output also embeds a Plotly spec — keep it raw.
+        this.pythonOutput = r ? markRaw(r) as typeof r : r;
       } catch (e) {
         this.pythonOutput = { error: (e as Error).message };
       } finally {
@@ -315,6 +321,31 @@ export const useWorkspaceStore = defineStore("workspace", {
       await this.loadSavedQueries();
     },
     /**
+     * Create a brand-new saved query from the current SQL + chart settings,
+     * leaving the previously-active query untouched. Switches the active
+     * query to the new one so the chart panel reflects it.
+     */
+    async saveAsNewQuery(name: string) {
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error("Name is required");
+      const folderId = this.activeFolderId && this.activeFolderId > 0 ? this.activeFolderId : null;
+      const res = await api.post<{ id: number }>("/queries", {
+        name: trimmed,
+        sql: this.sql,
+        connection_id: this.activeConnectionId,
+        folder_id: folderId,
+        chart_type: this.chartType,
+        chart_config: this.chartConfig,
+        chart_python_code: this.pythonCode || null,
+        chart_mode: this.chartMode,
+      });
+      this.activeQueryId = res.id;
+      // Reset caches so the new query starts fresh.
+      this.invalidateCache(res.id);
+      await this.loadSavedQueries();
+      return res.id;
+    },
+    /**
      * Update only the chart-side settings of the active saved query without
      * forcing a name prompt. No-op if no query is currently selected.
      */
@@ -362,6 +393,17 @@ export const useWorkspaceStore = defineStore("workspace", {
       } finally {
         this.running = false;
       }
+      // Auto-render the chart so Run always produces both rows AND a chart.
+      // ChartPanel also schedules its own render on watch, but doing it here
+      // makes the contract explicit (Run = data + chart in one click) and
+      // covers the python-mode case ChartPanel's picker watch skips.
+      if (this.result?.success) {
+        if (this.chartMode === "python" && this.pythonCode.trim()) {
+          await this.runPython().catch(() => {});
+        } else {
+          await this.renderChart().catch(() => {});
+        }
+      }
     },
     proposeSql(sql: string) {
       this.pendingProposal = { sql };
@@ -376,7 +418,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.pendingProposal = null;
     },
     setChart(spec: ChartSpec | null) {
-      this.chart = spec;
+      this.chart = spec ? markRaw(spec) : null;
     },
   },
 });

@@ -19,3 +19,9 @@ declare module "*.vue" {
   const component: DefineComponent<Record<string, unknown>, Record<string, unknown>, unknown>;
   export default component;
 }
+
+// Vite's `?worker` import suffix returns a Worker constructor.
+declare module "*?worker" {
+  const workerCtor: { new (): Worker };
+  export default workerCtor;
+}

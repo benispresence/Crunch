@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { highlightCode } from "@/composables/markdown";
 import { useChatStore } from "@/stores/chat";
 import type { ProposalRecord } from "@/stores/chat";
 
@@ -98,7 +99,7 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
         <span class="prop__arrow">→</span>
         <code class="prop__name--add">{{ nameDiff.after }}</code>
       </div>
-      <div v-if="sqlDiff && sqlDiff.length > 0" class="prop__diff">
+      <div v-if="sqlDiff && sqlDiff.length > 0" class="prop__diff hljs">
         <div
           v-for="(line, i) in sqlDiff"
           :key="i"
@@ -106,7 +107,7 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
           :class="`prop__line--${line.type}`"
         >
           <span class="prop__marker">{{ line.type === "add" ? "+" : line.type === "remove" ? "-" : " " }}</span>
-          <span class="prop__text">{{ line.text || " " }}</span>
+          <span class="prop__text" v-html="highlightCode(line.text || ' ', 'sql')" />
         </div>
       </div>
     </template>
@@ -129,7 +130,7 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
         <div class="prop__newq-row"><strong>name</strong> {{ p.query.name }}</div>
         <div class="prop__newq-row"><strong>connection</strong> #{{ p.query.connection_id }}</div>
         <div class="prop__newq-row"><strong>chart</strong> {{ p.query.chart_mode }} · {{ p.query.chart_type }}</div>
-        <pre class="prop__newq-sql">{{ p.query.sql }}</pre>
+        <pre class="prop__newq-sql hljs"><code v-html="highlightCode(p.query.sql, 'sql')" /></pre>
       </div>
     </template>
 
@@ -137,7 +138,7 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
     <template v-if="p.kind === 'delete_query'">
       <div class="prop__delete">
         <p>Will delete query <strong>"{{ p.target.name }}"</strong> (#{{ p.query_id }}).</p>
-        <pre class="prop__delete-sql">{{ p.target.sql }}</pre>
+        <pre class="prop__delete-sql hljs"><code v-html="highlightCode(p.target.sql, 'sql')" /></pre>
       </div>
     </template>
 
@@ -241,9 +242,10 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 .prop__marker { color: var(--fg-subtle); user-select: none; }
 .prop__text { white-space: pre; }
 .prop__line--add { background: rgba(127, 176, 105, 0.12); }
-.prop__line--add .prop__marker, .prop__line--add .prop__text { color: #a4d18a; }
+.prop__line--add .prop__marker { color: var(--success); }
 .prop__line--remove { background: rgba(224, 122, 95, 0.12); }
-.prop__line--remove .prop__marker, .prop__line--remove .prop__text { color: #e89b85; }
+.prop__line--remove .prop__marker { color: var(--error); }
+.prop__line .prop__text :deep(span) { background: transparent; }
 .prop__chart { display: grid; gap: 6px; }
 .prop__chart-field {
   display: grid;

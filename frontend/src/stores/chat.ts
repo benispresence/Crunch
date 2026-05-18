@@ -94,6 +94,22 @@ export const useChatStore = defineStore("chat", {
     // emits it (no Accept click). Persisted per-browser.
     autoAccept: localStorage.getItem(AUTO_ACCEPT_KEY) === "1",
   }),
+  getters: {
+    /**
+     * The first not-yet-resolved proposal across the whole conversation.
+     * Panels (SqlEditor / ChartPanel / WorkspaceView) read this so the UI
+     * can collapse to the relevant editor, show a diff banner, and offer
+     * inline Accept/Reject.
+     */
+    activeProposal(state): { turnId: string; record: ProposalRecord } | null {
+      for (const turn of state.turns) {
+        for (const rec of turn.proposals) {
+          if (rec.status === "pending") return { turnId: turn.id, record: rec };
+        }
+      }
+      return null;
+    },
+  },
   actions: {
     async loadConversations() {
       this.conversations = await api.get<ConversationSummary[]>("/chat/conversations");
@@ -145,8 +161,13 @@ export const useChatStore = defineStore("chat", {
       if (!message.trim() || this.sending) return;
       this.sending = true;
       this.turns.push(this.makeTurn("user", message));
-      const assistant = this.makeTurn("assistant");
-      this.turns.push(assistant);
+      this.turns.push(this.makeTurn("assistant"));
+      // Critical: re-fetch via index so we get the reactive Pinia proxy,
+      // not the raw object reference. Mutations on the raw reference are
+      // invisible to Vue's render tracking and the UI sits on 3 dots
+      // forever.
+      const assistantIdx = this.turns.length - 1;
+      const assistant = this.turns[assistantIdx]!;
 
       const controller = new AbortController();
       activeController = controller;
@@ -270,6 +291,22 @@ export const useChatStore = defineStore("chat", {
         rec.status = auto ? "auto-accepted" : "accepted";
         ws.invalidateCache(rec.resultId);
         await ws.loadSavedQueries();
+        // Reflect the change in the editor immediately:
+        //  - edited query → reload + auto-run
+        //  - new query → switch to it + auto-run
+        //  - deleted query → reset to a fresh editor
+        const p2 = rec.proposal;
+        if (p2.kind === "query_edit" || p2.kind === "chart_change") {
+          if (ws.activeQueryId === p2.query_id) {
+            const fresh = ws.savedQueries.find((q) => q.id === p2.query_id);
+            if (fresh) await ws.openQuery(fresh);
+          }
+        } else if (p2.kind === "new_query" && rec.resultId != null) {
+          const fresh = ws.savedQueries.find((q) => q.id === rec.resultId);
+          if (fresh) await ws.openQuery(fresh);
+        } else if (p2.kind === "delete_query") {
+          if (ws.activeQueryId === p2.query_id) ws.newQuery();
+        }
       } catch (err) {
         rec.status = "error";
         rec.error = (err as Error).message;

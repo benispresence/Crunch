@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import Plotly from "plotly.js-dist-min";
+import { onClickOutside } from "@vueuse/core";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import ProposalCard from "./ProposalCard.vue";
 
 const props = defineProps<{ collapsed?: boolean }>();
 const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
@@ -48,24 +51,76 @@ const activeQueryName = computed(() => {
 const savingChart = ref(false);
 const chartSaveToast = ref("");
 
-async function saveChart() {
-  if (ws.activeQueryId == null) {
-    chartSaveToast.value = "Save the query first (toolbar above the SQL editor).";
-    setTimeout(() => (chartSaveToast.value = ""), 3000);
+const saveMenuOpen = ref(false);
+const saveAsOpen = ref(false);
+const saveAsName = ref("");
+const hasActiveQuery = computed(() => ws.activeQueryId != null);
+
+function toastFor(ms: number, msg: string) {
+  chartSaveToast.value = msg;
+  setTimeout(() => (chartSaveToast.value = ""), ms);
+}
+
+async function saveToActive() {
+  saveMenuOpen.value = false;
+  if (!hasActiveQuery.value) {
+    // Fall through to "save as new" if there's nothing to overwrite.
+    startSaveAs();
     return;
   }
   savingChart.value = true;
   try {
     await ws.saveChartSettings();
-    chartSaveToast.value = "Chart saved.";
-    setTimeout(() => (chartSaveToast.value = ""), 1500);
+    toastFor(1500, `Saved to "${activeQueryName.value}".`);
   } catch (e) {
-    chartSaveToast.value = (e as Error).message;
-    setTimeout(() => (chartSaveToast.value = ""), 3000);
+    toastFor(3000, (e as Error).message);
   } finally {
     savingChart.value = false;
   }
 }
+
+function startSaveAs() {
+  saveMenuOpen.value = false;
+  saveAsName.value = hasActiveQuery.value ? `${activeQueryName.value} (copy)` : "";
+  saveAsOpen.value = true;
+}
+
+async function commitSaveAs() {
+  const name = saveAsName.value.trim();
+  if (!name) {
+    toastFor(2000, "Name required.");
+    return;
+  }
+  savingChart.value = true;
+  try {
+    await ws.saveAsNewQuery(name);
+    saveAsOpen.value = false;
+    toastFor(1500, `Saved as "${name}".`);
+  } catch (e) {
+    toastFor(3000, (e as Error).message);
+  } finally {
+    savingChart.value = false;
+  }
+}
+
+function cancelSaveAs() {
+  saveAsOpen.value = false;
+  saveAsName.value = "";
+}
+
+const saveSplit = ref<HTMLDivElement | null>(null);
+onClickOutside(saveSplit, () => {
+  if (saveMenuOpen.value) saveMenuOpen.value = false;
+});
+
+// Mirror SqlEditor's pattern: surface chart-related proposals as an overlay
+// on this panel so the user can Accept/Reject without scrolling the chat.
+const chat = useChatStore();
+const activeChartProposal = computed(() => {
+  const a = chat.activeProposal;
+  if (!a) return null;
+  return a.record.proposal.kind === "chart_change" ? a : null;
+});
 
 // Active spec — picker mode shows ws.chart, python mode shows the python
 // output's spec. Same canvas, same renderer.
@@ -108,12 +163,19 @@ function scheduleRender() {
 }
 
 watch(
-  () => [ws.chartType, ws.result, ws.chartTypes.length] as const,
+  // Primitive deps only — walking deep into ws.result.rows is needless and
+  // makes every result mutation traverse thousands of cells.
+  () => [
+    ws.chartType,
+    ws.result?.row_count ?? -1,
+    (ws.result?.columns ?? []).join("|"),
+    ws.chartTypes.length,
+  ] as const,
   () => {
     if (ws.chartType) autofillRequiredFields(ws.chartType);
     scheduleRender();
   },
-  { deep: true, immediate: true },
+  { immediate: true },
 );
 
 watch(() => ws.chartConfig, scheduleRender, { deep: true });
@@ -121,7 +183,7 @@ watch(() => ws.chartConfig, scheduleRender, { deep: true });
 watch(
   () => activeSpec.value,
   (spec) => renderPlotly(chartHost.value, spec),
-  { deep: true },
+  // No deep — Plotly mutates the spec in place; deep-watching it loops.
 );
 
 watch(
@@ -288,16 +350,67 @@ const emptyMessage = computed(() => {
         >
           + New
         </button>
-        <button
-          class="btn btn-primary btn-sm"
-          :disabled="!ws.result?.success || savingChart"
-          @click="saveChart"
-          :title="ws.activeQueryId ? 'Save these chart settings onto the active query' : 'Save the query first to attach a chart'"
-        >
-          {{ savingChart ? "Saving…" : "Save chart" }}
-        </button>
+
+        <div ref="saveSplit" class="chart__save-split">
+          <button
+            class="btn btn-primary btn-sm chart__save-primary"
+            :disabled="!ws.result?.success || savingChart"
+            @click="saveToActive"
+            :title="hasActiveQuery ? `Save chart settings onto “${activeQueryName}”` : 'Create a new saved query'"
+          >
+            {{ savingChart
+                ? "Saving…"
+                : hasActiveQuery
+                  ? `Save to ${activeQueryName}`
+                  : "Save as new…" }}
+          </button>
+          <button
+            class="btn btn-primary btn-sm chart__save-chev"
+            :disabled="!ws.result?.success || savingChart"
+            title="Save options"
+            @click="saveMenuOpen = !saveMenuOpen"
+          >▾</button>
+
+          <div v-if="saveMenuOpen" class="chart__save-menu" @click.stop>
+            <button
+              class="chart__save-item"
+              :disabled="!hasActiveQuery"
+              @click="saveToActive"
+            >
+              <span class="chart__save-item-main">
+                Save to <strong>"{{ activeQueryName }}"</strong>
+              </span>
+              <span class="chart__save-item-hint">overwrite existing</span>
+            </button>
+            <button class="chart__save-item" @click="startSaveAs">
+              <span class="chart__save-item-main">Save as new query…</span>
+              <span class="chart__save-item-hint">creates a fresh saved query with this chart</span>
+            </button>
+          </div>
+        </div>
       </div>
     </header>
+
+    <div v-if="saveAsOpen" class="chart__saveas" @click.self="cancelSaveAs">
+      <div class="chart__saveas-dialog">
+        <h4>Save as new query</h4>
+        <p>Creates a brand-new saved query with the current SQL and chart settings.</p>
+        <input
+          v-model="saveAsName"
+          class="chart__saveas-input"
+          placeholder="e.g. My HRV (weekly)"
+          autofocus
+          @keyup.enter="commitSaveAs"
+          @keyup.escape="cancelSaveAs"
+        />
+        <div class="chart__saveas-actions">
+          <button class="btn btn-ghost btn-sm" @click="cancelSaveAs">Cancel</button>
+          <button class="btn btn-primary btn-sm" :disabled="savingChart" @click="commitSaveAs">
+            {{ savingChart ? "Saving…" : "Save" }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <div v-if="!props.collapsed" class="chart__body">
       <!-- Chart type popover -->
@@ -352,6 +465,19 @@ const emptyMessage = computed(() => {
       </div>
 
       <div v-if="ws.chartError && ws.chartMode === 'picker'" class="chart__error">{{ ws.chartError }}</div>
+
+      <!-- Agent-driven chart proposal overlay (Cursor-style). Mirror of
+           the chat card so the user can Accept/Reject without scrolling. -->
+      <div v-if="activeChartProposal" class="chart__prop">
+        <div class="chart__prop-bar">
+          <span class="chart__prop-dot" />
+          <span class="chart__prop-title">Agent proposed a chart change</span>
+        </div>
+        <ProposalCard
+          :record="activeChartProposal.record"
+          :turn-id="activeChartProposal.turnId"
+        />
+      </div>
 
       <div class="chart__host-wrap">
         <div ref="chartHost" class="chart__host"></div>
@@ -493,6 +619,97 @@ const emptyMessage = computed(() => {
   border-radius: 999px;
   white-space: nowrap;
 }
+.chart__save-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+.chart__save-primary {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 1px solid rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chart__save-chev {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  min-width: 24px;
+  padding: 0 6px;
+  display: grid;
+  place-items: center;
+}
+.chart__save-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  min-width: 260px;
+  display: grid;
+  gap: 1px;
+  padding: 4px;
+}
+.chart__save-item {
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 4px;
+  display: grid;
+  gap: 2px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.chart__save-item:hover { background: var(--bg-hover); }
+.chart__save-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.chart__save-item-main { font-size: 12px; }
+.chart__save-item-hint { font-size: 10px; color: var(--fg-subtle); }
+
+.chart__saveas {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 200;
+}
+.chart__saveas-dialog {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+  width: 380px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 10px;
+}
+.chart__saveas-dialog h4 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 500;
+}
+.chart__saveas-dialog p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.chart__saveas-input {
+  font-size: 14px;
+  padding: 8px 10px;
+}
+.chart__saveas-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
 
 .chart__body {
   flex: 1;
@@ -624,6 +841,30 @@ const emptyMessage = computed(() => {
   flex-shrink: 0;
 }
 
+.chart__prop {
+  margin: 0 12px 8px;
+  padding: 8px 10px 4px;
+  background: var(--bg);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.chart__prop-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.chart__prop-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.chart__prop-title { font-weight: 600; }
 .chart__host-wrap {
   flex: 1;
   min-height: 0;

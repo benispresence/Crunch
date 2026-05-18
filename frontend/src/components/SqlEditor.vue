@@ -2,7 +2,9 @@
 import * as monaco from "monaco-editor";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useTheme } from "@/composables/theme";
+import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import ProposalCard from "./ProposalCard.vue";
 
 const props = defineProps<{ collapsed?: boolean }>();
 const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
@@ -336,6 +338,18 @@ function acceptProposal() {
 function rejectProposal() {
   ws.rejectProposal();
 }
+
+// New agent-driven proposal flow: when the agent emits a query-side change,
+// surface the diff card as an overlay on this panel so the user can decide
+// without leaving the editor context.
+const chat = useChatStore();
+const activeQueryProposal = computed(() => {
+  const a = chat.activeProposal;
+  if (!a) return null;
+  const k = a.record.proposal.kind;
+  if (k === "query_edit" || k === "new_query" || k === "delete_query") return a;
+  return null;
+});
 </script>
 
 <template>
@@ -440,6 +454,20 @@ function rejectProposal() {
         <button class="btn btn-primary btn-sm" @click="acceptProposal">Accept &amp; replace</button>
       </div>
     </div>
+
+    <!-- Agent-driven proposal overlay (Cursor-style). The same record is
+         shown in the chat panel, but mounting it here lets the user click
+         Accept/Reject without leaving the editor. -->
+    <div v-if="activeQueryProposal && !props.collapsed" class="overlay-prop">
+      <div class="overlay-prop__bar">
+        <span class="overlay-prop__dot" />
+        <span class="overlay-prop__title">Agent proposed a change to your query</span>
+      </div>
+      <ProposalCard
+        :record="activeQueryProposal.record"
+        :turn-id="activeQueryProposal.turnId"
+      />
+    </div>
   </div>
 </template>
 
@@ -450,6 +478,7 @@ function rejectProposal() {
   height: 100%;
   min-height: 0;
   background: var(--bg);
+  position: relative;
 }
 .editor--collapsed { height: auto; }
 .editor__bar {
@@ -584,6 +613,35 @@ function rejectProposal() {
   background: rgba(220, 80, 80, 0.08);
   border-bottom: 1px solid var(--border);
 }
+.overlay-prop {
+  position: absolute;
+  inset: 38px 12px auto 12px;
+  background: var(--bg);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 8px 10px 4px;
+  max-height: calc(100% - 50px);
+  overflow: auto;
+  z-index: 30;
+}
+.overlay-prop__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.overlay-prop__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.overlay-prop__title { font-weight: 600; }
+
 .proposal {
   border-top: 1px solid var(--accent-border);
   background: var(--accent-subtle);

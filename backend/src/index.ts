@@ -19,6 +19,15 @@ const app = express();
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 
+// One-line request log so "did the request reach the backend?" is a
+// trivial tail away. Skip /api/health to keep the log readable.
+app.use((req, _res, next) => {
+  if (req.path !== "/api/health") {
+    console.log(`${new Date().toISOString().slice(11, 19)} ${req.method} ${req.path}`);
+  }
+  next();
+});
+
 app.get("/api/health", async (_req, res) => {
   const engine = await pythonEngine.health().catch((err: Error) => ({
     ok: false,

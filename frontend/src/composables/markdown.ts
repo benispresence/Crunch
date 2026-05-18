@@ -46,6 +46,29 @@ export function renderMarkdown(text: string): string {
   return marked.parse(text, { async: false }) as string;
 }
 
+/**
+ * Syntax-highlight a raw code string. Returns inner HTML (no <pre><code>).
+ * Used by tool-call viewers and the proposal diff card.
+ */
+export function highlightCode(code: string, lang: string): string {
+  if (!code) return "";
+  const language = hljs.getLanguage(lang) ? lang : "plaintext";
+  return hljs.highlight(code, { language }).value;
+}
+
+/**
+ * Guess the most useful language for a given string. SQL keywords win over
+ * Python, Python over generic JSON, and everything else falls through.
+ */
+export function guessLanguage(s: string): string {
+  if (!s) return "plaintext";
+  const trimmed = s.trim();
+  if (/^\s*\{[\s\S]*\}\s*$|^\s*\[[\s\S]*\]\s*$/.test(trimmed)) return "json";
+  if (/\b(SELECT|WITH|FROM|WHERE|JOIN|INSERT|UPDATE|DELETE|CREATE)\b/i.test(trimmed)) return "sql";
+  if (/\b(import|def|class|print)\b/.test(trimmed) && /[:=]/.test(trimmed)) return "python";
+  return "plaintext";
+}
+
 export function bindCopyButtons(root: HTMLElement) {
   root.querySelectorAll<HTMLButtonElement>(".code-block__copy").forEach((btn) => {
     if (btn.dataset.bound) return;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Pane, Splitpanes } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import ChatPanel from "@/components/ChatPanel.vue";
 import ChartPanel from "@/components/ChartPanel.vue";
@@ -33,6 +33,40 @@ const resultsCollapsed = ref(false);
 const editorFlex = computed(() => (editorCollapsed.value ? "0 0 auto" : "1 1 0"));
 const chartFlex = computed(() => (chartCollapsed.value ? "0 0 auto" : "3 1 0"));
 const resultsFlex = computed(() => (resultsCollapsed.value ? "0 0 auto" : "1 1 0"));
+
+// Agent-driven pane focus: when a proposal becomes active, auto-collapse
+// panes that aren't relevant to the change. Restored on resolve.
+const savedPaneState = ref<{ editor: boolean; chart: boolean; results: boolean } | null>(null);
+
+watch(
+  () => chat.activeProposal,
+  (active) => {
+    if (active) {
+      if (savedPaneState.value == null) {
+        savedPaneState.value = {
+          editor: editorCollapsed.value,
+          chart: chartCollapsed.value,
+          results: resultsCollapsed.value,
+        };
+      }
+      const kind = active.record.proposal.kind;
+      if (kind === "query_edit" || kind === "new_query" || kind === "delete_query") {
+        editorCollapsed.value = false;
+        chartCollapsed.value = true;
+        resultsCollapsed.value = true;
+      } else if (kind === "chart_change") {
+        editorCollapsed.value = true;
+        chartCollapsed.value = false;
+        resultsCollapsed.value = true;
+      }
+    } else if (savedPaneState.value != null) {
+      editorCollapsed.value = savedPaneState.value.editor;
+      chartCollapsed.value = savedPaneState.value.chart;
+      resultsCollapsed.value = savedPaneState.value.results;
+      savedPaneState.value = null;
+    }
+  },
+);
 
 onMounted(async () => {
   if (!auth.token) {
