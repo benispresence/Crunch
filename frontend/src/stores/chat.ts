@@ -172,12 +172,43 @@ export const useChatStore = defineStore("chat", {
       const controller = new AbortController();
       activeController = controller;
       try {
+        // Snapshot what the user is currently editing so the agent can
+        // talk about "this query" without asking.
+        const ws = useWorkspaceStore();
+        const activeQuery = ws.activeQueryId == null
+          ? null
+          : ws.savedQueries.find((q) => q.id === ws.activeQueryId) ?? null;
+        const activeConn = ws.activeConnectionId == null
+          ? null
+          : ws.connections.find((c) => c.id === ws.activeConnectionId) ?? null;
+        const unsaved = !!activeQuery && (
+          activeQuery.sql !== ws.sql ||
+          activeQuery.chart_type !== ws.chartType ||
+          activeQuery.chart_mode !== ws.chartMode ||
+          (activeQuery.chart_python_code ?? "") !== (ws.pythonCode ?? "") ||
+          JSON.stringify(activeQuery.chart_config ?? {}) !== JSON.stringify(ws.chartConfig ?? {})
+        );
+        const workspace = {
+          active_query_id: ws.activeQueryId,
+          active_query_name: activeQuery?.name ?? null,
+          active_connection_id: ws.activeConnectionId,
+          active_connection_name: activeConn?.name ?? null,
+          current_sql: ws.sql,
+          current_chart_type: ws.chartType,
+          current_chart_mode: ws.chartMode,
+          current_chart_config: ws.chartConfig,
+          current_python_code: ws.pythonCode || null,
+          has_unsaved_changes: unsaved,
+          last_result_columns: ws.result?.columns ?? undefined,
+          last_result_row_count: ws.result?.row_count,
+        };
         const stream = api.stream(
           "/chat/send",
           {
             conversation_id: this.conversationId,
             message,
             thinking: this.showThinking,
+            workspace,
           },
           { signal: controller.signal },
         );

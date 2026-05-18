@@ -35,11 +35,77 @@ Modifying the user's saved queries / charts:
 - For deleting a saved query: \`propose_delete_query\`.
 - These tools DO NOT execute the change — they only produce a proposal. After calling one, briefly summarize what you proposed and stop; do not duplicate the diff in prose.`;
 
+const workspaceContextSchema = z.object({
+  active_query_id: z.number().int().nullable().optional(),
+  active_query_name: z.string().nullable().optional(),
+  active_connection_id: z.number().int().nullable().optional(),
+  active_connection_name: z.string().nullable().optional(),
+  current_sql: z.string().optional(),
+  current_chart_type: z.string().optional(),
+  current_chart_mode: z.string().optional(),
+  current_chart_config: z.record(z.unknown()).optional(),
+  current_python_code: z.string().nullable().optional(),
+  has_unsaved_changes: z.boolean().optional(),
+  last_result_columns: z.array(z.string()).optional(),
+  last_result_row_count: z.number().int().optional(),
+});
+
 const sendSchema = z.object({
   conversation_id: z.number().int().nullable().optional(),
   message: z.string().min(1),
   thinking: z.boolean().optional(),
+  workspace: workspaceContextSchema.optional(),
 });
+
+/**
+ * Render the workspace context as a compact markdown block so the model
+ * can see what the user is currently working on. Lives in a separate
+ * (uncached) system block so the cache key on the prompt stays stable.
+ */
+function formatWorkspaceContext(ctx: z.infer<typeof workspaceContextSchema>): string {
+  const lines: string[] = ["<workspace_context>"];
+  if (ctx.active_query_id != null) {
+    lines.push(
+      `active_saved_query: #${ctx.active_query_id} "${ctx.active_query_name ?? "?"}"`,
+    );
+  } else {
+    lines.push("active_saved_query: (none — user is on an unsaved scratch query)");
+  }
+  if (ctx.active_connection_id != null) {
+    lines.push(
+      `active_connection: #${ctx.active_connection_id} "${ctx.active_connection_name ?? "?"}"`,
+    );
+  }
+  if (ctx.has_unsaved_changes) {
+    lines.push("unsaved_changes: true (the SQL or chart settings differ from the saved version)");
+  }
+  if (ctx.current_chart_mode || ctx.current_chart_type) {
+    lines.push(
+      `current_chart: mode=${ctx.current_chart_mode ?? "picker"} type=${ctx.current_chart_type ?? "bar"}`,
+    );
+  }
+  if (ctx.current_chart_config && Object.keys(ctx.current_chart_config).length > 0) {
+    lines.push(`current_chart_config: ${JSON.stringify(ctx.current_chart_config)}`);
+  }
+  if (ctx.current_sql) {
+    lines.push("current_sql: |");
+    for (const ln of ctx.current_sql.split("\n")) lines.push("  " + ln);
+  }
+  if (ctx.current_python_code) {
+    lines.push("current_python_code: |");
+    for (const ln of ctx.current_python_code.split("\n")) lines.push("  " + ln);
+  }
+  if (ctx.last_result_columns && ctx.last_result_columns.length > 0) {
+    lines.push(
+      `last_result: ${ctx.last_result_row_count ?? "?"} rows, columns: ${ctx.last_result_columns.join(", ")}`,
+    );
+  }
+  lines.push("</workspace_context>");
+  lines.push(
+    "When the user says \"this query\", \"current chart\", \"add a limit\", etc., assume they mean the active_saved_query above. Use propose_query_edit / propose_chart_change with that query_id rather than asking which one.",
+  );
+  return lines.join("\n");
+}
 
 interface ConversationRow {
   id: number;
@@ -142,12 +208,21 @@ chatRouter.post("/send", async (req, res) => {
       turn += 1;
       send("turn_start", { turn });
 
+      const systemBlocks: Array<{
+        type: "text"; text: string; cache_control?: { type: "ephemeral" };
+      }> = [
+        { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+      ];
+      if (parsed.data.workspace) {
+        systemBlocks.push({
+          type: "text",
+          text: formatWorkspaceContext(parsed.data.workspace),
+        });
+      }
       const stream = client.messages.stream({
         model,
         max_tokens: 4096,
-        system: [
-          { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-        ],
+        system: systemBlocks,
         tools: chatTools,
         messages: history,
         // Claude 4.x uses adaptive thinking with an effort knob. The older
