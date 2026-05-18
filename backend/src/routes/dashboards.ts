@@ -18,7 +18,8 @@ interface DashboardRow {
 interface WidgetRow {
   id: number;
   dashboard_id: number;
-  visualization_id: number;
+  visualization_id: number | null;
+  query_id: number | null;
   position_x: number;
   position_y: number;
   width: number;
@@ -41,11 +42,20 @@ dashboardsRouter.get("/:id", (req, res) => {
     res.status(404).json({ error: "not found" });
     return;
   }
+  // Widgets may target either a saved query (new) or a legacy visualization.
+  // LEFT JOIN both sides and let the caller see whichever name/chart_type is
+  // available so the UI can render either kind of source uniformly.
   const widgets = db
     .prepare(
-      "SELECT w.*, v.name AS viz_name, v.chart_type FROM dashboard_widgets w JOIN visualizations v ON v.id = w.visualization_id WHERE w.dashboard_id = ?",
+      `SELECT w.*,
+              COALESCE(q.name, v.name) AS source_name,
+              COALESCE(q.chart_type, v.chart_type) AS chart_type
+       FROM dashboard_widgets w
+       LEFT JOIN queries q ON q.id = w.query_id
+       LEFT JOIN visualizations v ON v.id = w.visualization_id
+       WHERE w.dashboard_id = ?`,
     )
-    .all(dash.id) as Array<WidgetRow & { viz_name: string; chart_type: string }>;
+    .all(dash.id) as Array<WidgetRow & { source_name: string; chart_type: string }>;
   res.json({
     id: dash.id,
     name: dash.name,
@@ -131,14 +141,20 @@ dashboardsRouter.delete("/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-const widgetSchema = z.object({
-  visualization_id: z.number().int(),
-  position_x: z.number().int().min(0).default(0),
-  position_y: z.number().int().min(0).default(0),
-  width: z.number().int().min(1).max(12).default(6),
-  height: z.number().int().min(1).max(20).default(4),
-  title_override: z.string().nullable().optional(),
-});
+const widgetSchema = z
+  .object({
+    query_id: z.number().int().optional(),
+    visualization_id: z.number().int().optional(),
+    position_x: z.number().int().min(0).default(0),
+    position_y: z.number().int().min(0).default(0),
+    width: z.number().int().min(1).max(12).default(6),
+    height: z.number().int().min(1).max(20).default(4),
+    title_override: z.string().nullable().optional(),
+  })
+  .refine(
+    (d) => (d.query_id != null) !== (d.visualization_id != null),
+    { message: "exactly one of query_id or visualization_id is required" },
+  );
 
 dashboardsRouter.post("/:id/widgets", (req, res) => {
   const dash = db
@@ -155,11 +171,14 @@ dashboardsRouter.post("/:id/widgets", (req, res) => {
   }
   const info = db
     .prepare(
-      "INSERT INTO dashboard_widgets (dashboard_id, visualization_id, position_x, position_y, width, height, title_override) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      `INSERT INTO dashboard_widgets
+         (dashboard_id, query_id, visualization_id, position_x, position_y, width, height, title_override)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       req.params.id,
-      parsed.data.visualization_id,
+      parsed.data.query_id ?? null,
+      parsed.data.visualization_id ?? null,
       parsed.data.position_x,
       parsed.data.position_y,
       parsed.data.width,

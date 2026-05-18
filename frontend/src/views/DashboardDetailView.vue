@@ -3,12 +3,12 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import DashboardWidget from "@/components/DashboardWidget.vue";
 import { useDashboardsStore, type DashboardWidget as Widget } from "@/stores/dashboards";
-import { useVisualizationsStore } from "@/stores/visualizations";
+import { useWorkspaceStore } from "@/stores/workspace";
 
 const route = useRoute();
 const router = useRouter();
 const dashboards = useDashboardsStore();
-const vizStore = useVisualizationsStore();
+const ws = useWorkspaceStore();
 
 const COLS = 12;
 const ROW_HEIGHT = 80;
@@ -27,10 +27,16 @@ const totalRows = computed(() => {
   return Math.max(max + 1, 6);
 });
 
-const usedVizIds = computed(() => new Set(draftWidgets.value.map((w) => w.visualization_id)));
+const usedQueryIds = computed(
+  () => new Set(draftWidgets.value.map((w) => w.query_id).filter((id): id is number => id != null)),
+);
 
 onMounted(async () => {
-  await Promise.all([dashboards.open(dashboardId.value), vizStore.load()]);
+  await Promise.all([
+    dashboards.open(dashboardId.value),
+    ws.savedQueries.length === 0 ? ws.loadSavedQueries() : Promise.resolve(),
+    ws.connections.length === 0 ? ws.loadConnections() : Promise.resolve(),
+  ]);
   syncFromStore();
 });
 
@@ -129,14 +135,19 @@ async function savePositions() {
   dirty.value = false;
 }
 
-async function add(visualizationId: number) {
-  await dashboards.addWidget(dashboardId.value, visualizationId);
+async function addQuery(queryId: number) {
+  await dashboards.addQueryChart(dashboardId.value, queryId);
   showAdder.value = false;
 }
 
 async function remove(widgetId: number) {
-  if (!confirm("Remove this widget from the dashboard?")) return;
+  if (!confirm("Remove this chart from the dashboard?")) return;
   await dashboards.removeWidget(dashboardId.value, widgetId);
+}
+
+function connectionLabel(connectionId: number | null): string | null {
+  if (connectionId == null) return null;
+  return ws.connections.find((c) => c.id === connectionId)?.name ?? null;
 }
 
 function cancelEdits() {
@@ -160,7 +171,7 @@ async function commitAndExit() {
         <h1>{{ dashboards.current?.name ?? "Dashboard" }}</h1>
       </div>
       <div class="detail__head-right">
-        <button class="btn btn-sm" @click="showAdder = true">+ Add widget</button>
+        <button class="btn btn-sm" @click="showAdder = true">+ Add chart</button>
         <button v-if="!editing" class="btn btn-sm" @click="editing = true">Edit layout</button>
         <template v-else>
           <button v-if="dirty" class="btn btn-sm" @click="cancelEdits">Discard</button>
@@ -201,32 +212,40 @@ async function commitAndExit() {
         v-if="draftWidgets.length === 0 && !showAdder"
         class="detail__empty"
       >
-        <h3>No widgets yet</h3>
-        <p>Add a saved visualization to start building your dashboard.</p>
-        <button class="btn btn-primary btn-sm" @click="showAdder = true">+ Add widget</button>
+        <h3>No charts yet</h3>
+        <p>Pick one of your saved queries to drop its chart onto this dashboard.</p>
+        <button class="btn btn-primary btn-sm" @click="showAdder = true">+ Add chart</button>
       </div>
     </div>
 
     <div v-if="showAdder" class="picker" @click.self="showAdder = false">
       <div class="picker__panel">
         <header class="picker__head">
-          <h3>Add a widget</h3>
+          <h3>Add a chart from a saved query</h3>
           <button class="btn btn-ghost btn-icon" @click="showAdder = false">×</button>
         </header>
-        <div v-if="vizStore.list.length === 0" class="picker__empty">
-          You haven't saved any visualizations yet. Run a query in the workspace and click Save on
-          the chart panel.
+        <div v-if="ws.savedQueries.length === 0" class="picker__empty">
+          You haven't saved any queries yet. In the workspace, write a query and hit Save in the
+          editor toolbar.
         </div>
         <ul v-else class="picker__list">
           <li
-            v-for="v in vizStore.list"
-            :key="v.id"
+            v-for="q in ws.savedQueries"
+            :key="q.id"
             class="picker__item"
-            :class="{ 'picker__item--used': usedVizIds.has(v.id) }"
-            @click="add(v.id)"
+            :class="{ 'picker__item--used': usedQueryIds.has(q.id) }"
+            :title="usedQueryIds.has(q.id) ? 'Already on this dashboard' : ''"
+            @click="addQuery(q.id)"
           >
-            <div class="picker__name">{{ v.name }}</div>
-            <div class="picker__meta">{{ v.chart_type }}</div>
+            <div class="picker__main">
+              <div class="picker__name">{{ q.name }}</div>
+              <div class="picker__sub">
+                <span v-if="connectionLabel(q.connection_id)">{{ connectionLabel(q.connection_id) }}</span>
+                <span class="picker__sep">·</span>
+                <span class="picker__chart">{{ q.chart_mode === "python" ? "python" : q.chart_type }}</span>
+              </div>
+            </div>
+            <div v-if="usedQueryIds.has(q.id)" class="picker__used">on board</div>
           </li>
         </ul>
       </div>
@@ -355,17 +374,36 @@ async function commitAndExit() {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
 }
 .picker__item:hover { background: var(--bg-hover); }
-.picker__item--used { opacity: 0.6; }
+.picker__item--used { opacity: 0.5; cursor: default; }
+.picker__main { display: grid; gap: 2px; min-width: 0; }
 .picker__name { color: var(--fg); }
-.picker__meta {
-  font-family: var(--font-mono);
+.picker__sub {
   font-size: 11px;
   color: var(--fg-subtle);
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.picker__sep { color: var(--border-strong); }
+.picker__chart {
+  font-family: var(--font-mono);
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.picker__used {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 999px;
 }
 </style>

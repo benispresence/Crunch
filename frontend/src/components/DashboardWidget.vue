@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import Plotly from "plotly.js-dist-min";
 import { onMounted, ref, watch } from "vue";
+import { api } from "@/api/client";
 import type { DashboardWidget } from "@/stores/dashboards";
 import { useVisualizationsStore } from "@/stores/visualizations";
 
@@ -20,6 +21,13 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const rowCount = ref<number | null>(null);
 
+interface RenderResult {
+  success: boolean;
+  spec?: { data: unknown[]; layout: Record<string, unknown> };
+  error?: string;
+  row_count?: number;
+}
+
 const baseLayout = {
   paper_bgcolor: "rgba(0,0,0,0)",
   plot_bgcolor: "rgba(0,0,0,0)",
@@ -34,7 +42,17 @@ async function load() {
   loading.value = true;
   error.value = null;
   try {
-    const r = await vizStore.render(props.widget.visualization_id);
+    // New widgets reference a saved query; legacy widgets a standalone viz.
+    let r: RenderResult;
+    if (props.widget.query_id != null) {
+      r = await api.post<RenderResult>(`/queries/${props.widget.query_id}/render`, {});
+    } else if (props.widget.visualization_id != null) {
+      r = await vizStore.render(props.widget.visualization_id);
+    } else {
+      error.value = "Chart has no source";
+      loading.value = false;
+      return;
+    }
     if (r.success && r.spec && host.value) {
       rowCount.value = r.row_count ?? null;
       await Plotly.react(
@@ -67,7 +85,7 @@ watch(() => `${props.widget.width}x${props.widget.height}`, () => requestAnimati
   <div class="widget" :class="{ 'widget--editing': editing }">
     <div class="widget__head" @pointerdown="editing && emit('drag-start', $event)">
       <div class="widget__title">
-        {{ widget.title_override ?? widget.viz_name }}
+        {{ widget.title_override ?? widget.source_name }}
       </div>
       <div class="widget__meta">
         <span v-if="rowCount !== null">{{ rowCount.toLocaleString() }} rows</span>

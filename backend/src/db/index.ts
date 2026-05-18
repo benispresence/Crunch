@@ -69,7 +69,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS dashboard_widgets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     dashboard_id INTEGER NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
-    visualization_id INTEGER NOT NULL REFERENCES visualizations(id) ON DELETE CASCADE,
+    visualization_id INTEGER REFERENCES visualizations(id) ON DELETE CASCADE,
     position_x INTEGER NOT NULL DEFAULT 0,
     position_y INTEGER NOT NULL DEFAULT 0,
     width INTEGER NOT NULL DEFAULT 6,
@@ -126,6 +126,51 @@ ensureColumn("queries", "chart_renderer", "chart_renderer TEXT NOT NULL DEFAULT 
 ensureColumn("queries", "chart_config_json", "chart_config_json TEXT NOT NULL DEFAULT '{}'");
 ensureColumn("queries", "chart_python_code", "chart_python_code TEXT");
 ensureColumn("queries", "chart_mode", "chart_mode TEXT NOT NULL DEFAULT 'picker'");
+// Dashboard widgets can target either a (legacy) visualization or a saved
+// query. New ones use query_id; visualization_id stays for back-compat.
+ensureColumn(
+  "dashboard_widgets",
+  "query_id",
+  "query_id INTEGER REFERENCES queries(id) ON DELETE CASCADE",
+);
+
+// One-time rebuild: older databases were created with
+// `visualization_id INTEGER NOT NULL`, which now blocks query-only widgets.
+// SQLite can't drop a NOT NULL constraint via ALTER, so we copy through a
+// fresh table when we detect the legacy schema.
+{
+  const cols = db.prepare("PRAGMA table_info(dashboard_widgets)").all() as Array<{
+    name: string; notnull: number;
+  }>;
+  const vizCol = cols.find((c) => c.name === "visualization_id");
+  if (vizCol && vizCol.notnull === 1) {
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN TRANSACTION;
+      ALTER TABLE dashboard_widgets RENAME TO dashboard_widgets__old;
+      CREATE TABLE dashboard_widgets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dashboard_id INTEGER NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+        visualization_id INTEGER REFERENCES visualizations(id) ON DELETE CASCADE,
+        query_id INTEGER REFERENCES queries(id) ON DELETE CASCADE,
+        position_x INTEGER NOT NULL DEFAULT 0,
+        position_y INTEGER NOT NULL DEFAULT 0,
+        width INTEGER NOT NULL DEFAULT 6,
+        height INTEGER NOT NULL DEFAULT 4,
+        title_override TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+      );
+      INSERT INTO dashboard_widgets
+        (id, dashboard_id, visualization_id, query_id, position_x, position_y, width, height, title_override, created_at)
+      SELECT id, dashboard_id, visualization_id, query_id, position_x, position_y, width, height, title_override, created_at
+      FROM dashboard_widgets__old;
+      DROP TABLE dashboard_widgets__old;
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+    console.log("[db] migrated dashboard_widgets: visualization_id is now nullable");
+  }
+}
 
 const DEFAULT_PACKAGES = [
   { name: "pandas", importName: "pandas" },

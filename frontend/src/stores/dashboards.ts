@@ -11,13 +11,14 @@ export interface DashboardSummary {
 export interface DashboardWidget {
   id: number;
   dashboard_id: number;
-  visualization_id: number;
+  query_id: number | null;
+  visualization_id: number | null;
   position_x: number;
   position_y: number;
   width: number;
   height: number;
   title_override: string | null;
-  viz_name: string;
+  source_name: string;
   chart_type: string;
 }
 
@@ -48,7 +49,20 @@ export const useDashboardsStore = defineStore("dashboards", {
       this.list = this.list.filter((d) => d.id !== id);
       if (this.current?.id === id) this.current = null;
     },
-    async addWidget(dashboardId: number, visualizationId: number) {
+    async addQueryChart(dashboardId: number, queryId: number) {
+      const widgets = this.current?.widgets ?? [];
+      const yMax = widgets.reduce((m, w) => Math.max(m, w.position_y + w.height), 0);
+      await api.post(`/dashboards/${dashboardId}/widgets`, {
+        query_id: queryId,
+        position_x: 0,
+        position_y: yMax,
+        width: 6,
+        height: 4,
+      });
+      await this.open(dashboardId);
+    },
+    /** Legacy: attach an old-style standalone visualization. */
+    async addVisualization(dashboardId: number, visualizationId: number) {
       const widgets = this.current?.widgets ?? [];
       const yMax = widgets.reduce((m, w) => Math.max(m, w.position_y + w.height), 0);
       await api.post(`/dashboards/${dashboardId}/widgets`, {

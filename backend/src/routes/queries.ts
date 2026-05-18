@@ -167,6 +167,73 @@ queriesRouter.post("/validate", async (req, res) => {
   res.json(await pythonEngine.validateSql(parsed.data.sql));
 });
 
+/**
+ * Render a saved query into a chart spec. Runs the SQL against its
+ * connection, then either evaluates the saved python code or renders
+ * via the chart picker config. Used by dashboards.
+ */
+queriesRouter.post("/:id/render", async (req, res) => {
+  const row = db
+    .prepare(
+      `SELECT id, connection_id, sql, chart_type, chart_renderer, chart_config_json,
+              chart_python_code, chart_mode
+       FROM queries WHERE id = ? AND user_id = ?`,
+    )
+    .get(req.params.id, req.user!.sub) as
+    | (QueryRow & { chart_renderer: string })
+    | undefined;
+  if (!row) {
+    res.status(404).json({ error: "query not found" });
+    return;
+  }
+  if (!row.connection_id) {
+    res.status(400).json({ error: "query has no connection" });
+    return;
+  }
+  const conn = db
+    .prepare("SELECT type, config_json FROM connections WHERE id = ? AND user_id = ?")
+    .get(row.connection_id, req.user!.sub) as ConnectionRow | undefined;
+  if (!conn) {
+    res.status(404).json({ error: "connection not found" });
+    return;
+  }
+  try {
+    const sqlResult = await pythonEngine.executeSql({
+      connection: { type: conn.type, ...JSON.parse(conn.config_json) },
+      sql: row.sql,
+      limit: 5000,
+    });
+    if (!sqlResult.success) {
+      res.json({ success: false, error: sqlResult.error });
+      return;
+    }
+    const data: Record<string, unknown[]> = {};
+    sqlResult.columns.forEach((col, i) => {
+      data[col] = sqlResult.rows.map((r) => r[i]);
+    });
+    if (row.chart_mode === "python" && row.chart_python_code) {
+      const py = await pythonEngine.executePython({ code: row.chart_python_code, data });
+      res.json({
+        success: py.success, spec: py.spec, error: py.error,
+        row_count: sqlResult.row_count,
+      });
+      return;
+    }
+    const chart = await pythonEngine.renderChart({
+      chart_type: row.chart_type,
+      renderer: row.chart_renderer,
+      data,
+      config: safeJson(row.chart_config_json),
+    });
+    res.json({
+      success: chart.success, spec: chart.spec, error: chart.error,
+      row_count: sqlResult.row_count,
+    });
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
+  }
+});
+
 queriesRouter.post("/execute", async (req, res) => {
   const parsed = z
     .object({
