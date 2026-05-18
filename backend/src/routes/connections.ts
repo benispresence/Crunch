@@ -2,6 +2,10 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  encryptConnectionConfig,
+  maskConnectionConfig,
+} from "../services/crypto.js";
 
 export const connectionsRouter = Router();
 connectionsRouter.use(requireAuth);
@@ -21,7 +25,9 @@ connectionsRouter.get("/", (req, res) => {
       id: r.id,
       name: r.name,
       type: r.type,
-      config: JSON.parse(r.config_json),
+      // Mask secrets — the API never echoes back the password the user
+      // typed in. Engine-side decryption happens server-side only.
+      config: maskConnectionConfig(JSON.parse(r.config_json)),
       created_at: r.created_at,
     })),
   );
@@ -33,9 +39,10 @@ connectionsRouter.post("/", (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const encrypted = encryptConnectionConfig(parsed.data.config);
   const info = db
     .prepare("INSERT INTO connections (user_id, name, type, config_json) VALUES (?, ?, ?, ?)")
-    .run(req.user!.sub, parsed.data.name, parsed.data.type, JSON.stringify(parsed.data.config));
+    .run(req.user!.sub, parsed.data.name, parsed.data.type, JSON.stringify(encrypted));
   res.json({ id: Number(info.lastInsertRowid) });
 });
 

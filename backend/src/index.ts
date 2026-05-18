@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
 import cors from "cors";
 import express from "express";
+import helmet from "helmet";
 import { config } from "./config.js";
 import "./db/index.js";
 import { adminRouter } from "./routes/admin.js";
@@ -16,6 +19,11 @@ import { seedDefaultAdmin } from "./services/auth.js";
 import { pythonEngine } from "./services/pythonEngine.js";
 
 const app = express();
+// Helmet sets a sensible baseline of security headers
+// (X-Content-Type-Options, Strict-Transport-Security, etc.). We disable
+// CSP/COEP since this is a JSON API and the static frontend is served
+// separately by Vite/nginx — those layers set their own page-level CSP.
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 
@@ -53,13 +61,28 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 const seed = seedDefaultAdmin();
-if (seed.created) {
+if (seed.created && seed.password) {
+  // Write the one-time random password to a file too so a user who
+  // missed the boot log can still recover it. The file lives next to
+  // the DB and is mode 0600. Sign in once, change the password, then
+  // delete the file.
+  const bootstrapPath = path.resolve(
+    path.dirname(config.databaseFile),
+    "FIRST_RUN_ADMIN_PASSWORD",
+  );
+  try {
+    fs.writeFileSync(bootstrapPath, `${seed.email}\n${seed.password}\n`, { mode: 0o600 });
+  } catch (e) {
+    console.warn(`[seed] could not write ${bootstrapPath}: ${(e as Error).message}`);
+  }
   console.log("");
-  console.log("  Default admin account created:");
-  console.log(`    email:    ${seed.email}`);
-  console.log(`    password: ${seed.password}`);
-  console.log("  Sign in, then change the password via POST /api/auth/change-password");
-  console.log("  (or the Change password form on the login screen).");
+  console.log("  ┌─ Default admin account created ───────────────────────────────┐");
+  console.log(`  │  email:    ${seed.email.padEnd(50, " ")}│`);
+  console.log(`  │  password: ${seed.password.padEnd(50, " ")}│`);
+  console.log("  └───────────────────────────────────────────────────────────────┘");
+  console.log("  This password was randomly generated and is shown only once.");
+  console.log(`  Also written to: ${bootstrapPath}`);
+  console.log("  You MUST change it on first login (the API will block until you do).");
   console.log("");
 }
 

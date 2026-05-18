@@ -13,13 +13,19 @@ const password = ref("");
 const busy = ref(false);
 const error = ref("");
 const registrationEnabled = ref(false);
+const defaultAdminPending = ref(false);
 
 onMounted(async () => {
   try {
-    const cfg = await api.get<{ registration_enabled: boolean }>("/auth/config");
+    const cfg = await api.get<{
+      registration_enabled: boolean;
+      default_admin_pending: boolean;
+    }>("/auth/config");
     registrationEnabled.value = cfg.registration_enabled;
+    defaultAdminPending.value = cfg.default_admin_pending;
   } catch {
     registrationEnabled.value = false;
+    defaultAdminPending.value = false;
   }
 });
 
@@ -49,10 +55,11 @@ async function submit() {
       <h1 class="login__title">Crunch</h1>
       <p class="login__subtitle">Sign in to continue.</p>
 
-      <div v-if="mode === 'login'" class="login__hint">
-        First launch? Default admin:
-        <code>admin@nicemeta.local</code> / <code>admin</code>
-        — change it after signing in.
+      <div v-if="mode === 'login' && defaultAdminPending" class="login__hint">
+        First launch? Sign in as <code>admin@nicemeta.local</code> using the
+        one-time password printed in the backend startup log (also saved to
+        <code>FIRST_RUN_ADMIN_PASSWORD</code> next to the database file).
+        You'll be required to set a new password before doing anything else.
       </div>
 
       <form class="login__form" @submit.prevent="submit">

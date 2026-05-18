@@ -18,6 +18,25 @@ import { exportToWorkspace, importFromWorkspace } from "../services/workspaceSyn
 export const gitRouter = Router();
 gitRouter.use(requireAuth, requireAdmin);
 
+/**
+ * Only accept safe remote URL schemes. Rejects file:// (which would let
+ * an admin clone arbitrary host paths), leading "-" (could be parsed as
+ * a git CLI flag), and anything that isn't a known remote scheme.
+ */
+function validateGitUrl(url: string): string | null {
+  if (!url || url.length > 2048) return "url is empty or too long";
+  const trimmed = url.trim();
+  if (trimmed.startsWith("-")) return "url cannot start with '-'";
+  if (/^file:/i.test(trimmed)) return "file:// URLs are not allowed";
+  const ok =
+    /^https?:\/\//i.test(trimmed) ||
+    /^ssh:\/\//i.test(trimmed) ||
+    /^git:\/\//i.test(trimmed) ||
+    /^git@[^\s]+:/i.test(trimmed);
+  if (!ok) return "only https, http, ssh, git URLs and git@host:path are allowed";
+  return null;
+}
+
 gitRouter.get("/status", async (_req, res) => {
   const s = await status(config.workspaceDir);
   res.json({ ...s, workspace_dir: config.workspaceDir });
@@ -117,6 +136,11 @@ gitRouter.put("/remote", async (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const urlErr = validateGitUrl(parsed.data.url);
+  if (urlErr) {
+    res.status(400).json({ error: urlErr });
+    return;
+  }
   if (!(await isInitialized(config.workspaceDir))) {
     res.status(400).json({ error: "workspace not initialized" });
     return;
@@ -135,6 +159,11 @@ gitRouter.post("/clone", async (req, res) => {
     .safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const urlErr = validateGitUrl(parsed.data.url);
+  if (urlErr) {
+    res.status(400).json({ error: urlErr });
     return;
   }
   const r = await clone(config.workspaceDir, parsed.data.url);

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
+import { decryptConnectionConfig } from "../services/crypto.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 
 export const queriesRouter = Router();
@@ -199,7 +200,7 @@ queriesRouter.post("/:id/render", async (req, res) => {
   }
   try {
     const sqlResult = await pythonEngine.executeSql({
-      connection: { type: conn.type, ...JSON.parse(conn.config_json) },
+      connection: { type: conn.type, ...decryptConnectionConfig(JSON.parse(conn.config_json)) },
       sql: row.sql,
       limit: 5000,
     });
@@ -253,7 +254,7 @@ queriesRouter.post("/execute", async (req, res) => {
     res.status(404).json({ error: "connection not found" });
     return;
   }
-  const config = JSON.parse(conn.config_json);
+  const config = decryptConnectionConfig(JSON.parse(conn.config_json));
   try {
     const result = await pythonEngine.executeSql({
       connection: { type: conn.type, ...config },

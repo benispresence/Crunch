@@ -1,5 +1,8 @@
 import { db } from "../db/index.js";
 import { config } from "../config.js";
+import { decryptString, encryptString, isEncrypted } from "./crypto.js";
+
+const ENCRYPTED_KEYS = new Set(["anthropic_api_key"]);
 
 export const KNOWN_MODELS = [
   { id: "claude-opus-4-7", label: "Claude Opus 4.7 (most capable)" },
@@ -13,17 +16,23 @@ export function getSetting(key: string): string {
   const row = db
     .prepare("SELECT value FROM settings WHERE key = ?")
     .get(key) as { value: string } | undefined;
-  return row?.value ?? "";
+  const raw = row?.value ?? "";
+  if (!raw) return "";
+  if (ENCRYPTED_KEYS.has(key) && isEncrypted(raw)) {
+    return decryptString(raw);
+  }
+  return raw;
 }
 
 export function setSetting(key: string, value: string): void {
+  const stored = ENCRYPTED_KEYS.has(key) && value ? encryptString(value) : value;
   db.prepare(
     `INSERT INTO settings (key, value, updated_at)
      VALUES (?, ?, strftime('%s', 'now'))
      ON CONFLICT(key) DO UPDATE SET
        value = excluded.value,
        updated_at = excluded.updated_at`,
-  ).run(key, value);
+  ).run(key, stored);
 }
 
 export function getAnthropicApiKey(): string {

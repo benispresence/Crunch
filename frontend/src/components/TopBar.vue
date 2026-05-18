@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { api } from "@/api/client";
 import { useTheme } from "@/composables/theme";
@@ -28,12 +28,26 @@ const pwBusy = ref(false);
 const pwError = ref("");
 const pwSuccess = ref(false);
 
+const mustChange = computed(() => auth.user?.must_change_password === true);
+
+onMounted(() => {
+  if (mustChange.value) openChangePassword();
+});
+watch(mustChange, (v) => {
+  if (v) openChangePassword();
+});
+
 function openChangePassword() {
   showChangePassword.value = true;
   pwCurrent.value = "";
   pwNew.value = "";
   pwError.value = "";
   pwSuccess.value = false;
+}
+
+function closeChangePassword() {
+  if (mustChange.value && !pwSuccess.value) return; // force completion
+  showChangePassword.value = false;
 }
 
 async function submitChangePassword() {
@@ -48,6 +62,11 @@ async function submitChangePassword() {
     pwSuccess.value = true;
     pwCurrent.value = "";
     pwNew.value = "";
+    if (mustChange.value) {
+      auth.clearMustChange();
+      // give the user a beat to see the success message, then close.
+      setTimeout(() => (showChangePassword.value = false), 1200);
+    }
   } catch (e) {
     pwError.value = (e as Error).message;
   } finally {
@@ -125,9 +144,15 @@ async function submitChangePassword() {
     </div>
   </header>
 
-  <div v-if="showChangePassword" class="pw-overlay" @click.self="showChangePassword = false">
+  <div v-if="showChangePassword" class="pw-overlay" @click.self="closeChangePassword">
     <div class="pw-modal">
-      <h3 class="pw-modal__title">Change password</h3>
+      <h3 class="pw-modal__title">
+        {{ mustChange ? "Set a new password to continue" : "Change password" }}
+      </h3>
+      <p v-if="mustChange" class="pw-modal__hint">
+        You're signed in with the auto-generated first-launch password. Set your
+        own before doing anything else.
+      </p>
       <form class="pw-modal__form" @submit.prevent="submitChangePassword">
         <label>
           <span>Current password</span>
@@ -140,7 +165,12 @@ async function submitChangePassword() {
         <p v-if="pwError" class="pw-modal__error">{{ pwError }}</p>
         <p v-if="pwSuccess" class="pw-modal__success">Password updated.</p>
         <div class="pw-modal__actions">
-          <button type="button" class="btn btn-ghost btn-sm" @click="showChangePassword = false">
+          <button
+            v-if="!mustChange"
+            type="button"
+            class="btn btn-ghost btn-sm"
+            @click="closeChangePassword"
+          >
             Close
           </button>
           <button type="submit" class="btn btn-primary btn-sm" :disabled="pwBusy">
@@ -259,6 +289,12 @@ async function submitChangePassword() {
 .pw-modal__form {
   display: grid;
   gap: 12px;
+}
+.pw-modal__hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.5;
 }
 .pw-modal__form label {
   display: grid;

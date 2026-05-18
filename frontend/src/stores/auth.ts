@@ -4,6 +4,7 @@ interface User {
   id: number;
   email: string;
   role: string;
+  must_change_password?: boolean;
 }
 
 export const useAuthStore = defineStore("auth", {
@@ -17,6 +18,12 @@ export const useAuthStore = defineStore("auth", {
       this.user = user;
       localStorage.setItem("nm_token", token);
       localStorage.setItem("nm_user", JSON.stringify(user));
+    },
+    clearMustChange() {
+      if (this.user) {
+        this.user = { ...this.user, must_change_password: false };
+        localStorage.setItem("nm_user", JSON.stringify(this.user));
+      }
     },
     logout() {
       this.token = null;

@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { verifyToken, type JwtPayload } from "../services/auth.js";
+import { userMustChangePassword, verifyToken, type JwtPayload } from "../services/auth.js";
 
 declare module "express-serve-static-core" {
   interface Request {
@@ -17,6 +17,15 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   const payload = verifyToken(token);
   if (!payload) {
     res.status(401).json({ error: "invalid token" });
+    return;
+  }
+  // Force password change before allowing access to anything besides the
+  // change-password endpoint itself.
+  if (
+    userMustChangePassword(payload.sub)
+    && req.path !== "/change-password"
+  ) {
+    res.status(403).json({ error: "password_change_required" });
     return;
   }
   req.user = payload;

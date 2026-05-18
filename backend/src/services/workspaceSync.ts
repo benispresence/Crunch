@@ -63,13 +63,34 @@ interface ConnRow {
 }
 
 function slug(s: string): string {
-  return s
+  const out = s
     .normalize("NFKD")
     .replace(/[^\w\s.-]+/g, "")
     .trim()
     .replace(/\s+/g, "-")
     .toLowerCase()
     .slice(0, 80) || "untitled";
+  // Reject path-traversal segments. A user-controlled folder named ".."
+  // (or any name containing ".." or starting with ".") would let
+  // buildFolderPath join an upward jump into the export path.
+  if (out === "." || out === ".." || out.startsWith(".") || out.includes("..")) {
+    return "untitled";
+  }
+  return out;
+}
+
+/**
+ * Return a path inside workspaceDir, throwing if the resolved path would
+ * escape it. Defence-in-depth for slug() — any future bug in slugification
+ * gets caught here.
+ */
+function safeJoin(workspaceDir: string, ...segments: string[]): string {
+  const joined = path.resolve(workspaceDir, ...segments);
+  const root = path.resolve(workspaceDir) + path.sep;
+  if (!(joined + path.sep).startsWith(root) && joined !== path.resolve(workspaceDir)) {
+    throw new Error(`refusing path outside workspace: ${joined}`);
+  }
+  return joined;
 }
 
 function buildFolderPath(folderId: number | null, byId: Map<number, FolderRow>): string[] {
@@ -139,7 +160,7 @@ export async function exportToWorkspace(
     )
     .all(userId) as QueryRow[];
   for (const q of queries) {
-    const dir = path.join(
+    const dir = safeJoin(
       workspaceDir,
       "queries",
       ...buildFolderPath(q.folder_id, byFolderId),
@@ -164,7 +185,7 @@ export async function exportToWorkspace(
     )
     .all(userId) as VizRow[];
   for (const v of vizes) {
-    const dir = path.join(
+    const dir = safeJoin(
       workspaceDir,
       "visualizations",
       ...buildFolderPath(v.folder_id, byFolderId),
@@ -193,7 +214,7 @@ export async function exportToWorkspace(
     )
     .all(userId) as DashRow[];
   for (const d of dashes) {
-    const dir = path.join(
+    const dir = safeJoin(
       workspaceDir,
       "dashboards",
       ...buildFolderPath(d.folder_id, byFolderId),

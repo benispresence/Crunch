@@ -1,5 +1,6 @@
 import type { Tool } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { db } from "../db/index.js";
+import { decryptConnectionConfig } from "./crypto.js";
 import { pythonEngine } from "./pythonEngine.js";
 
 function safeParse(s: string): Record<string, unknown> {
@@ -270,7 +271,7 @@ export async function runTool(
         .get(connId, ctx.userId) as { type: string; config_json: string } | undefined;
       if (!conn) return { error: "connection not found" };
       return await pythonEngine.executeSql({
-        connection: { type: conn.type, ...JSON.parse(conn.config_json) },
+        connection: { type: conn.type, ...decryptConnectionConfig(JSON.parse(conn.config_json)) },
         sql,
         limit,
       });

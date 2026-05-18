@@ -35,7 +35,17 @@ from nicemeta.query.validator import QueryValidator  # noqa: E402
 from nicemeta.visualization.code_executor import CodeExecutor  # noqa: E402
 from nicemeta.visualization.factory import ChartFactory  # noqa: E402
 
-ENGINE_TOKEN = os.environ.get("PYTHON_ENGINE_TOKEN", "dev-engine-token")
+_DEV_ENGINE_TOKEN = "dev-engine-token"
+ENGINE_TOKEN = os.environ.get("PYTHON_ENGINE_TOKEN", _DEV_ENGINE_TOKEN)
+_ENGINE_ENV = os.environ.get("ENGINE_ENV", "development")
+if _ENGINE_ENV == "production" and (
+    not os.environ.get("PYTHON_ENGINE_TOKEN") or ENGINE_TOKEN == _DEV_ENGINE_TOKEN
+):
+    sys.stderr.write(
+        "\nRefusing to start: PYTHON_ENGINE_TOKEN is unset or the dev default. "
+        "Set ENGINE_ENV=development for local dev, or provide a strong token in production.\n\n"
+    )
+    sys.exit(1)
 
 # Map both the user-facing alias ("postgres") and the canonical
 # Python-side name ("postgresql") to the same adapter class so the
@@ -84,11 +94,17 @@ def _adapter_for(connection: dict[str, Any]) -> ConnectionAdapter:
     _adapter_cache[cache_key] = adapter
     return adapter
 
-app = FastAPI(title="NiceMeta Python Engine", version="1.0.0")
+app = FastAPI(title="Crunch Python Engine", version="1.0.0")
+# The engine is server-to-server only — the Express backend is the sole
+# caller. Locking the allowed origins to that backend prevents any browser
+# script from talking to the engine even if the listen address gets
+# widened later. ENGINE_ALLOWED_ORIGIN can override for non-default
+# deployments.
+_ALLOWED_ORIGIN = os.environ.get("ENGINE_ALLOWED_ORIGIN", "http://127.0.0.1:3691")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=[_ALLOWED_ORIGIN] if _ALLOWED_ORIGIN != "*" else ["*"],
+    allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
 
@@ -116,6 +132,9 @@ class ExecuteSqlRequest(BaseModel):
     connection: ConnectionConfig
     sql: str
     limit: int | None = 5000
+    # Defence in depth: the engine refuses writes unless the backend
+    # explicitly opts in. The backend currently never sets this true.
+    allow_writes: bool = False
 
 
 class ExecuteSqlResponse(BaseModel):
@@ -207,6 +226,17 @@ async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
         return ExecuteSqlResponse(
             success=False,
             error="; ".join(validation.errors) or "invalid sql",
+        )
+    # Reject anything that isn't a read by default. The validator already
+    # classifies the statement; we just refuse the non-read kinds here so
+    # a backend bug that forwards a DROP/UPDATE can't trash a user's DB.
+    if not req.allow_writes and not validation.is_read_only:
+        return ExecuteSqlResponse(
+            success=False,
+            error=(
+                f"engine refused {validation.query_type.value.upper()} statement: "
+                "only SELECT is allowed (set allow_writes to opt in)"
+            ),
         )
 
     started = time.perf_counter()

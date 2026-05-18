@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
+import { decryptConnectionConfig } from "../services/crypto.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 
 export const visualizationsRouter = Router();
@@ -174,7 +175,7 @@ visualizationsRouter.post("/:id/render", async (req, res) => {
 
   try {
     const sqlResult = await pythonEngine.executeSql({
-      connection: { type: conn.type, ...JSON.parse(conn.config_json) },
+      connection: { type: conn.type, ...decryptConnectionConfig(JSON.parse(conn.config_json)) },
       sql: row.sql,
       limit: 5000,
     });

@@ -116,6 +116,8 @@ function ensureColumn(table: string, column: string, ddl: string) {
   }
 }
 ensureColumn("users", "role", "role TEXT NOT NULL DEFAULT 'viewer'");
+ensureColumn("users", "must_change_password", "must_change_password INTEGER NOT NULL DEFAULT 0");
+ensureColumn("users", "token_version", "token_version INTEGER NOT NULL DEFAULT 0");
 ensureColumn("queries", "folder_id", "folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL");
 ensureColumn("visualizations", "folder_id", "folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL");
 ensureColumn("dashboards", "folder_id", "folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL");
