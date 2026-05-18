@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api } from "@/api/client";
 import { useAuthStore } from "@/stores/auth";
@@ -12,6 +12,16 @@ const email = ref("");
 const password = ref("");
 const busy = ref(false);
 const error = ref("");
+const registrationEnabled = ref(false);
+
+onMounted(async () => {
+  try {
+    const cfg = await api.get<{ registration_enabled: boolean }>("/auth/config");
+    registrationEnabled.value = cfg.registration_enabled;
+  } catch {
+    registrationEnabled.value = false;
+  }
+});
 
 async function submit() {
   busy.value = true;
@@ -67,12 +77,16 @@ async function submit() {
         <p v-if="error" class="login__error">{{ error }}</p>
 
         <button
+          v-if="registrationEnabled || mode === 'register'"
           class="btn-ghost login__toggle"
           type="button"
           @click="mode = mode === 'login' ? 'register' : 'login'"
         >
           {{ mode === "login" ? "Need an account? Register" : "Have an account? Sign in" }}
         </button>
+        <p v-else class="login__locked">
+          Public registration is disabled. Ask an admin to create your account.
+        </p>
       </form>
     </div>
   </div>
@@ -130,6 +144,12 @@ async function submit() {
   color: var(--fg-muted);
   text-align: center;
   font-size: 12px;
+}
+.login__locked {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--fg-subtle);
+  text-align: center;
 }
 .login__hint {
   background: var(--accent-subtle);

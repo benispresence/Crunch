@@ -8,6 +8,7 @@ import {
   updatePassword,
   verifyPassword,
 } from "../services/auth.js";
+import { isPublicRegistrationEnabled } from "../services/settings.js";
 import { requireAuth } from "../middleware/auth.js";
 
 export const authRouter = Router();
@@ -27,7 +28,19 @@ const changePasswordSchema = z.object({
   new_password: z.string().min(6),
 });
 
+// Public bootstrap info — the login page reads this to decide whether
+// to show the Register tab, with no auth needed.
+authRouter.get("/config", (_req, res) => {
+  res.json({ registration_enabled: isPublicRegistrationEnabled() });
+});
+
 authRouter.post("/register", (req, res) => {
+  if (!isPublicRegistrationEnabled()) {
+    res.status(403).json({
+      error: "Self-registration is disabled. Ask an admin to provision an account.",
+    });
+    return;
+  }
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });

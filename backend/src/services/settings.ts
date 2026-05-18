@@ -34,6 +34,18 @@ export function getAnthropicModel(): string {
   return getSetting("anthropic_model") || config.anthropicModel || DEFAULT_MODEL;
 }
 
+/**
+ * Public self-registration on /auth/register. Off by default — admin
+ * opts in via Admin → Settings if they want anyone with the URL to be
+ * able to create their own account.
+ */
+export function isPublicRegistrationEnabled(): boolean {
+  return getSetting("public_registration_enabled") === "1";
+}
+export function setPublicRegistrationEnabled(on: boolean): void {
+  setSetting("public_registration_enabled", on ? "1" : "0");
+}
+
 export function maskApiKey(key: string): string {
   if (!key) return "";
   if (key.length <= 12) return "•".repeat(key.length);

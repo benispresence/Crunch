@@ -31,6 +31,7 @@ interface SettingsState {
   anthropic_api_key_set: boolean;
   anthropic_model: string;
   known_models: ModelOption[];
+  public_registration_enabled: boolean;
 }
 const settings = ref<SettingsState | null>(null);
 const apiKeyInput = ref("");
@@ -54,13 +55,32 @@ async function saveSettings() {
   settingsToast.value = "";
   error.value = "";
   try {
-    const body: Record<string, string> = { anthropic_model: modelInput.value };
+    const body: Record<string, unknown> = { anthropic_model: modelInput.value };
     if (apiKeyInput.value.trim() !== "") body.anthropic_api_key = apiKeyInput.value.trim();
     const s = await api.put<SettingsState>("/admin/settings", body);
     settings.value = s;
     apiKeyInput.value = "";
     modelInput.value = s.anthropic_model;
     settingsToast.value = "Saved.";
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    settingsBusy.value = false;
+  }
+}
+
+async function togglePublicRegistration(on: boolean) {
+  settingsBusy.value = true;
+  error.value = "";
+  try {
+    const s = await api.put<SettingsState>("/admin/settings", {
+      public_registration_enabled: on,
+    });
+    settings.value = s;
+    settingsToast.value = on
+      ? "Self-registration enabled — anyone with the URL can sign up as a viewer."
+      : "Self-registration disabled — only admin-provisioned accounts can sign in.";
+    setTimeout(() => (settingsToast.value = ""), 3500);
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -279,6 +299,61 @@ async function setRole(u: AdminUser, role: string) {
   }
   await loadAll();
 }
+
+const newUser = ref({ email: "", password: "", role: "viewer" as "viewer" | "editor" | "admin" });
+const creatingUser = ref(false);
+const userToast = ref("");
+
+async function createNewUser() {
+  if (!newUser.value.email.trim() || newUser.value.password.length < 6) {
+    error.value = "Email + password (min 6 chars) required.";
+    return;
+  }
+  creatingUser.value = true;
+  error.value = "";
+  try {
+    await api.post("/admin/users", {
+      email: newUser.value.email.trim(),
+      password: newUser.value.password,
+      role: newUser.value.role,
+    });
+    userToast.value = `Created ${newUser.value.email} (${newUser.value.role}).`;
+    setTimeout(() => (userToast.value = ""), 3000);
+    newUser.value = { email: "", password: "", role: "viewer" };
+    await loadAll();
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    creatingUser.value = false;
+  }
+}
+
+async function resetUserPassword(u: AdminUser) {
+  const pw = window.prompt(`New password for ${u.email}? (min 6 chars)`);
+  if (pw == null) return;
+  if (pw.length < 6) {
+    error.value = "Password must be at least 6 chars.";
+    return;
+  }
+  try {
+    await api.post(`/admin/users/${u.id}/reset-password`, { new_password: pw });
+    userToast.value = `Password reset for ${u.email}.`;
+    setTimeout(() => (userToast.value = ""), 3000);
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
+
+async function deleteUser(u: AdminUser) {
+  if (u.id === auth.user?.id) return;
+  if (!confirm(`Delete ${u.email}? All their queries, charts, and dashboards are removed.`)) return;
+  try {
+    await api.del(`/admin/users/${u.id}`);
+    await loadAll();
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
 </script>
 
 <template>
@@ -466,16 +541,73 @@ async function setRole(u: AdminUser, role: string) {
             </button>
           </div>
         </div>
+
+        <div class="settings__group">
+          <h3>Access</h3>
+          <p class="settings__hint">
+            Off by default. When enabled, anyone who can reach this URL can create their
+            own account at the Register tab on the login screen (with role <code>viewer</code>).
+            Leave off and provision users yourself via the Users tab.
+          </p>
+          <label class="settings__toggle">
+            <input
+              type="checkbox"
+              :checked="settings.public_registration_enabled"
+              :disabled="settingsBusy"
+              @change="togglePublicRegistration(($event.target as HTMLInputElement).checked)"
+            />
+            <span>Allow public self-registration</span>
+            <span
+              class="settings__pill"
+              :class="settings.public_registration_enabled ? 'settings__pill--on' : 'settings__pill--off'"
+            >
+              {{ settings.public_registration_enabled ? "ENABLED" : "DISABLED" }}
+            </span>
+          </label>
+        </div>
       </div>
     </section>
 
     <!-- Users -->
     <section v-if="tab === 'users'" class="admin__section">
+      <form class="admin__form admin__form--users" @submit.prevent="createNewUser">
+        <input
+          v-model="newUser.email"
+          type="email"
+          placeholder="new user email"
+          autocomplete="off"
+          required
+        />
+        <input
+          v-model="newUser.password"
+          type="password"
+          placeholder="temporary password (min 6)"
+          autocomplete="new-password"
+          minlength="6"
+          required
+        />
+        <select v-model="newUser.role">
+          <option value="viewer">viewer</option>
+          <option value="editor">editor</option>
+          <option value="admin">admin</option>
+        </select>
+        <button type="submit" class="btn btn-primary btn-sm" :disabled="creatingUser">
+          {{ creatingUser ? "Adding…" : "+ Add user" }}
+        </button>
+      </form>
+      <p v-if="userToast" class="admin__toast">{{ userToast }}</p>
+      <p class="admin__hint">
+        Share the email + temporary password with the new user. They can change it via
+        the <strong>Change password</strong> link in their top bar after signing in.
+        Users can also self-register via the Register tab on the login screen.
+      </p>
+
       <table class="admin__table">
         <thead>
           <tr>
             <th>Email</th>
             <th>Role</th>
+            <th>Created</th>
             <th></th>
           </tr>
         </thead>
@@ -498,6 +630,15 @@ async function setRole(u: AdminUser, role: string) {
             </td>
             <td class="admin__mono admin__date">
               {{ new Date(u.created_at * 1000).toLocaleDateString() }}
+            </td>
+            <td class="admin__actions">
+              <button class="btn btn-sm" @click="resetUserPassword(u)">Reset password</button>
+              <button
+                v-if="u.id !== auth.user?.id"
+                class="btn btn-ghost btn-icon"
+                title="Delete user"
+                @click="deleteUser(u)"
+              >×</button>
             </td>
           </tr>
         </tbody>
@@ -683,6 +824,23 @@ async function setRole(u: AdminUser, role: string) {
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
+.admin__form--users { grid-template-columns: 1.4fr 1.2fr 120px auto; }
+.admin__toast {
+  margin: -10px 0 12px;
+  padding: 6px 12px;
+  background: rgba(127, 176, 105, 0.12);
+  border: 1px solid rgba(127, 176, 105, 0.35);
+  color: var(--success);
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+}
+.admin__hint {
+  margin: 0 0 16px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+  line-height: 1.5;
+}
+.admin__hint strong { color: var(--fg-muted); }
 .admin__check {
   display: flex;
   align-items: center;
@@ -818,6 +976,32 @@ async function setRole(u: AdminUser, role: string) {
   color: var(--success);
   font-size: 12px;
   margin-right: auto;
+}
+.settings__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.settings__toggle input { cursor: pointer; }
+.settings__pill {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.settings__pill--on { background: rgba(127, 176, 105, 0.14); color: var(--success); }
+.settings__pill--off { background: var(--bg); color: var(--fg-subtle); border: 1px solid var(--border); }
+.settings__hint code {
+  font-family: var(--font-mono);
+  background: var(--bg-elev-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
 }
 
 .git__intro { color: var(--fg-muted); font-size: 13px; margin: 0 0 16px; line-height: 1.5; }

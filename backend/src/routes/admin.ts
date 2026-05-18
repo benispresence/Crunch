@@ -2,12 +2,15 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAdmin, requireAuth } from "../middleware/auth.js";
+import { createUser, findUserByEmail, updatePassword } from "../services/auth.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 import {
   KNOWN_MODELS,
   getAnthropicApiKey,
   getAnthropicModel,
+  isPublicRegistrationEnabled,
   maskApiKey,
+  setPublicRegistrationEnabled,
   setSetting,
 } from "../services/settings.js";
 
@@ -190,14 +193,19 @@ adminRouter.get("/users", (_req, res) => {
   res.json(rows);
 });
 
-adminRouter.get("/settings", (_req, res) => {
+function settingsPayload() {
   const key = getAnthropicApiKey();
-  res.json({
+  return {
     anthropic_api_key_masked: maskApiKey(key),
     anthropic_api_key_set: !!key,
     anthropic_model: getAnthropicModel(),
     known_models: KNOWN_MODELS,
-  });
+    public_registration_enabled: isPublicRegistrationEnabled(),
+  };
+}
+
+adminRouter.get("/settings", (_req, res) => {
+  res.json(settingsPayload());
 });
 
 adminRouter.put("/settings", (req, res) => {
@@ -205,6 +213,7 @@ adminRouter.put("/settings", (req, res) => {
     .object({
       anthropic_api_key: z.string().optional(),
       anthropic_model: z.string().optional(),
+      public_registration_enabled: z.boolean().optional(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -223,13 +232,65 @@ adminRouter.put("/settings", (req, res) => {
     }
     setSetting("anthropic_model", parsed.data.anthropic_model);
   }
-  const key = getAnthropicApiKey();
-  res.json({
-    anthropic_api_key_masked: maskApiKey(key),
-    anthropic_api_key_set: !!key,
-    anthropic_model: getAnthropicModel(),
-    known_models: KNOWN_MODELS,
-  });
+  if (parsed.data.public_registration_enabled !== undefined) {
+    setPublicRegistrationEnabled(parsed.data.public_registration_enabled);
+  }
+  res.json(settingsPayload());
+});
+
+adminRouter.post("/users", (req, res) => {
+  const parsed = z
+    .object({
+      email: z.string().email(),
+      password: z.string().min(6),
+      role: z.enum(["admin", "editor", "viewer"]).default("viewer"),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  if (findUserByEmail(parsed.data.email)) {
+    res.status(409).json({ error: "email already registered" });
+    return;
+  }
+  const user = createUser(parsed.data.email, parsed.data.password);
+  if (parsed.data.role !== user.role) {
+    db.prepare("UPDATE users SET role = ? WHERE id = ?").run(parsed.data.role, user.id);
+  }
+  res.json({ id: user.id, email: user.email, role: parsed.data.role });
+});
+
+adminRouter.post("/users/:id/reset-password", (req, res) => {
+  const parsed = z
+    .object({ new_password: z.string().min(6) })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const id = Number(req.params.id);
+  const exists = db.prepare("SELECT id FROM users WHERE id = ?").get(id);
+  if (!exists) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  updatePassword(id, parsed.data.new_password);
+  res.json({ ok: true });
+});
+
+adminRouter.delete("/users/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (id === req.user!.sub) {
+    res.status(400).json({ error: "cannot delete yourself" });
+    return;
+  }
+  const result = db.prepare("DELETE FROM users WHERE id = ?").run(id);
+  if (result.changes === 0) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  res.json({ ok: true });
 });
 
 adminRouter.put("/users/:id/role", (req, res) => {
