@@ -15,7 +15,11 @@ const typePopover = ref<HTMLDivElement | null>(null);
 const typeButton = ref<HTMLButtonElement | null>(null);
 
 const typePickerOpen = ref(false);
-const configOpen = ref(true);
+// Persisted across reloads so users keep the chart unobstructed by default
+// but stay expanded if they like working with fields visible.
+const CONFIG_OPEN_KEY = "crunch.chartConfigOpen";
+const configOpen = ref(localStorage.getItem(CONFIG_OPEN_KEY) === "1");
+watch(configOpen, (v) => localStorage.setItem(CONFIG_OPEN_KEY, v ? "1" : "0"));
 
 let renderTimer: number | null = null;
 let resizeObserver: ResizeObserver | null = null;
@@ -324,9 +328,10 @@ const emptyMessage = computed(() => {
         class="chart__config-btn"
         :class="{ 'chart__config-btn--on': configOpen }"
         @click="configOpen = !configOpen"
-        title="Toggle field configuration"
+        :title="configOpen ? 'Hide field bindings' : 'Edit field bindings'"
       >
-        Configure
+        <span class="chart__config-chev" :class="{ 'chart__config-chev--open': configOpen }">▸</span>
+        <span>{{ configOpen ? "Hide fields" : "Edit fields" }}</span>
       </button>
 
       <span
@@ -337,9 +342,9 @@ const emptyMessage = computed(() => {
         <span class="chart__pybadge-dot" /> Custom Python
       </span>
 
-      <div class="chart__name" :title="ws.activeQueryId ? `Chart on query #${ws.activeQueryId}` : 'No saved query selected'">
-        {{ activeQueryName }}
-      </div>
+      <!-- Title intentionally omitted — SqlEditor's header sits directly
+           above this panel and owns the shared query name for both. -->
+      <div class="chart__spacer"></div>
 
       <div class="chart__actions">
         <span v-if="chartSaveToast" class="chart__toast">{{ chartSaveToast }}</span>
@@ -575,6 +580,9 @@ const emptyMessage = computed(() => {
   border-radius: var(--radius-sm);
   cursor: pointer;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 .chart__config-btn:hover { background: var(--bg-hover); color: var(--fg); }
 .chart__config-btn--on {
@@ -582,6 +590,12 @@ const emptyMessage = computed(() => {
   color: var(--accent);
   border-color: var(--accent-border);
 }
+.chart__config-chev {
+  font-size: 9px;
+  display: inline-block;
+  transition: transform 150ms;
+}
+.chart__config-chev--open { transform: rotate(90deg); }
 .chart__pybadge {
   display: inline-flex;
   align-items: center;
@@ -610,6 +624,7 @@ const emptyMessage = computed(() => {
   text-align: right;
 }
 .chart__actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+.chart__spacer { flex: 1; }
 .chart__toast {
   font-size: 11px;
   color: var(--accent);

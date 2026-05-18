@@ -43,12 +43,19 @@ const activeQuery = computed(() =>
     : ws.savedQueries.find((q) => q.id === ws.activeQueryId) ?? null,
 );
 
-const headerName = computed(() => {
-  if (tab.value === "sql") {
-    return activeQuery.value?.name ?? "Untitled query";
-  }
-  const viz = ws.visualizations.find((v) => v.id === ws.activeVizId);
-  return viz?.name ?? "Untitled visualization";
+// One title for the whole query+chart unit. SqlEditor sits on top of
+// ChartPanel so showing the name once here serves both panes.
+const headerName = computed(() => activeQuery.value?.name ?? "Untitled query");
+const hasUnsavedChanges = computed(() => {
+  const q = activeQuery.value;
+  if (!q) return false;
+  return (
+    q.sql !== ws.sql ||
+    q.chart_type !== ws.chartType ||
+    q.chart_mode !== ws.chartMode ||
+    (q.chart_python_code ?? "") !== (ws.pythonCode ?? "") ||
+    JSON.stringify(q.chart_config ?? {}) !== JSON.stringify(ws.chartConfig ?? {})
+  );
 });
 
 const PX_MAP: Record<string, string> = {
@@ -388,6 +395,11 @@ const activeQueryProposal = computed(() => {
 
       <div class="editor__title">
         <span class="editor__name" :title="headerName">{{ headerName }}</span>
+        <span
+          v-if="hasUnsavedChanges"
+          class="editor__dirty"
+          title="Unsaved changes (SQL or chart settings)"
+        >•</span>
         <span v-if="!props.collapsed" class="editor__hint">⌘ + Enter to run</span>
       </div>
 
@@ -559,6 +571,12 @@ const activeQueryProposal = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 360px;
+}
+.editor__dirty {
+  color: var(--accent);
+  font-size: 18px;
+  line-height: 0;
+  margin-left: -4px;
 }
 .editor__hint { color: var(--fg-subtle); font-size: 11px; }
 .editor__actions { display: flex; gap: 6px; flex-shrink: 0; }
