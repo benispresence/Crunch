@@ -35,8 +35,8 @@ async function submit() {
 <template>
   <div class="login">
     <div class="login__card">
-      <div class="login__logo">N</div>
-      <h1 class="login__title">NiceMeta</h1>
+      <img src="/logo.png" alt="Crunch" class="login__logo" />
+      <h1 class="login__title">Crunch</h1>
       <p class="login__subtitle">Sign in to continue.</p>
 
       <div v-if="mode === 'login'" class="login__hint">
@@ -94,15 +94,10 @@ async function submit() {
   box-shadow: var(--shadow);
 }
 .login__logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: var(--accent);
-  color: #1a1815;
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  font-size: 22px;
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  display: block;
   margin-bottom: 16px;
 }
 .login__title {

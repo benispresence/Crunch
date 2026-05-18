@@ -66,9 +66,9 @@ export async function init(workspaceDir: string): Promise<RunResult> {
   await ensureWorkspaceDir(workspaceDir);
   const r = await run(workspaceDir, ["init", "-b", "main"]);
   if (!r.ok) return r;
-  // Sensible defaults for a fresh nicemeta workspace.
-  await run(workspaceDir, ["config", "user.email", "nicemeta@local"]);
-  await run(workspaceDir, ["config", "user.name", "NiceMeta"]);
+  // Sensible defaults for a fresh Crunch workspace.
+  await run(workspaceDir, ["config", "user.email", "crunch@local"]);
+  await run(workspaceDir, ["config", "user.name", "Crunch"]);
   return r;
 }
 

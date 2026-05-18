@@ -1,5 +1,5 @@
 /**
- * DB <-> file mirror for the NiceMeta workspace.
+ * DB <-> file mirror for the Crunch workspace.
  *
  * Layout produced under config.workspaceDir:
  *
@@ -215,10 +215,10 @@ export async function exportToWorkspace(
   }
 
   // README so a freshly cloned repo is self-explanatory.
-  const readme = `# NiceMeta workspace
+  const readme = `# Crunch workspace
 
 This directory mirrors your saved queries, visualizations and dashboards
-from the NiceMeta app. It's safe to commit and share.
+from the Crunch app. It's safe to commit and share.
 
 - \`queries/<collection>/<name>.sql\` — SQL body. Sidecar
   \`<name>.meta.json\` records the connection it was last bound to.
@@ -229,7 +229,7 @@ from the NiceMeta app. It's safe to commit and share.
   the visualizations referenced by each widget (by name).
 
 Push this repo to GitHub to back up your collections, or clone it
-into another NiceMeta instance and run *Import* from the admin Git
+into another Crunch instance and run *Import* from the admin Git
 panel to restore.
 `;
   await writeFile(path.join(workspaceDir, "README.md"), readme);

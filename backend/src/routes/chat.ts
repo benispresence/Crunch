@@ -17,7 +17,7 @@ import { getAnthropicApiKey, getAnthropicModel } from "../services/settings.js";
 export const chatRouter = Router();
 chatRouter.use(requireAuth);
 
-const SYSTEM_PROMPT = `You are NiceMeta, an analytics copilot embedded in a BI tool.
+const SYSTEM_PROMPT = `You are Crunch, an analytics copilot embedded in a BI tool.
 
 Behavior rules:
 - Be concise. Prefer short, direct sentences over preambles.

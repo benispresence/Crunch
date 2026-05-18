@@ -446,7 +446,7 @@ const activeQueryProposal = computed(() => {
     <div v-if="ws.pendingProposal && tab === 'sql' && !props.collapsed" class="proposal">
       <div class="proposal__head">
         <span class="proposal__dot" />
-        <span>NiceMeta proposed a SQL change</span>
+        <span>Crunch proposed a SQL change</span>
       </div>
       <pre class="proposal__diff">{{ ws.pendingProposal.sql }}</pre>
       <div class="proposal__actions">

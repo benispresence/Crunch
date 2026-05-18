@@ -70,8 +70,8 @@ async function submitChangePassword() {
         </svg>
       </button>
       <RouterLink to="/workspace" class="topbar__brand">
-        <div class="topbar__logo">N</div>
-        <span class="topbar__name">NiceMeta</span>
+        <img src="/logo.png" alt="Crunch" class="topbar__logo" />
+        <span class="topbar__name">Crunch</span>
       </RouterLink>
       <nav class="topbar__nav">
         <RouterLink to="/workspace" class="topbar__link">Workspace</RouterLink>
@@ -162,6 +162,10 @@ async function submitChangePassword() {
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
   flex-shrink: 0;
+  /* Let the oversized brand mark overflow vertically — it's transparent. */
+  overflow: visible;
+  position: relative;
+  z-index: 5;
 }
 .topbar__left,
 .topbar__right {
@@ -175,6 +179,7 @@ async function submitChangePassword() {
   gap: 8px;
   text-decoration: none;
   color: inherit;
+  overflow: visible;
 }
 .topbar__nav {
   display: flex;
@@ -205,20 +210,16 @@ async function submitChangePassword() {
   border: 1px solid var(--accent-border);
 }
 .topbar__logo {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #1a1815;
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  font-size: 13px;
+  width: 76px;
+  height: 76px;
+  object-fit: contain;
+  display: block;
 }
 .topbar__name {
   font-family: var(--font-serif);
   font-weight: 500;
-  font-size: 15px;
+  font-size: 22px;
+  letter-spacing: -0.01em;
 }
 .topbar__sep {
   width: 1px;

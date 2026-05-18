@@ -128,7 +128,7 @@ function resize() {
 
     <div ref="scroller" class="chat__scroll">
       <div v-if="chat.turns.length === 0" class="chat__empty">
-        <div class="chat__empty-logo">N</div>
+        <img src="/logo.png" alt="Crunch" class="chat__empty-logo" />
         <h2 class="chat__empty-title">How can I help with your data?</h2>
         <p class="chat__empty-sub">
           I can read your schema, write SQL, run queries, and chart the results.
@@ -318,17 +318,11 @@ function resize() {
   color: var(--fg-muted);
 }
 .chat__empty-logo {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: var(--accent);
-  color: #1a1815;
-  display: grid;
-  place-items: center;
-  margin: 0 auto 16px;
-  font-weight: 700;
-  font-family: var(--font-serif);
-  font-size: 20px;
+  width: 120px;
+  height: 120px;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto 20px;
 }
 .chat__empty-title {
   font-family: var(--font-serif);

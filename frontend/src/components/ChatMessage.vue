@@ -71,7 +71,7 @@ watch(
 <template>
   <article class="msg" :class="`msg--${turn.role}`">
     <div class="msg__avatar" :title="turn.role">
-      <span v-if="turn.role === 'assistant'">N</span>
+      <img v-if="turn.role === 'assistant'" src="/logo.png" alt="Crunch" class="msg__avatar-img" />
       <span v-else>·</span>
     </div>
 
@@ -142,26 +142,32 @@ watch(
 <style scoped>
 .msg {
   display: grid;
-  grid-template-columns: 28px 1fr;
+  grid-template-columns: 56px 1fr;
   gap: 12px;
   padding: 14px 16px;
 }
 .msg--user { background: var(--bg-elev); }
 .msg__avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 22px;
   font-family: var(--font-serif);
   background: var(--bg-elev-2);
   color: var(--fg-muted);
 }
 .msg--assistant .msg__avatar {
-  background: var(--accent);
-  color: #1a1815;
+  background: transparent;
+  padding: 0;
+}
+.msg__avatar-img {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  display: block;
 }
 .msg__body { min-width: 0; }
 

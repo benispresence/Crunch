@@ -414,7 +414,7 @@ async function setRole(u: AdminUser, role: string) {
           <h3>AI / Chat &amp; Agent</h3>
           <p class="settings__hint">
             Used by the Chat panel and agent tools. The key is stored locally in your
-            NiceMeta database and never leaves this machine except to call api.anthropic.com.
+            Crunch database and never leaves this machine except to call api.anthropic.com.
           </p>
 
           <label class="settings__field">

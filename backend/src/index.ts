@@ -64,5 +64,5 @@ if (seed.created) {
 }
 
 app.listen(config.port, () => {
-  console.log(`nicemeta backend listening on :${config.port}`);
+  console.log(`crunch backend listening on :${config.port}`);
 });
