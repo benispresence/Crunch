@@ -234,6 +234,39 @@ variables — there's no need to mount `.env` files into the containers.
 
 ---
 
+## Data sources
+
+Connections are managed in the sidebar. Drivers for the heavier
+warehouses are lazy-loaded — Crunch boots fine without them and tells
+you the exact `pip install` to run the first time you connect.
+
+| Category     | Type                          | Driver                              | Install                          |
+| ------------ | ----------------------------- | ----------------------------------- | -------------------------------- |
+| OLTP         | PostgreSQL                    | `asyncpg`                           | included                         |
+|              | MySQL                         | `aiomysql`                          | included                         |
+|              | MariaDB (MySQL-compatible)    | `aiomysql`                          | included                         |
+|              | SQLite                        | `aiosqlite`                         | included                         |
+|              | SQL Server                    | `pyodbc`                            | included                         |
+| Warehouses   | Snowflake                     | `snowflake-sqlalchemy`              | `pip install -e .[snowflake]`    |
+|              | BigQuery                      | `sqlalchemy-bigquery`               | `pip install -e .[bigquery]`     |
+|              | Amazon Redshift               | `sqlalchemy-redshift`               | `pip install -e .[redshift]`     |
+|              | Databricks                    | `databricks-sql-connector`          | `pip install -e .[databricks]`   |
+|              | ClickHouse                    | `clickhouse-sqlalchemy`             | `pip install -e .[clickhouse]`   |
+|              | Trino / Presto                | `sqlalchemy-trino`                  | `pip install -e .[trino]`        |
+| Files        | CSV, TSV (incl. `.csv.gz`)    | DuckDB                              | included                         |
+|              | Parquet                       | DuckDB                              | included                         |
+|              | JSON / NDJSON                 | DuckDB                              | included                         |
+|              | Arrow / Feather               | `pyarrow`                           | `pip install -e .[cloud-files]`  |
+|              | Excel (`.xlsx`, `.xls`)       | `openpyxl`                          | included                         |
+|              | S3 / GCS / Azure / HTTPS URIs | DuckDB `httpfs`                     | included                         |
+| Embedded     | DuckDB (`.duckdb` files)      | DuckDB                              | included                         |
+| Document     | MongoDB                       | `pymongo`                           | `pip install -e .[mongo]`        |
+
+Install everything in one shot with `pip install -e .[all-sources]`.
+**MongoDB note:** Mongo queries are JSON pipelines, not SQL — the
+editor still works, but you write a body like
+`{"collection":"orders","pipeline":[{"$match":{"status":"paid"}}]}`.
+
 ## Workspace UX
 
 - **Three collapsible panes** stacked in the centre — SQL/Python editor on

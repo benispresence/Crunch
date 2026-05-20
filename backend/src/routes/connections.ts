@@ -12,7 +12,11 @@ connectionsRouter.use(requireAuth);
 
 const upsertSchema = z.object({
   name: z.string().min(1),
-  type: z.enum(["postgres", "mysql", "sqlite", "sqlserver", "file"]),
+  type: z.enum([
+    "postgres", "mysql", "mariadb", "sqlite", "sqlserver", "file",
+    "duckdb", "snowflake", "bigquery", "redshift", "databricks",
+    "clickhouse", "trino", "presto", "mongodb",
+  ]),
   config: z.record(z.unknown()),
 });
 
