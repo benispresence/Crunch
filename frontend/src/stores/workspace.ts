@@ -82,6 +82,35 @@ export interface SavedDashboard {
   updated_at: number;
 }
 
+export type PipelineLoadMode = "replace" | "append" | "merge" | "incremental" | "streaming";
+export type PipelineSourceType = "rest_api" | "sql" | "file" | "kafka" | "custom";
+export type PipelineCodeMode = "template" | "custom";
+
+export interface SavedPipeline {
+  id: number;
+  folder_id: number | null;
+  name: string;
+  description: string | null;
+  source_type: PipelineSourceType;
+  source_config: Record<string, unknown>;
+  destination_connection_id: number | null;
+  destination_dataset: string | null;
+  load_mode: PipelineLoadMode;
+  primary_key: string | null;
+  cursor_field: string | null;
+  python_code: string;
+  code_mode: PipelineCodeMode;
+  schedule: string | null;
+  schedule_enabled: boolean;
+  stream_max_seconds: number;
+  stream_max_messages: number;
+  last_run_id: number | null;
+  last_run_status: string | null;
+  last_run_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface SqlResult {
   success: boolean;
   columns: string[];
@@ -102,6 +131,7 @@ export const useWorkspaceStore = defineStore("workspace", {
     savedQueries: [] as SavedQuery[],
     visualizations: [] as SavedVisualization[],
     dashboards: [] as SavedDashboard[],
+    pipelines: [] as SavedPipeline[],
     folders: [] as Folder[],
     chartTypes: [] as ChartTypeMeta[],
     activeConnectionId: null as number | null,
@@ -144,6 +174,9 @@ export const useWorkspaceStore = defineStore("workspace", {
     },
     async loadDashboards() {
       this.dashboards = await api.get<SavedDashboard[]>("/dashboards");
+    },
+    async loadPipelines() {
+      this.pipelines = await api.get<SavedPipeline[]>("/pipelines");
     },
     async createFolder(name: string, parentId: number | null = null) {
       const r = await api.post<{ id: number }>("/folders", { name, parent_id: parentId });

@@ -41,6 +41,11 @@ from nicemeta.connections.adapters import (  # noqa: E402
 )
 from nicemeta.connections.base import ConnectionAdapter, ConnectionInfo  # noqa: E402
 from nicemeta.connections.file_scanner import scan_folder  # noqa: E402
+from nicemeta.pipelines import (  # noqa: E402
+    PipelineContext,
+    execute_pipeline,
+    generate_template,
+)
 from nicemeta.query.template import (  # noqa: E402
     ParameterSpec,
     TemplateError,
@@ -218,6 +223,28 @@ class ExecuteSqlResponse(BaseModel):
     row_count: int = 0
     execution_time_ms: float = 0
     error: str | None = None
+
+
+class PipelineTemplateRequest(BaseModel):
+    token: str
+    spec: dict[str, Any]
+
+
+class PipelineExecuteRequest(BaseModel):
+    token: str
+    code: str
+    destination: ConnectionConfig
+    stream_max_seconds: int = 60
+    stream_max_messages: int = 10000
+    timeout_seconds: int = 1800
+
+
+class PipelineExecuteResponse(BaseModel):
+    success: bool
+    rows_loaded: int = 0
+    log: str = ""
+    error: str | None = None
+    duration_ms: float = 0.0
 
 
 class ValidateSqlRequest(BaseModel):
@@ -543,6 +570,46 @@ async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
         spec=spec,
         stdout=result.html or "",
         error=None,
+    )
+
+
+@app.post("/pipelines/template")
+async def pipeline_template(req: PipelineTemplateRequest) -> dict[str, str]:
+    """Generate a starter Python script from a structured spec.
+
+    The Express side calls this when the pipeline is in
+    ``code_mode='template'`` and any of the inputs that feed the
+    template change (source type, load mode, destination, ...).
+    """
+    _check_token(req.token)
+    code = generate_template(req.spec)
+    return {"code": code}
+
+
+@app.post("/pipelines/execute", response_model=PipelineExecuteResponse)
+async def pipeline_execute(req: PipelineExecuteRequest) -> PipelineExecuteResponse:
+    """Run a user-authored pipeline script in the sandbox. Returns
+    rows-loaded + captured stdout/stderr + duration."""
+    _check_token(req.token)
+    ctx = PipelineContext(
+        destination_type=(req.destination.type or "").lower(),
+        destination_config=req.destination.model_dump(),
+        stream_max_seconds=req.stream_max_seconds,
+        stream_max_messages=req.stream_max_messages,
+    )
+    # CPU-bound script; off-load to a thread so the asyncio loop stays
+    # responsive and the FastAPI worker can serve health checks.
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: execute_pipeline(req.code, ctx, timeout_seconds=req.timeout_seconds),
+    )
+    return PipelineExecuteResponse(
+        success=result.success,
+        rows_loaded=result.rows_loaded,
+        log=result.log,
+        error=result.error,
+        duration_ms=result.duration_ms,
     )
 
 

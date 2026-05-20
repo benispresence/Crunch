@@ -95,6 +95,7 @@ async function submitChangePassword() {
       <nav class="topbar__nav">
         <RouterLink to="/workspace" class="topbar__link">Workspace</RouterLink>
         <RouterLink to="/dashboards" class="topbar__link">Dashboards</RouterLink>
+        <RouterLink to="/pipelines" class="topbar__link">Pipelines</RouterLink>
         <RouterLink v-if="auth.user?.role === 'admin'" to="/admin" class="topbar__link">
           Admin
         </RouterLink>

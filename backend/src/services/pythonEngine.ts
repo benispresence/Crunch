@@ -120,6 +120,24 @@ export const pythonEngine = {
       error?: string;
     }>({ path: "/files/scan", body: params }),
 
+  generatePipelineTemplate: (spec: Record<string, unknown>) =>
+    call<{ code: string }>({ path: "/pipelines/template", body: { spec } }),
+
+  runPipeline: (params: {
+    code: string;
+    destination: Record<string, unknown>;
+    stream_max_seconds?: number;
+    stream_max_messages?: number;
+    timeout_seconds?: number;
+  }) =>
+    call<{
+      success: boolean;
+      rows_loaded: number;
+      log: string;
+      error?: string;
+      duration_ms: number;
+    }>({ path: "/pipelines/execute", body: params }),
+
   health: async () => {
     const { statusCode, body } = await request(`${config.pythonEngineUrl}/health`);
     return { ok: statusCode === 200, body: await body.text() };

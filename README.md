@@ -318,6 +318,46 @@ to the top bar. The gear icon on each chart opens a small dialog that
 maps each filter to a variable in that chart's underlying query. One
 filter can drive many charts at once.
 
+## Data pipelines
+
+Pipelines move data into your destinations on a schedule. Each
+pipeline is a Python script (auto-generated from a form, fully
+custom, or anywhere in between) that runs in the python engine's
+sandbox. The default template uses [dlt](https://dlthub.com) so the
+load semantics are declarative across postgres / snowflake /
+bigquery / redshift / duckdb / databricks / clickhouse / mssql.
+
+**Five load modes**:
+
+| Mode          | What it does                                        | Needs            |
+| ------------- | --------------------------------------------------- | ---------------- |
+| `replace`     | Truncate the destination table, then re-ingest.     | —                |
+| `append`      | Add rows on each run.                               | —                |
+| `merge`       | Upsert by key — classic delta.                      | `primary_key`    |
+| `incremental` | Only new rows since the last cursor value.          | `cursor_field`   |
+| `streaming`   | Bounded consumer (Kafka, etc.) — stop after N sec/msg. | source-dependent |
+
+**Sources**: REST API, SQL replication, files (any of the formats the
+File connection reads), Kafka, or fully custom. Pick one in the form
+and the engine generates a starter script you can edit; flip
+**code mode → custom** when you want to freeze your edits.
+
+**Scheduling**: 5-field cron expression per pipeline. A 30-second
+ticker inside the Express backend launches due pipelines against the
+python engine. Admin → Pipelines surfaces the scheduler's last tick,
+in-flight count, and 24h success/failure tallies, plus a knob for
+max concurrent runs.
+
+**Run history**: each invocation persists status, row counts, and
+captured stdout/stderr to `pipeline_runs`. The detail view shows the
+log of the most recent run inline so a failed cron can be debugged
+without SSH.
+
+**Agent integration**: `propose_new_pipeline`, `propose_pipeline_edit`,
+`propose_run_pipeline`, `propose_delete_pipeline`, and a `to=pipeline`
+mode on `propose_navigate`. Same accept/reject UX as queries and
+dashboards.
+
 ## Authentication
 
 Crunch ships with email + password out of the box. **Admin →

@@ -227,6 +227,67 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
   CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+
+  -- Data pipelines: a Python script + source/destination/load config
+  -- per row, mirroring the visualization "code or template" pattern.
+  -- The denormalised last-run fields keep the list view fast.
+  CREATE TABLE IF NOT EXISTS pipelines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    -- Source: rest_api | sql | file | kafka | custom
+    source_type TEXT NOT NULL DEFAULT 'custom',
+    source_config_json TEXT NOT NULL DEFAULT '{}',
+    -- Destination is one of the user's existing data connections.
+    destination_connection_id INTEGER REFERENCES connections(id) ON DELETE SET NULL,
+    destination_dataset TEXT,
+    -- Load mode: replace | append | merge | incremental | streaming.
+    load_mode TEXT NOT NULL DEFAULT 'replace',
+    primary_key TEXT,          -- comma-separated for merge / incremental
+    cursor_field TEXT,         -- field name for incremental loads
+    -- The python body. code_mode = 'template' re-derives it from the
+    -- form fields on save; 'custom' freezes user edits.
+    python_code TEXT NOT NULL DEFAULT '',
+    code_mode TEXT NOT NULL DEFAULT 'template',
+    -- Schedule: 5-field cron string. Evaluated by the in-process
+    -- ticker every 30s. schedule_enabled is the master switch.
+    schedule TEXT,
+    schedule_enabled INTEGER NOT NULL DEFAULT 0,
+    -- Streaming bounds (only meaningful when load_mode='streaming'):
+    -- stop after this many seconds OR messages, whichever first.
+    -- Lets the same scheduler run a streaming pipeline as a
+    -- bounded micro-batch.
+    stream_max_seconds INTEGER NOT NULL DEFAULT 60,
+    stream_max_messages INTEGER NOT NULL DEFAULT 10000,
+    last_run_id INTEGER,
+    last_run_status TEXT,
+    last_run_at INTEGER,
+    last_scheduled_check INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_pipelines_user ON pipelines(user_id);
+  CREATE INDEX IF NOT EXISTS idx_pipelines_schedule
+    ON pipelines(schedule_enabled, schedule);
+
+  -- One row per pipeline invocation. log captures stdout/stderr
+  -- so the user can debug a failed schedule without SSH'ing into the
+  -- box. We cap log size on insert to keep the DB tidy.
+  CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline_id INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,            -- pending | running | success | failed | cancelled
+    started_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    finished_at INTEGER,
+    rows_loaded INTEGER,
+    log TEXT NOT NULL DEFAULT '',
+    error_message TEXT,
+    triggered_by TEXT NOT NULL DEFAULT 'manual'  -- manual | schedule | agent
+  );
+  CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline
+    ON pipeline_runs(pipeline_id, id DESC);
 `);
 
 // Track the external identity behind an SSO-provisioned user so we

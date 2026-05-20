@@ -13,10 +13,12 @@ import { connectionsRouter } from "./routes/connections.js";
 import { dashboardsRouter } from "./routes/dashboards.js";
 import { foldersRouter } from "./routes/folders.js";
 import { gitRouter } from "./routes/git.js";
+import { pipelinesRouter } from "./routes/pipelines.js";
 import { queriesRouter } from "./routes/queries.js";
 import { visualizationsRouter } from "./routes/visualizations.js";
 import { vizRouter } from "./routes/viz.js";
 import { seedDefaultAdmin } from "./services/auth.js";
+import { startScheduler } from "./services/pipelines.js";
 import { pythonEngine } from "./services/pythonEngine.js";
 
 const app = express();
@@ -56,6 +58,7 @@ app.use("/api/queries", queriesRouter);
 app.use("/api/viz", vizRouter);
 app.use("/api/visualizations", visualizationsRouter);
 app.use("/api/dashboards", dashboardsRouter);
+app.use("/api/pipelines", pipelinesRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/chat", chatRouter);
 app.use("/api/git", gitRouter);
@@ -93,4 +96,8 @@ if (seed.created && seed.password) {
 
 app.listen(config.port, () => {
   console.log(`crunch backend listening on :${config.port}`);
+  // Pipeline cron-tick starts with the server so any due schedules
+  // fire on the first 30s boundary after startup. Idempotent across
+  // restarts.
+  startScheduler();
 });

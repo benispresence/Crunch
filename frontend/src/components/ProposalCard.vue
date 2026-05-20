@@ -50,9 +50,16 @@ const title = computed(() => {
     case "dashboard_filter_change": return `Edit filters on "${x.dashboard_name}"`;
     case "widget_mapping": return `Rewire filters → "${x.widget_name}"`;
     case "navigate":
-      return x.to === "workspace"
-        ? (x.query_id != null ? `Open query #${x.query_id} in workspace` : "Switch to workspace")
-        : `Open dashboard #${x.dashboard_id ?? "?"}`;
+      if (x.to === "workspace") {
+        return x.query_id != null ? `Open query #${x.query_id} in workspace` : "Switch to workspace";
+      }
+      if (x.to === "pipeline") return `Open pipeline #${x.pipeline_id ?? "?"}`;
+      if (x.to === "pipelines") return "Switch to pipelines";
+      return `Open dashboard #${x.dashboard_id ?? "?"}`;
+    case "new_pipeline": return `New pipeline: "${x.pipeline.name}"`;
+    case "pipeline_edit": return `Edit pipeline "${x.pipeline_name}"`;
+    case "run_pipeline": return `Run pipeline "${x.pipeline_name}" now`;
+    case "delete_pipeline": return `Delete pipeline "${x.pipeline_name}"`;
   }
 });
 
@@ -221,10 +228,62 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
       <div class="prop__newq">
         <div class="prop__newq-row">
           <strong>destination</strong>
-          {{ p.to === "workspace"
-            ? (p.query_id != null ? `Workspace — open query #${p.query_id}` : "Workspace")
-            : `Dashboard #${p.dashboard_id ?? "?"}` }}
+          <span v-if="p.to === 'workspace'">{{ p.query_id != null ? `Workspace — open query #${p.query_id}` : "Workspace" }}</span>
+          <span v-else-if="p.to === 'dashboard'">Dashboard #{{ p.dashboard_id ?? "?" }}</span>
+          <span v-else-if="p.to === 'pipeline'">Pipeline #{{ p.pipeline_id ?? "?" }}</span>
+          <span v-else-if="p.to === 'pipelines'">Pipelines list</span>
         </div>
+      </div>
+    </template>
+
+    <!-- new_pipeline: structured preview + a short snippet of the script -->
+    <template v-if="p.kind === 'new_pipeline'">
+      <div class="prop__newq">
+        <div class="prop__newq-row"><strong>name</strong> {{ p.pipeline.name }}</div>
+        <div class="prop__newq-row"><strong>source</strong> {{ p.pipeline.source_type }}</div>
+        <div class="prop__newq-row"><strong>load mode</strong> {{ p.pipeline.load_mode }}</div>
+        <div v-if="p.pipeline.destination_connection_id != null" class="prop__newq-row">
+          <strong>destination</strong> connection #{{ p.pipeline.destination_connection_id }}
+          <span v-if="p.pipeline.destination_dataset">/{{ p.pipeline.destination_dataset }}</span>
+        </div>
+        <div v-if="p.pipeline.schedule" class="prop__newq-row">
+          <strong>schedule</strong>
+          <code>{{ p.pipeline.schedule }}</code>
+          ({{ p.pipeline.schedule_enabled ? "enabled" : "paused" }})
+        </div>
+        <div v-if="p.pipeline.python_code" class="prop__newq-row">
+          <strong>script</strong>
+          <code>{{ p.pipeline.python_code.split("\n").length }} lines</code>
+        </div>
+      </div>
+    </template>
+
+    <template v-if="p.kind === 'pipeline_edit'">
+      <div class="prop__chart">
+        <div
+          v-for="(value, key) in (p.after as Record<string, unknown>)"
+          :key="key"
+          class="prop__chart-field"
+        >
+          <div class="prop__chart-name">{{ key }}</div>
+          <pre class="prop__chart-side prop__chart-side--del">{{ JSON.stringify((p.before as Record<string, unknown>)[key] ?? null, null, 2) }}</pre>
+          <pre class="prop__chart-side prop__chart-side--add">{{ JSON.stringify(value, null, 2) }}</pre>
+        </div>
+      </div>
+    </template>
+
+    <template v-if="p.kind === 'run_pipeline'">
+      <div class="prop__newq">
+        <div class="prop__newq-row">
+          Triggers an immediate run of <strong>"{{ p.pipeline_name }}"</strong> (#{{ p.pipeline_id }}).
+          The user will see the run appear in the history tab when it finishes.
+        </div>
+      </div>
+    </template>
+
+    <template v-if="p.kind === 'delete_pipeline'">
+      <div class="prop__delete">
+        <p>Will delete pipeline <strong>"{{ p.pipeline_name }}"</strong> (#{{ p.pipeline_id }}) and all its run history.</p>
       </div>
     </template>
 
@@ -236,15 +295,17 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
       </button>
       <button
         class="btn btn-primary btn-sm"
-        :class="{ 'prop__danger': p.kind === 'delete_query' || p.kind === 'remove_widget' }"
+        :class="{ 'prop__danger': p.kind === 'delete_query' || p.kind === 'remove_widget' || p.kind === 'delete_pipeline' }"
         @click="accept"
       >
         {{
-          p.kind === "delete_query" || p.kind === "remove_widget"
+          p.kind === "delete_query" || p.kind === "remove_widget" || p.kind === "delete_pipeline"
             ? "Confirm"
             : p.kind === "navigate"
               ? "Open"
-              : "Accept"
+              : p.kind === "run_pipeline"
+                ? "Run now"
+                : "Accept"
         }}
       </button>
     </footer>

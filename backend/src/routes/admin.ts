@@ -15,6 +15,10 @@ import {
   upsertProvider,
   type ProviderKind,
 } from "../services/authProviders.js";
+import {
+  getSchedulerStatus,
+  setSchedulerConcurrency,
+} from "../services/pipelines.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 import {
   KNOWN_MODELS,
@@ -482,4 +486,40 @@ adminRouter.delete("/api-keys/:id", (req, res) => {
     return;
   }
   res.json({ ok: true });
+});
+
+// ---------- Pipeline scheduler --------------------------------------
+// The scheduler is process-local: one Express instance, one ticker.
+// The admin gets visibility into what's running, plus a knob for max
+// concurrent runs (e.g. throttle on a small box).
+
+adminRouter.get("/pipelines/scheduler", (_req, res) => {
+  const status = getSchedulerStatus();
+  // Pair with quick aggregate counts so the admin sees the load
+  // picture at a glance.
+  const counts = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM pipelines) AS total,
+         (SELECT COUNT(*) FROM pipelines WHERE schedule_enabled = 1 AND schedule IS NOT NULL AND schedule != '') AS scheduled,
+         (SELECT COUNT(*) FROM pipeline_runs WHERE status = 'success' AND started_at >= strftime('%s','now') - 86400) AS success_24h,
+         (SELECT COUNT(*) FROM pipeline_runs WHERE status = 'failed' AND started_at >= strftime('%s','now') - 86400) AS failed_24h`,
+    )
+    .get() as {
+      total: number; scheduled: number;
+      success_24h: number; failed_24h: number;
+    };
+  res.json({ ...status, ...counts });
+});
+
+adminRouter.put("/pipelines/scheduler", (req, res) => {
+  const parsed = z
+    .object({ max_concurrent: z.number().int().min(1).max(16) })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  setSchedulerConcurrency(parsed.data.max_concurrent);
+  res.json(getSchedulerStatus());
 });

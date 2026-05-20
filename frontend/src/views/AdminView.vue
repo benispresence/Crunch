@@ -2,6 +2,7 @@
 import { onMounted, ref } from "vue";
 import { api } from "@/api/client";
 import AuthSettingsPanel from "@/components/AuthSettingsPanel.vue";
+import PipelineSettingsPanel from "@/components/PipelineSettingsPanel.vue";
 import { useAuthStore } from "@/stores/auth";
 
 interface Pkg {
@@ -24,7 +25,7 @@ interface AdminUser {
 }
 
 const auth = useAuthStore();
-const tab = ref<"settings" | "packages" | "users" | "auth" | "git">("settings");
+const tab = ref<"settings" | "packages" | "users" | "auth" | "pipelines" | "git">("settings");
 
 interface ModelOption { id: string; label: string }
 interface SettingsState {
@@ -395,6 +396,13 @@ async function deleteUser(u: AdminUser) {
       </button>
       <button
         class="admin__tab"
+        :class="{ 'admin__tab--active': tab === 'pipelines' }"
+        @click="tab = 'pipelines'"
+      >
+        Pipelines
+      </button>
+      <button
+        class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'git' }"
         @click="tab = 'git'"
       >
@@ -656,6 +664,11 @@ async function deleteUser(u: AdminUser) {
     <!-- Authentication: SSO providers, API keys, email allowlist -->
     <section v-if="tab === 'auth'" class="admin__section">
       <AuthSettingsPanel />
+    </section>
+
+    <!-- Pipelines: scheduler health + throttle -->
+    <section v-if="tab === 'pipelines'" class="admin__section">
+      <PipelineSettingsPanel />
     </section>
 
     <!-- Git -->

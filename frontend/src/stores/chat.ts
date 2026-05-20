@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { api } from "@/api/client";
 import { router } from "@/router";
 import { useDashboardsStore } from "./dashboards";
+import { usePipelinesStore } from "./pipelines";
 import { useWorkspaceStore } from "./workspace";
 
 export interface ToolCall {
@@ -121,9 +122,49 @@ export type Proposal =
     }
   | {
       kind: "navigate";
-      to: "workspace" | "dashboard";
+      to: "workspace" | "dashboard" | "pipeline" | "pipelines";
       query_id?: number;
       dashboard_id?: number;
+      pipeline_id?: number;
+      rationale?: string;
+    }
+  | {
+      kind: "new_pipeline";
+      rationale?: string;
+      pipeline: {
+        name: string;
+        description: string | null;
+        source_type: string;
+        source_config: Record<string, unknown>;
+        destination_connection_id: number | null;
+        destination_dataset: string | null;
+        load_mode: string;
+        primary_key: string | null;
+        cursor_field: string | null;
+        schedule: string | null;
+        schedule_enabled: boolean;
+        python_code: string;
+        code_mode: string;
+      };
+    }
+  | {
+      kind: "pipeline_edit";
+      pipeline_id: number;
+      pipeline_name: string;
+      rationale?: string;
+      before: Record<string, unknown>;
+      after: Record<string, unknown>;
+    }
+  | {
+      kind: "run_pipeline";
+      pipeline_id: number;
+      pipeline_name: string;
+      rationale?: string;
+    }
+  | {
+      kind: "delete_pipeline";
+      pipeline_id: number;
+      pipeline_name: string;
       rationale?: string;
     };
 
@@ -464,7 +505,24 @@ export const useChatStore = defineStore("chat", {
           } else if (p.to === "dashboard" && p.dashboard_id != null) {
             await router.push({ name: "dashboard-detail", params: { id: p.dashboard_id } });
             rec.resultId = p.dashboard_id;
+          } else if (p.to === "pipeline" && p.pipeline_id != null) {
+            await router.push({ name: "pipeline-detail", params: { id: p.pipeline_id } });
+            rec.resultId = p.pipeline_id;
+          } else if (p.to === "pipelines") {
+            await router.push({ name: "pipelines" });
           }
+        } else if (p.kind === "new_pipeline") {
+          const created = await api.post<{ id: number }>("/pipelines", p.pipeline);
+          rec.resultId = created.id;
+        } else if (p.kind === "pipeline_edit") {
+          await api.put(`/pipelines/${p.pipeline_id}`, p.after);
+          rec.resultId = p.pipeline_id;
+        } else if (p.kind === "run_pipeline") {
+          await api.post(`/pipelines/${p.pipeline_id}/run`, {});
+          rec.resultId = p.pipeline_id;
+        } else if (p.kind === "delete_pipeline") {
+          await api.del(`/pipelines/${p.pipeline_id}`);
+          rec.resultId = p.pipeline_id;
         }
         rec.status = auto ? "auto-accepted" : "accepted";
 
@@ -488,6 +546,22 @@ export const useChatStore = defineStore("chat", {
           // workspace page.
           if (dashboards.current && dashboards.current.id === rec.resultId) {
             await dashboards.open(rec.resultId);
+          }
+        }
+        if (
+          rec.proposal.kind === "new_pipeline"
+          || rec.proposal.kind === "pipeline_edit"
+          || rec.proposal.kind === "run_pipeline"
+          || rec.proposal.kind === "delete_pipeline"
+        ) {
+          const pipelines = usePipelinesStore();
+          await pipelines.load();
+          if (
+            pipelines.current
+            && rec.resultId != null
+            && pipelines.current.id === rec.resultId
+          ) {
+            await pipelines.open(rec.resultId);
           }
         }
 
