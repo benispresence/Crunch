@@ -75,6 +75,22 @@ def _looks_remote(uri: str) -> bool:
     return uri.lower().startswith(REMOTE_SCHEMES)
 
 
+def _split_sheet_fragment(src: str) -> tuple[str, str | None]:
+    """Split an Excel-with-sheet URI like ``book.xlsx#Sheet1`` into
+    ``("book.xlsx", "Sheet1")``. Returns the original src + ``None``
+    for paths without a fragment, and leaves URL fragments
+    (``https://…#section``) on remote URIs alone since cloud Excel
+    selection isn't supported."""
+    if _looks_remote(src):
+        return src, None
+    if "#" not in src:
+        return src, None
+    base, _, sheet = src.rpartition("#")
+    # rpartition returns ("", "", src) when "#" is missing — but we
+    # tested for "#" already, so base is non-empty here.
+    return base, sheet or None
+
+
 def _extension_of(uri: str) -> str:
     """Return the recognised leaf extension, stripping a single trailing
     compression suffix. ``foo.csv.gz`` → ``.csv``; ``data.parquet`` →
@@ -137,10 +153,13 @@ class FileAdapter(ConnectionAdapter):
                     continue
                 if _looks_remote(uri):
                     sources.append(uri)
-                else:
-                    p = Path(uri)
-                    if p.exists() and _extension_of(uri) in ALL_EXTENSIONS:
-                        sources.append(str(p))
+                    continue
+                # Strip an optional ``#SheetName`` fragment before
+                # existence-checking — the on-disk file is the bare path.
+                base, _ = _split_sheet_fragment(uri)
+                p = Path(base)
+                if p.exists() and _extension_of(base) in ALL_EXTENSIONS:
+                    sources.append(uri)  # keep the fragment so adapter sees it
 
         # `database` itself may be a cloud URI pointing at a single
         # object or a bucket-prefix glob.
@@ -206,17 +225,22 @@ class FileAdapter(ConnectionAdapter):
                 logger.warning("httpfs setup failed: %s", e)
 
         for src in sources:
-            base_name = src.rsplit("/", 1)[-1].split("?", 1)[0]
-            table_name = sanitize_table_name(base_name)
-            base = table_name
-            counter = 1
-            while table_name in self._registered_tables:
-                table_name = f"{base}_{counter}"
-                counter += 1
+            # Excel-with-fragment syntax: `/path/to/book.xlsx#SheetName`
+            # registers one named sheet. Without a fragment we register
+            # every sheet under its own table name. Cloud URIs use ``?``
+            # for query strings, so the fragment split is safe.
+            base_src, sheet_hint = _split_sheet_fragment(src)
+            ext = _extension_of(base_src)
+
+            if ext in EXCEL_EXTENSIONS:
+                self._register_excel(base_src, sheet_hint)
+                continue
+
+            base_name = base_src.rsplit("/", 1)[-1].split("?", 1)[0]
+            table_name = self._fresh_table_name(sanitize_table_name(base_name))
 
             try:
-                ext = _extension_of(src)
-                escaped = src.replace("'", "''")
+                escaped = base_src.replace("'", "''")
 
                 if ext in CSV_EXTENSIONS:
                     # read_csv_auto handles plain + gzip + zstd transparently.
@@ -244,23 +268,13 @@ class FileAdapter(ConnectionAdapter):
                     # practice; users can convert to parquet.
                     import pyarrow.feather as feather  # type: ignore
 
-                    if _looks_remote(src):
+                    if _looks_remote(base_src):
                         raise ValueError(
                             "Remote Arrow/Feather files aren't supported — "
                             "convert to Parquet for cloud reads."
                         )
-                    tbl = feather.read_table(src)
+                    tbl = feather.read_table(base_src)
                     self._duckdb_conn.register(table_name, tbl)
-                elif ext in EXCEL_EXTENSIONS:
-                    import pandas as pd
-
-                    if _looks_remote(src):
-                        # pandas can read https:// directly; s3/gs need
-                        # fsspec/gcsfs and are out of scope here.
-                        df = pd.read_excel(src, engine="openpyxl")
-                    else:
-                        df = pd.read_excel(src, engine="openpyxl")
-                    self._duckdb_conn.register(table_name, df)
                 else:
                     logger.warning("Skipping unknown extension %s for %s", ext, src)
                     continue
@@ -272,6 +286,66 @@ class FileAdapter(ConnectionAdapter):
                 logger.warning("Failed to register source '%s': %s", src, e)
 
         return self._duckdb_conn
+
+    def _fresh_table_name(self, suggested: str) -> str:
+        """Return a table name that doesn't collide with an existing
+        registration. Appends ``_1``, ``_2`` … as needed."""
+        table_name = suggested
+        base = table_name
+        counter = 1
+        while table_name in self._registered_tables:
+            table_name = f"{base}_{counter}"
+            counter += 1
+        return table_name
+
+    def _register_excel(self, src: str, sheet_hint: str | None) -> None:
+        """Load one Excel workbook into DuckDB. With ``sheet_hint`` only
+        that sheet is registered (using a slug of the sheet name as the
+        table suffix); without it every sheet gets its own table so a
+        multi-tab workbook isn't silently truncated to sheet 0."""
+        try:
+            import pandas as pd
+        except ImportError as e:
+            logger.warning("pandas missing — cannot read Excel: %s", e)
+            return
+
+        try:
+            xls = pd.ExcelFile(src, engine="openpyxl")
+        except Exception as e:
+            logger.warning("Could not open Excel file '%s': %s", src, e)
+            return
+
+        sheets_to_load = [sheet_hint] if sheet_hint else list(xls.sheet_names)
+        base_stem = sanitize_table_name(src.rsplit("/", 1)[-1].split("?", 1)[0])
+
+        for sheet in sheets_to_load:
+            try:
+                df = xls.parse(sheet_name=sheet)
+            except Exception as e:
+                logger.warning(
+                    "Could not parse sheet '%s' in '%s': %s", sheet, src, e,
+                )
+                continue
+            # Single-sheet load (either a one-tab workbook or no hint
+            # collapsed to a single sheet): use the workbook's stem so
+            # the table name stays short. Anything that *could* collide
+            # with another sheet from the same workbook gets the sheet
+            # name folded in, so "sheets_sales" / "sheets_refunds" beats
+            # "sheets" / "sheets_1".
+            if len(sheets_to_load) == 1 and sheet_hint is None:
+                suggested = base_stem
+            else:
+                sheet_slug = sanitize_table_name(str(sheet))
+                suggested = f"{base_stem}_{sheet_slug}" if sheet_slug else base_stem
+            table_name = self._fresh_table_name(suggested)
+            self._duckdb_conn.register(table_name, df)
+            self._registered_tables[table_name] = (
+                f"{src}#{sheet}" if sheet else src
+            )
+            logger.info(
+                "Registered sheet '%s' of '%s' as table '%s'",
+                sheet, src, table_name,
+            )
 
     async def test_connection(self) -> tuple[bool, str]:
         """Test that the configured sources can be loaded."""

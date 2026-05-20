@@ -40,6 +40,7 @@ from nicemeta.connections.adapters import (  # noqa: E402
     TrinoAdapter,
 )
 from nicemeta.connections.base import ConnectionAdapter, ConnectionInfo  # noqa: E402
+from nicemeta.connections.file_scanner import scan_folder  # noqa: E402
 from nicemeta.query.template import (  # noqa: E402
     ParameterSpec,
     TemplateError,
@@ -187,6 +188,29 @@ class ExecuteSqlRequest(BaseModel):
     parameter_values: dict[str, Any] = Field(default_factory=dict)
 
 
+class ScanFolderRequest(BaseModel):
+    token: str
+    path: str
+    recursive: bool = True
+    max_files: int = 5000
+
+
+class ScannedFileModel(BaseModel):
+    uri: str
+    name: str
+    format: str
+    size_bytes: int
+    relative_path: str
+    sheet: str | None = None
+
+
+class ScanFolderResponse(BaseModel):
+    root: str
+    files: list[ScannedFileModel] = Field(default_factory=list)
+    skipped: int = 0
+    error: str | None = None
+
+
 class ExecuteSqlResponse(BaseModel):
     success: bool
     columns: list[str] = []
@@ -270,6 +294,33 @@ async def validate_sql(req: ValidateSqlRequest) -> dict[str, Any]:
         "valid": result.is_valid,
         "error": "; ".join(result.errors) if result.errors else None,
     }
+
+
+@app.post("/files/scan", response_model=ScanFolderResponse)
+async def scan(req: ScanFolderRequest) -> ScanFolderResponse:
+    """Walk a folder and return every supported data file underneath,
+    one entry per file (and one per sheet for Excel workbooks). The UI
+    uses this to populate a multi-select dialog so the user can pick
+    which files become tables on a File connection."""
+    _check_token(req.token)
+    result = scan_folder(
+        req.path,
+        recursive=req.recursive,
+        max_files=req.max_files,
+    )
+    return ScanFolderResponse(
+        root=result.root,
+        files=[
+            ScannedFileModel(
+                uri=f.uri, name=f.name, format=f.format,
+                size_bytes=f.size_bytes, relative_path=f.relative_path,
+                sheet=f.sheet,
+            )
+            for f in result.files
+        ],
+        skipped=result.skipped,
+        error=result.error,
+    )
 
 
 @app.post("/sql/execute", response_model=ExecuteSqlResponse)

@@ -267,6 +267,15 @@ Install everything in one shot with `pip install -e .[all-sources]`.
 editor still works, but you write a body like
 `{"collection":"orders","pipeline":[{"$match":{"status":"paid"}}]}`.
 
+**File format detection.** When you pick the **File** connection
+type, formats are inferred from each file's extension (CSV, Parquet,
+JSON, Arrow, Excel — including compressed `.csv.gz`) so there's no
+manual selector. Hit **Browse folder…** to walk a directory
+recursively: the dialog lists every supported file with a format
+chip + size, expands Excel workbooks into one row per sheet (each
+becomes its own table), and offers select-all / select-none / pick
+by format. Excel sheets become tables named `<workbook>_<sheet>`.
+
 ## Workspace UX
 
 - **Three collapsible panes** stacked in the centre — SQL/Python editor on

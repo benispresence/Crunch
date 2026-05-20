@@ -6,6 +6,7 @@ import {
   encryptConnectionConfig,
   maskConnectionConfig,
 } from "../services/crypto.js";
+import { pythonEngine } from "../services/pythonEngine.js";
 
 export const connectionsRouter = Router();
 connectionsRouter.use(requireAuth);
@@ -53,4 +54,31 @@ connectionsRouter.post("/", (req, res) => {
 connectionsRouter.delete("/:id", (req, res) => {
   db.prepare("DELETE FROM connections WHERE id = ? AND user_id = ?").run(req.params.id, req.user!.sub);
   res.json({ ok: true });
+});
+
+/**
+ * Walk a folder on disk and list every supported data file
+ * underneath. Used by the "Browse folder" picker on the File
+ * connection form — the user picks which entries to add. We cap the
+ * recursion at a generous bound so the engine response stays a
+ * reasonable size.
+ */
+connectionsRouter.post("/scan-folder", async (req, res) => {
+  const parsed = z
+    .object({
+      path: z.string().min(1).max(4096),
+      recursive: z.boolean().optional(),
+      max_files: z.number().int().positive().max(20000).optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const result = await pythonEngine.scanFolder(parsed.data);
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
+  }
 });

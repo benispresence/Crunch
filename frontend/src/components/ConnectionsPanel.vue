@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { api } from "@/api/client";
 import { useWorkspaceStore } from "@/stores/workspace";
+import FolderScanDialog from "./FolderScanDialog.vue";
 import FolderTree from "./FolderTree.vue";
 
 type ConnectionType =
@@ -155,6 +156,19 @@ const adding = ref(false);
 const submitting = ref(false);
 const error = ref("");
 const draft = ref(blankDraft());
+const showFolderScan = ref(false);
+
+function onFolderPicked(uris: string[]) {
+  if (uris.length === 0) return;
+  // Append to whatever the user already pasted; dedup so re-running a
+  // scan doesn't double-list files.
+  const existing = (draft.value.extras.files ?? "")
+    .split(/\r?\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const merged = Array.from(new Set([...existing, ...uris]));
+  draft.value.extras.files = merged.join("\n");
+}
 
 const isFileLike = computed(() => FILE_LIKE.includes(draft.value.type));
 const hasHostPort = computed(() => HAS_HOST_PORT.includes(draft.value.type));
@@ -365,7 +379,18 @@ async function remove(id: number) {
         <!-- Type-specific extras (warehouse account/dataset, S3 creds, etc.) -->
         <template v-for="f in extrasFields" :key="f.key">
           <label class="conn-form__field">
-            <span>{{ f.label }}</span>
+            <span class="conn-form__field-head">
+              {{ f.label }}
+              <button
+                v-if="f.key === 'files'"
+                type="button"
+                class="btn btn-ghost btn-sm conn-form__browse"
+                title="Walk a folder and pick which files to include"
+                @click="showFolderScan = true"
+              >
+                Browse folder…
+              </button>
+            </span>
             <textarea
               v-if="f.key === 'files'"
               v-model="draft.extras[f.key]"
@@ -383,6 +408,11 @@ async function remove(id: number) {
             <small v-if="f.hint" class="conn-form__hint">{{ f.hint }}</small>
           </label>
         </template>
+
+        <p v-if="draft.type === 'file'" class="conn-form__hint">
+          File format is detected from the extension automatically — drop in CSVs, Parquet,
+          JSON, Arrow, or Excel files in any mix. Excel sheets get one table each.
+        </p>
 
         <p v-if="draft.type === 'mongodb'" class="conn-form__hint">
           MongoDB queries are JSON, not SQL. Example:
@@ -424,6 +454,12 @@ async function remove(id: number) {
         </li>
       </ul>
     </div>
+
+    <FolderScanDialog
+      v-if="showFolderScan"
+      @close="showFolderScan = false"
+      @select="onFolderPicked"
+    />
   </aside>
 </template>
 
@@ -474,6 +510,18 @@ async function remove(id: number) {
   font-size: 11px;
   color: var(--fg-muted);
   min-width: 0;
+}
+.conn-form__field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.conn-form__browse {
+  font-size: 11px;
+  padding: 2px 8px;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .conn-form__field input,
 .conn-form__field select,

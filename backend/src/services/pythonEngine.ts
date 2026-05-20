@@ -105,6 +105,21 @@ export const pythonEngine = {
 
   listChartTypes: () => callGet<{ chart_types: ChartTypeMeta[] }>("/viz/chart-types"),
 
+  scanFolder: (params: { path: string; recursive?: boolean; max_files?: number }) =>
+    call<{
+      root: string;
+      files: Array<{
+        uri: string;
+        name: string;
+        format: string;
+        size_bytes: number;
+        relative_path: string;
+        sheet: string | null;
+      }>;
+      skipped: number;
+      error?: string;
+    }>({ path: "/files/scan", body: params }),
+
   health: async () => {
     const { statusCode, body } = await request(`${config.pythonEngineUrl}/health`);
     return { ok: statusCode === 200, body: await body.text() };
