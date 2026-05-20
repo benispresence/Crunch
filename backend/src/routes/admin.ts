@@ -3,6 +3,18 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAdmin, requireAuth } from "../middleware/auth.js";
 import { createUser, findUserByEmail, updatePassword } from "../services/auth.js";
+import {
+  createApiKey,
+  deleteProvider,
+  getEmailDomainAllowlist,
+  listAllApiKeys,
+  listProviders,
+  maskConfigForDisplay,
+  revokeApiKey,
+  setEmailDomainAllowlist,
+  upsertProvider,
+  type ProviderKind,
+} from "../services/authProviders.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 import {
   KNOWN_MODELS,
@@ -306,5 +318,168 @@ adminRouter.put("/users/:id/role", (req, res) => {
     return;
   }
   db.prepare("UPDATE users SET role = ? WHERE id = ?").run(parsed.data.role, req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- Auth providers (OIDC / SAML / LDAP) ----------------------
+
+function providerForDisplay(row: ReturnType<typeof listProviders>[number]) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    name: row.name,
+    is_enabled: !!row.is_enabled,
+    default_role: row.default_role,
+    config: maskConfigForDisplay(row),
+    updated_at: row.updated_at,
+  };
+}
+
+adminRouter.get("/auth/providers", (_req, res) => {
+  res.json({ providers: listProviders().map(providerForDisplay) });
+});
+
+const providerUpsertSchema = z.object({
+  kind: z.enum(["oidc", "saml", "ldap"]),
+  name: z.string().min(1).max(80),
+  is_enabled: z.boolean().optional(),
+  default_role: z.enum(["admin", "editor", "viewer"]).default("viewer"),
+  config: z.record(z.unknown()),
+});
+
+adminRouter.post("/auth/providers", (req, res) => {
+  const parsed = providerUpsertSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const row = upsertProvider({
+      kind: parsed.data.kind as ProviderKind,
+      name: parsed.data.name,
+      is_enabled: parsed.data.is_enabled,
+      default_role: parsed.data.default_role,
+      config: parsed.data.config,
+    });
+    res.json(providerForDisplay(row));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+adminRouter.put("/auth/providers/:id", (req, res) => {
+  const parsed = providerUpsertSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const row = upsertProvider({
+      id: Number(req.params.id),
+      kind: parsed.data.kind as ProviderKind,
+      name: parsed.data.name,
+      is_enabled: parsed.data.is_enabled,
+      default_role: parsed.data.default_role,
+      config: parsed.data.config,
+    });
+    res.json(providerForDisplay(row));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+adminRouter.delete("/auth/providers/:id", (req, res) => {
+  const ok = deleteProvider(Number(req.params.id));
+  if (!ok) {
+    res.status(404).json({ error: "provider not found" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+// ---------- Email domain allowlist ----------------------------------
+
+adminRouter.get("/auth/allowlist", (_req, res) => {
+  res.json({ domains: getEmailDomainAllowlist() });
+});
+
+adminRouter.put("/auth/allowlist", (req, res) => {
+  const parsed = z
+    .object({ domains: z.array(z.string()) })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  setEmailDomainAllowlist(parsed.data.domains);
+  res.json({ domains: getEmailDomainAllowlist() });
+});
+
+// ---------- API keys -------------------------------------------------
+// Admin sees every user's keys; the plaintext is *only* returned once
+// at creation time. Storing a hash means a DB leak can't be replayed.
+
+adminRouter.get("/api-keys", (_req, res) => {
+  const rows = listAllApiKeys().map((r) => ({
+    id: r.id,
+    user_id: r.user_id,
+    user_email: r.email,
+    name: r.name,
+    prefix: r.prefix,
+    last_used_at: r.last_used_at,
+    expires_at: r.expires_at,
+    revoked_at: r.revoked_at,
+    created_at: r.created_at,
+  }));
+  res.json({ api_keys: rows });
+});
+
+adminRouter.post("/api-keys", (req, res) => {
+  const parsed = z
+    .object({
+      name: z.string().min(1).max(80),
+      user_id: z.number().int().optional(), // defaults to caller
+      expires_in_days: z.number().int().positive().max(3650).optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const userId = parsed.data.user_id ?? req.user!.sub;
+  const exists = db
+    .prepare("SELECT id FROM users WHERE id = ?")
+    .get(userId);
+  if (!exists) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  const expiresAt = parsed.data.expires_in_days
+    ? Math.floor(Date.now() / 1000) + parsed.data.expires_in_days * 86400
+    : null;
+  const { row, plaintext } = createApiKey({
+    user_id: userId,
+    name: parsed.data.name,
+    expires_at: expiresAt,
+  });
+  res.json({
+    id: row.id,
+    user_id: row.user_id,
+    name: row.name,
+    prefix: row.prefix,
+    expires_at: row.expires_at,
+    created_at: row.created_at,
+    // The plaintext is shown to the user once — they must store it
+    // immediately. The DB only keeps the hash.
+    plaintext,
+  });
+});
+
+adminRouter.delete("/api-keys/:id", (req, res) => {
+  const ok = revokeApiKey(Number(req.params.id));
+  if (!ok) {
+    res.status(404).json({ error: "key not found or already revoked" });
+    return;
+  }
   res.json({ ok: true });
 });

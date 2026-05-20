@@ -318,6 +318,33 @@ to the top bar. The gear icon on each chart opens a small dialog that
 maps each filter to a variable in that chart's underlying query. One
 filter can drive many charts at once.
 
+## Authentication
+
+Crunch ships with email + password out of the box. **Admin →
+Authentication** adds the options most teams ask for next:
+
+- **OIDC / OAuth2** — paste a discovery URL + client id/secret. Covers
+  Google Workspace, Microsoft 365, Okta, Auth0, Authentik, Keycloak,
+  GitHub, and anything else that speaks the standard. Sign-in buttons
+  appear on the login screen the moment the provider is enabled.
+- **SAML 2.0** — for enterprise IdPs (Azure AD, OneLogin, ADFS).
+  Configure the entry point, SP issuer, and the IdP signing cert; the
+  admin dialog shows the exact ACS URL to register with the IdP.
+- **LDAP / Active Directory** — bind-then-search pattern with optional
+  StartTLS. Renders a "Sign in via directory" form on the login page.
+- **API keys** — long-lived bearer tokens (`crunch_pk_…`) for
+  embedding queries from scripts or CI. The plaintext is shown once
+  at creation; the DB stores only a hash.
+- **Email domain allowlist** — single setting that gates self-
+  registration *and* every SSO method, so a leaked OIDC link can't
+  enroll outsiders.
+
+Provider secrets (OIDC client secret, LDAP bind password, SAML SP
+private key) are encrypted at rest with the same key used for
+connection passwords. The login page reads the enabled providers via
+`/api/auth/config` and renders one button per OIDC/SAML provider plus
+an optional LDAP form.
+
 ## Version history
 
 Every save of a query or a dashboard creates a snapshot you can revert

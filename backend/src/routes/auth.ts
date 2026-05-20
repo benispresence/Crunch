@@ -11,6 +11,14 @@ import {
   userMustChangePassword,
   verifyPassword,
 } from "../services/auth.js";
+import {
+  getProvider,
+  isEmailAllowed,
+  listProviders,
+} from "../services/authProviders.js";
+import * as ldapAuth from "../services/ldapAuth.js";
+import * as oidcAuth from "../services/oidc.js";
+import * as samlAuth from "../services/samlAuth.js";
 import { isPublicRegistrationEnabled } from "../services/settings.js";
 import { requireAuth } from "../middleware/auth.js";
 
@@ -53,9 +61,16 @@ authRouter.get("/config", (_req, res) => {
       "SELECT must_change_password FROM users WHERE email = ?",
     )
     .get("admin@nicemeta.local") as { must_change_password: number } | undefined;
+  // Surface the *enabled* providers + LDAP availability so the login
+  // page can render "Sign in with X" buttons and an LDAP form. We
+  // never echo secrets here — only the public-facing kind + name.
+  const providers = listProviders()
+    .filter((p) => p.is_enabled === 1)
+    .map((p) => ({ id: p.id, kind: p.kind, name: p.name }));
   res.json({
     registration_enabled: isPublicRegistrationEnabled(),
     default_admin_pending: !!row && row.must_change_password === 1,
+    sso_providers: providers,
   });
 });
 
@@ -71,6 +86,12 @@ authRouter.post("/register", authLimiter, (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  if (!isEmailAllowed(parsed.data.email)) {
+    res.status(403).json({
+      error: "Email domain is not on the allowlist. Ask an admin to add it.",
+    });
+    return;
+  }
   if (findUserByEmail(parsed.data.email)) {
     res.status(409).json({ error: "email already registered" });
     return;
@@ -80,6 +101,105 @@ authRouter.post("/register", authLimiter, (req, res) => {
     token: signToken(user),
     user: { id: user.id, email: user.email, role: user.role },
   });
+});
+
+// ---------- OIDC --------------------------------------------------
+
+authRouter.get("/oidc/:id/start", async (req, res) => {
+  const provider = getProvider(Number(req.params.id));
+  if (!provider || provider.kind !== "oidc" || !provider.is_enabled) {
+    res.status(404).send("provider not found or disabled");
+    return;
+  }
+  try {
+    await oidcAuth.startLogin(req, res, provider);
+  } catch (e) {
+    res.status(502).send(`OIDC start failed: ${(e as Error).message}`);
+  }
+});
+
+authRouter.get("/oidc/:id/callback", async (req, res) => {
+  try {
+    const result = await oidcAuth.handleCallback(req, res);
+    if (!result.ok) {
+      // Bounce back to the login page with the error in the URL so the
+      // user sees what went wrong instead of a bare 4xx page.
+      res.redirect(`/login?error=${encodeURIComponent(result.error)}`);
+      return;
+    }
+    // Hand the token to the SPA via a URL fragment — fragments never
+    // hit the server's request log, so the JWT can't be harvested
+    // from access logs or proxies.
+    res.redirect(`/login#token=${result.token}`);
+  } catch (e) {
+    res.redirect(
+      `/login?error=${encodeURIComponent(`OIDC callback crashed: ${(e as Error).message}`)}`,
+    );
+  }
+});
+
+// ---------- SAML --------------------------------------------------
+
+authRouter.get("/saml/:id/start", async (req, res) => {
+  const provider = getProvider(Number(req.params.id));
+  if (!provider || provider.kind !== "saml" || !provider.is_enabled) {
+    res.status(404).send("provider not found or disabled");
+    return;
+  }
+  try {
+    await samlAuth.startLogin(req, res, provider);
+  } catch (e) {
+    res.status(502).send(`SAML start failed: ${(e as Error).message}`);
+  }
+});
+
+authRouter.post("/saml/:id/acs", async (req, res) => {
+  const provider = getProvider(Number(req.params.id));
+  if (!provider || provider.kind !== "saml") {
+    res.status(404).send("provider not found");
+    return;
+  }
+  try {
+    const result = await samlAuth.handleAcs(req, res, provider);
+    if (!result.ok) {
+      res.redirect(`/login?error=${encodeURIComponent(result.error)}`);
+      return;
+    }
+    res.redirect(`/login#token=${result.token}`);
+  } catch (e) {
+    res.redirect(
+      `/login?error=${encodeURIComponent(`SAML ACS crashed: ${(e as Error).message}`)}`,
+    );
+  }
+});
+
+// ---------- LDAP --------------------------------------------------
+
+authRouter.post("/ldap/:id/login", authLimiter, async (req, res) => {
+  const provider = getProvider(Number(req.params.id));
+  if (!provider || provider.kind !== "ldap" || !provider.is_enabled) {
+    res.status(404).json({ error: "provider not found or disabled" });
+    return;
+  }
+  const parsed = z
+    .object({ username: z.string().min(1), password: z.string().min(1) })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const result = await ldapAuth.login(
+      provider, parsed.data.username, parsed.data.password,
+    );
+    if (!result.ok) {
+      res.status(401).json({ error: result.error });
+      return;
+    }
+    res.json({ token: result.token, user: result.user });
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
 });
 
 authRouter.post("/login", authLimiter, (req, res) => {

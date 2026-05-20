@@ -196,7 +196,48 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_dashboard_revisions_dash
     ON dashboard_revisions(dashboard_id, id DESC);
+
+  -- Auth provider definitions: one row per configured SSO/LDAP/SAML
+  -- entry. Config lives in JSON so each kind keeps its own fields
+  -- without schema migrations every time we add a knob.
+  CREATE TABLE IF NOT EXISTS auth_providers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,                  -- 'oidc' | 'saml' | 'ldap'
+    name TEXT NOT NULL,                  -- shown on the login button
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    default_role TEXT NOT NULL DEFAULT 'viewer',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+  );
+
+  -- API keys are long-lived bearer tokens issued to users for
+  -- programmatic access. We store a hash of the secret, never the
+  -- plaintext — the API only returns the plaintext at creation time.
+  CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prefix TEXT NOT NULL,                -- first 12 chars of the plaintext, for display
+    key_hash TEXT NOT NULL,              -- sha256(secret)
+    last_used_at INTEGER,
+    expires_at INTEGER,
+    revoked_at INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+  CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 `);
+
+// Track the external identity behind an SSO-provisioned user so we
+// can re-bind safely (same external_id always returns the same Crunch
+// user even if the email changes downstream).
+ensureColumn(
+  "users",
+  "auth_provider_id",
+  "auth_provider_id INTEGER REFERENCES auth_providers(id) ON DELETE SET NULL",
+);
+ensureColumn("users", "external_id", "external_id TEXT");
 
 // One-time rebuild: older databases were created with
 // `visualization_id INTEGER NOT NULL`, which now blocks query-only widgets.

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
@@ -26,6 +27,10 @@ const app = express();
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
+// urlencoded body parser is needed for SAML's HTTP-POST binding (the
+// IdP returns a form-encoded SAMLResponse to the ACS endpoint).
+app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+app.use(cookieParser());
 
 // One-line request log so "did the request reach the backend?" is a
 // trivial tail away. Skip /api/health to keep the log readable.
