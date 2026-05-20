@@ -33,13 +33,29 @@ Modifying the user's saved queries / charts:
 - For changing chart_type / chart_config / python code on a saved query: \`propose_chart_change\`.
 - For creating a new saved query: \`propose_new_query\` (requires connection_id from \`list_connections\`).
 - For deleting a saved query: \`propose_delete_query\`.
-- These tools DO NOT execute the change — they only produce a proposal. After calling one, briefly summarize what you proposed and stop; do not duplicate the diff in prose.`;
+
+Modifying dashboards:
+- Discovery: \`list_dashboards\` → \`get_dashboard\` for the full state (filters, widgets, mappings).
+- Create a new dashboard: \`propose_new_dashboard\`. May seed initial widgets (each referencing an existing saved query) and filters.
+- Add a chart to an existing dashboard: \`propose_add_widget\`. If the dashboard has filters, pre-wire \`parameter_mappings\` (filter id → variable name on the query).
+- Remove a chart: \`propose_remove_widget\`.
+- Edit dashboard filters: \`propose_dashboard_filter_change\` — pass the full replacement filter array.
+- Edit per-widget filter wiring: \`propose_widget_mapping\`.
+
+Cross-surface navigation:
+- After creating or editing something the user will want to inspect, call \`propose_navigate\`. \`to=workspace\` (optionally with \`query_id\`) opens the SQL editor; \`to=dashboard\` (with \`dashboard_id\`) opens that dashboard.
+- The user can toggle auto-accept; when on, the navigation happens immediately. Either way, surface it as a proposal — never assume the user has switched pages.
+
+All \`propose_*\` tools DO NOT execute the change — they only produce a proposal. After calling one, briefly summarize what you proposed and stop; do not duplicate the diff in prose.`;
 
 const workspaceContextSchema = z.object({
+  active_route: z.string().optional(),
   active_query_id: z.number().int().nullable().optional(),
   active_query_name: z.string().nullable().optional(),
   active_connection_id: z.number().int().nullable().optional(),
   active_connection_name: z.string().nullable().optional(),
+  active_dashboard_id: z.number().int().nullable().optional(),
+  active_dashboard_name: z.string().nullable().optional(),
   current_sql: z.string().optional(),
   current_chart_type: z.string().optional(),
   current_chart_mode: z.string().optional(),
@@ -64,6 +80,14 @@ const sendSchema = z.object({
  */
 function formatWorkspaceContext(ctx: z.infer<typeof workspaceContextSchema>): string {
   const lines: string[] = ["<workspace_context>"];
+  if (ctx.active_route) {
+    lines.push(`current_page: ${ctx.active_route}`);
+  }
+  if (ctx.active_dashboard_id != null) {
+    lines.push(
+      `active_dashboard: #${ctx.active_dashboard_id} "${ctx.active_dashboard_name ?? "?"}"`,
+    );
+  }
   if (ctx.active_query_id != null) {
     lines.push(
       `active_saved_query: #${ctx.active_query_id} "${ctx.active_query_name ?? "?"}"`,
@@ -102,7 +126,7 @@ function formatWorkspaceContext(ctx: z.infer<typeof workspaceContextSchema>): st
   }
   lines.push("</workspace_context>");
   lines.push(
-    "When the user says \"this query\", \"current chart\", \"add a limit\", etc., assume they mean the active_saved_query above. Use propose_query_edit / propose_chart_change with that query_id rather than asking which one.",
+    "When the user says \"this query\", \"current chart\", \"add a limit\", etc., assume they mean the active_saved_query above. Use propose_query_edit / propose_chart_change with that query_id rather than asking which one. When they say \"this dashboard\", target active_dashboard_id. If a task spans both surfaces (e.g. \"add a query and put it on the dashboard\"), chain the propose_* tools and finish with propose_navigate to take the user where they need to go.",
   );
   return lines.join("\n");
 }

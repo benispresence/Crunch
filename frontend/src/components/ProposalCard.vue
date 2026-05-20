@@ -44,6 +44,15 @@ const title = computed(() => {
     case "chart_change": return `Edit chart on "${x.query_name}"`;
     case "new_query": return `New query: "${x.query.name}"`;
     case "delete_query": return `Delete query "${x.target.name}"`;
+    case "new_dashboard": return `New dashboard: "${x.dashboard.name}"`;
+    case "add_widget": return `Add chart to "${x.dashboard_name}"`;
+    case "remove_widget": return `Remove "${x.widget_name}" from "${x.dashboard_name}"`;
+    case "dashboard_filter_change": return `Edit filters on "${x.dashboard_name}"`;
+    case "widget_mapping": return `Rewire filters → "${x.widget_name}"`;
+    case "navigate":
+      return x.to === "workspace"
+        ? (x.query_id != null ? `Open query #${x.query_id} in workspace` : "Switch to workspace")
+        : `Open dashboard #${x.dashboard_id ?? "?"}`;
   }
 });
 
@@ -142,16 +151,101 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
       </div>
     </template>
 
+    <!-- new_dashboard -->
+    <template v-if="p.kind === 'new_dashboard'">
+      <div class="prop__newq">
+        <div class="prop__newq-row"><strong>name</strong> {{ p.dashboard.name }}</div>
+        <div v-if="p.dashboard.description" class="prop__newq-row">
+          <strong>description</strong> {{ p.dashboard.description }}
+        </div>
+        <div class="prop__newq-row">
+          <strong>filters</strong>
+          {{ p.dashboard.filters.length === 0 ? "none" : p.dashboard.filters.map((f) => `${f.name} (${f.type})`).join(", ") }}
+        </div>
+        <div class="prop__newq-row">
+          <strong>widgets</strong>
+          {{ p.dashboard.widgets.length }} chart(s)
+        </div>
+      </div>
+    </template>
+
+    <!-- add_widget -->
+    <template v-if="p.kind === 'add_widget'">
+      <div class="prop__newq">
+        <div class="prop__newq-row"><strong>dashboard</strong> {{ p.dashboard_name }}</div>
+        <div class="prop__newq-row"><strong>chart</strong> {{ p.widget.query_name }} (query #{{ p.widget.query_id }})</div>
+        <div class="prop__newq-row">
+          <strong>position</strong>
+          col {{ p.widget.position_x }} · row {{ p.widget.position_y }} · {{ p.widget.width }}×{{ p.widget.height }}
+        </div>
+        <div v-if="Object.keys(p.widget.parameter_mappings).length > 0" class="prop__newq-row">
+          <strong>mappings</strong>
+          <span v-for="(v, k) in p.widget.parameter_mappings" :key="k" class="prop__chip">
+            {{ k }} → {{ v }}
+          </span>
+        </div>
+      </div>
+    </template>
+
+    <!-- remove_widget -->
+    <template v-if="p.kind === 'remove_widget'">
+      <div class="prop__delete">
+        <p>Will remove chart <strong>"{{ p.widget_name }}"</strong> from <strong>{{ p.dashboard_name }}</strong>. The underlying saved query is left alone.</p>
+      </div>
+    </template>
+
+    <!-- dashboard_filter_change -->
+    <template v-if="p.kind === 'dashboard_filter_change'">
+      <div class="prop__chart">
+        <div class="prop__chart-field">
+          <div class="prop__chart-name">filters</div>
+          <pre class="prop__chart-side prop__chart-side--del">{{ JSON.stringify(p.before, null, 2) }}</pre>
+          <pre class="prop__chart-side prop__chart-side--add">{{ JSON.stringify(p.after, null, 2) }}</pre>
+        </div>
+      </div>
+    </template>
+
+    <!-- widget_mapping -->
+    <template v-if="p.kind === 'widget_mapping'">
+      <div class="prop__chart">
+        <div class="prop__chart-field">
+          <div class="prop__chart-name">mapping</div>
+          <pre class="prop__chart-side prop__chart-side--del">{{ JSON.stringify(p.before, null, 2) }}</pre>
+          <pre class="prop__chart-side prop__chart-side--add">{{ JSON.stringify(p.after, null, 2) }}</pre>
+        </div>
+      </div>
+    </template>
+
+    <!-- navigate -->
+    <template v-if="p.kind === 'navigate'">
+      <div class="prop__newq">
+        <div class="prop__newq-row">
+          <strong>destination</strong>
+          {{ p.to === "workspace"
+            ? (p.query_id != null ? `Workspace — open query #${p.query_id}` : "Workspace")
+            : `Dashboard #${p.dashboard_id ?? "?"}` }}
+        </div>
+      </div>
+    </template>
+
     <p v-if="record.error" class="prop__err">⚠ {{ record.error }}</p>
 
     <footer v-if="record.status === 'pending'" class="prop__actions">
-      <button class="btn btn-sm prop__reject" @click="reject">Reject</button>
+      <button class="btn btn-sm prop__reject" @click="reject">
+        {{ p.kind === "navigate" ? "Stay here" : "Reject" }}
+      </button>
       <button
         class="btn btn-primary btn-sm"
-        :class="{ 'prop__danger': p.kind === 'delete_query' }"
+        :class="{ 'prop__danger': p.kind === 'delete_query' || p.kind === 'remove_widget' }"
         @click="accept"
       >
-        {{ p.kind === "delete_query" ? "Confirm delete" : "Accept" }}
+        {{
+          p.kind === "delete_query" || p.kind === "remove_widget"
+            ? "Confirm"
+            : p.kind === "navigate"
+              ? "Open"
+              : "Accept"
+        }}
       </button>
     </footer>
     <footer v-else-if="record.status === 'accepted' || record.status === 'auto-accepted'" class="prop__done">
@@ -296,6 +390,17 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
   overflow: auto;
 }
 .prop__delete { font-size: 12px; color: var(--fg-muted); }
+.prop__chip {
+  display: inline-block;
+  margin: 0 4px 2px 0;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+}
 .prop__err {
   margin: 0;
   font-size: 11px;

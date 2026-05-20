@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import DashboardFilterBar from "@/components/DashboardFilterBar.vue";
 import DashboardWidget from "@/components/DashboardWidget.vue";
+import RevisionHistoryDialog from "@/components/RevisionHistoryDialog.vue";
 import WidgetMappingDialog from "@/components/WidgetMappingDialog.vue";
 import { useDashboardsStore, type DashboardWidget as Widget } from "@/stores/dashboards";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -18,10 +19,15 @@ const GAP = 12;
 
 const editing = ref(false);
 const showAdder = ref(false);
+const showHistory = ref(false);
 const grid = ref<HTMLDivElement | null>(null);
 const draftWidgets = ref<Widget[]>([]);
 const dirty = ref(false);
 const mappingWidget = ref<Widget | null>(null);
+
+async function onReverted() {
+  await dashboards.open(dashboardId.value);
+}
 
 const dashboardId = computed(() => Number(route.params.id));
 
@@ -188,6 +194,7 @@ function closeMapping() {
       </div>
       <div class="detail__head-right">
         <button class="btn btn-sm" @click="showAdder = true">+ Add chart</button>
+        <button class="btn btn-ghost btn-sm" @click="showHistory = true">History</button>
         <button v-if="!editing" class="btn btn-sm" @click="editing = true">Edit layout</button>
         <template v-else>
           <button v-if="dirty" class="btn btn-sm" @click="cancelEdits">Discard</button>
@@ -242,6 +249,15 @@ function closeMapping() {
       v-if="mappingWidget"
       :widget="mappingWidget"
       @close="closeMapping"
+    />
+
+    <RevisionHistoryDialog
+      v-if="showHistory && dashboards.current"
+      kind="dashboard"
+      :target-id="dashboards.current.id"
+      :title="dashboards.current.name"
+      @close="showHistory = false"
+      @reverted="onReverted"
     />
 
     <div v-if="showAdder" class="picker" @click.self="showAdder = false">

@@ -9,6 +9,11 @@ import {
   safeParseSpecs,
 } from "../services/parameters.js";
 import { pythonEngine } from "../services/pythonEngine.js";
+import {
+  listQueryRevisions,
+  revertQuery,
+  snapshotQuery,
+} from "../services/versioning.js";
 
 export const queriesRouter = Router();
 queriesRouter.use(requireAuth);
@@ -81,7 +86,7 @@ const chartFields = {
   parameters: parameterSpecArraySchema.optional(),
 };
 
-queriesRouter.post("/", (req, res) => {
+queriesRouter.post("/", async (req, res) => {
   const parsed = z
     .object({
       name: z.string().min(1),
@@ -119,6 +124,12 @@ queriesRouter.post("/", (req, res) => {
   const row = db
     .prepare(`SELECT ${SELECT_COLS} FROM queries WHERE id = ?`)
     .get(info.lastInsertRowid) as QueryRow;
+  // First revision = the initial state — gives the user a "rollback to
+  // creation" pin without any special-casing in the UI.
+  await snapshotQuery(row.id, req.user!.sub, {
+    source: "save",
+    message: "initial save",
+  });
   res.json(rowToQuery(row));
 });
 
@@ -133,7 +144,7 @@ queriesRouter.delete("/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-queriesRouter.put("/:id", (req, res) => {
+queriesRouter.put("/:id", async (req, res) => {
   const parsed = z
     .object({
       name: z.string().optional(),
@@ -167,7 +178,39 @@ queriesRouter.put("/:id", (req, res) => {
   const row = db
     .prepare(`SELECT ${SELECT_COLS} FROM queries WHERE id = ? AND user_id = ?`)
     .get(req.params.id, req.user!.sub) as QueryRow | undefined;
+  if (row) {
+    // Snapshot post-update so the timeline reflects what the user saved.
+    // De-dup happens in the versioning service, so chart-only saves
+    // (which fire on every Apply) still don't blow up the history.
+    await snapshotQuery(row.id, req.user!.sub, { source: "save" });
+  }
   res.json(row ? rowToQuery(row) : { ok: true });
+});
+
+queriesRouter.get("/:id/revisions", (req, res) => {
+  const queryId = Number(req.params.id);
+  const exists = db
+    .prepare("SELECT id FROM queries WHERE id = ? AND user_id = ?")
+    .get(queryId, req.user!.sub);
+  if (!exists) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ revisions: listQueryRevisions(queryId, req.user!.sub) });
+});
+
+queriesRouter.post("/:id/revisions/:revisionId/revert", async (req, res) => {
+  const queryId = Number(req.params.id);
+  const revisionId = Number(req.params.revisionId);
+  const rev = await revertQuery(queryId, revisionId, req.user!.sub);
+  if (!rev) {
+    res.status(404).json({ error: "revision not found" });
+    return;
+  }
+  const row = db
+    .prepare(`SELECT ${SELECT_COLS} FROM queries WHERE id = ? AND user_id = ?`)
+    .get(queryId, req.user!.sub) as QueryRow | undefined;
+  res.json({ revision: rev, query: row ? rowToQuery(row) : null });
 });
 
 queriesRouter.post("/validate", async (req, res) => {

@@ -150,6 +150,54 @@ ensureColumn(
   "parameter_mappings_json TEXT NOT NULL DEFAULT '{}'",
 );
 
+// Version history: every meaningful save of a query or a dashboard
+// snapshots its full state into a *_revisions row. The UI surfaces
+// these and lets the user revert with one click; reverts themselves
+// are new revisions on top (never history rewrites) so the trail is
+// monotonic and matches the git history we mirror alongside it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS query_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_id INTEGER NOT NULL REFERENCES queries(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    sql TEXT NOT NULL,
+    chart_type TEXT NOT NULL DEFAULT 'bar',
+    chart_renderer TEXT NOT NULL DEFAULT 'plotly',
+    chart_config_json TEXT NOT NULL DEFAULT '{}',
+    chart_python_code TEXT,
+    chart_mode TEXT NOT NULL DEFAULT 'picker',
+    parameters_json TEXT NOT NULL DEFAULT '[]',
+    snapshot_hash TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'save',
+    source_revision_id INTEGER REFERENCES query_revisions(id) ON DELETE SET NULL,
+    message TEXT,
+    git_sha TEXT,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_query_revisions_query
+    ON query_revisions(query_id, id DESC);
+
+  CREATE TABLE IF NOT EXISTS dashboard_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dashboard_id INTEGER NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    layout_json TEXT NOT NULL DEFAULT '{}',
+    filters_json TEXT NOT NULL DEFAULT '[]',
+    widgets_json TEXT NOT NULL DEFAULT '[]',
+    snapshot_hash TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'save',
+    source_revision_id INTEGER REFERENCES dashboard_revisions(id) ON DELETE SET NULL,
+    message TEXT,
+    git_sha TEXT,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_dashboard_revisions_dash
+    ON dashboard_revisions(dashboard_id, id DESC);
+`);
+
 // One-time rebuild: older databases were created with
 // `visualization_id INTEGER NOT NULL`, which now blocks query-only widgets.
 // SQLite can't drop a NOT NULL constraint via ALTER, so we copy through a

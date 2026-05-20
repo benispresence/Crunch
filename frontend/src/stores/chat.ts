@@ -1,5 +1,7 @@
 import { defineStore } from "pinia";
 import { api } from "@/api/client";
+import { router } from "@/router";
+import { useDashboardsStore } from "./dashboards";
 import { useWorkspaceStore } from "./workspace";
 
 export interface ToolCall {
@@ -16,6 +18,24 @@ export type ChartSnapshot = {
   chart_config: Record<string, unknown>;
   chart_python_code: string | null;
 };
+
+export interface DashboardFilterSpec {
+  id: string;
+  name: string;
+  type: string;
+  default?: unknown;
+}
+
+export interface AddWidgetSpec {
+  query_id: number;
+  query_name: string;
+  position_x: number;
+  position_y: number;
+  width: number;
+  height: number;
+  title_override: string | null;
+  parameter_mappings: Record<string, string>;
+}
 
 export type Proposal =
   | {
@@ -47,6 +67,64 @@ export type Proposal =
       query_id: number;
       rationale?: string;
       target: { name: string; sql: string };
+    }
+  | {
+      kind: "new_dashboard";
+      rationale?: string;
+      dashboard: {
+        name: string;
+        description: string | null;
+        folder_id: number | null;
+        widgets: Array<{
+          query_id: number;
+          position_x: number;
+          position_y: number;
+          width: number;
+          height: number;
+          title_override: string | null;
+        }>;
+        filters: DashboardFilterSpec[];
+      };
+    }
+  | {
+      kind: "add_widget";
+      dashboard_id: number;
+      dashboard_name: string;
+      rationale?: string;
+      widget: AddWidgetSpec;
+    }
+  | {
+      kind: "remove_widget";
+      dashboard_id: number;
+      dashboard_name: string;
+      widget_id: number;
+      widget_name: string;
+      rationale?: string;
+    }
+  | {
+      kind: "dashboard_filter_change";
+      dashboard_id: number;
+      dashboard_name: string;
+      rationale?: string;
+      before: DashboardFilterSpec[];
+      after: DashboardFilterSpec[];
+    }
+  | {
+      kind: "widget_mapping";
+      dashboard_id: number;
+      dashboard_name: string;
+      widget_id: number;
+      widget_name: string;
+      rationale?: string;
+      before: Record<string, string>;
+      after: Record<string, string>;
+    }
+  | {
+      kind: "navigate";
+      to: "workspace" | "dashboard";
+      query_id?: number;
+      dashboard_id?: number;
+      rationale?: string;
     };
 
 export interface ProposalRecord {
@@ -188,11 +266,17 @@ export const useChatStore = defineStore("chat", {
           (activeQuery.chart_python_code ?? "") !== (ws.pythonCode ?? "") ||
           JSON.stringify(activeQuery.chart_config ?? {}) !== JSON.stringify(ws.chartConfig ?? {})
         );
+        const dashboards = useDashboardsStore();
+        const route = router.currentRoute.value;
+        const activeDashboard = dashboards.current;
         const workspace = {
+          active_route: route.name as string | undefined,
           active_query_id: ws.activeQueryId,
           active_query_name: activeQuery?.name ?? null,
           active_connection_id: ws.activeConnectionId,
           active_connection_name: activeConn?.name ?? null,
+          active_dashboard_id: activeDashboard?.id ?? null,
+          active_dashboard_name: activeDashboard?.name ?? null,
           current_sql: ws.sql,
           current_chart_type: ws.chartType,
           current_chart_mode: ws.chartMode,
@@ -299,6 +383,7 @@ export const useChatStore = defineStore("chat", {
       if (!turn || !rec || rec.status !== "pending") return;
       const auto = this.autoAccept;
       const ws = useWorkspaceStore();
+      const dashboards = useDashboardsStore();
       try {
         const p = rec.proposal;
         if (p.kind === "query_edit") {
@@ -318,10 +403,94 @@ export const useChatStore = defineStore("chat", {
         } else if (p.kind === "delete_query") {
           await api.del(`/queries/${p.query_id}`);
           rec.resultId = p.query_id;
+        } else if (p.kind === "new_dashboard") {
+          // Two-step: create the dashboard, then bulk-add widgets and
+          // attach filters. We pick up the new id from the POST and
+          // expose it via resultId so a follow-up navigate proposal can
+          // jump straight there.
+          const created = await api.post<{ id: number }>("/dashboards", {
+            name: p.dashboard.name,
+            description: p.dashboard.description ?? undefined,
+            folder_id: p.dashboard.folder_id ?? undefined,
+          });
+          rec.resultId = created.id;
+          if (p.dashboard.filters.length > 0) {
+            await api.put(`/dashboards/${created.id}`, { filters: p.dashboard.filters });
+          }
+          for (const w of p.dashboard.widgets) {
+            await api.post(`/dashboards/${created.id}/widgets`, {
+              query_id: w.query_id,
+              position_x: w.position_x,
+              position_y: w.position_y,
+              width: w.width,
+              height: w.height,
+              title_override: w.title_override ?? undefined,
+            });
+          }
+        } else if (p.kind === "add_widget") {
+          await api.post(`/dashboards/${p.dashboard_id}/widgets`, {
+            query_id: p.widget.query_id,
+            position_x: p.widget.position_x,
+            position_y: p.widget.position_y,
+            width: p.widget.width,
+            height: p.widget.height,
+            title_override: p.widget.title_override ?? undefined,
+            parameter_mappings: p.widget.parameter_mappings,
+          });
+          rec.resultId = p.dashboard_id;
+        } else if (p.kind === "remove_widget") {
+          await api.del(`/dashboards/${p.dashboard_id}/widgets/${p.widget_id}`);
+          rec.resultId = p.dashboard_id;
+        } else if (p.kind === "dashboard_filter_change") {
+          await api.put(`/dashboards/${p.dashboard_id}`, { filters: p.after });
+          rec.resultId = p.dashboard_id;
+        } else if (p.kind === "widget_mapping") {
+          await api.put(`/dashboards/${p.dashboard_id}/widgets/${p.widget_id}`, {
+            parameter_mappings: p.after,
+          });
+          rec.resultId = p.dashboard_id;
+        } else if (p.kind === "navigate") {
+          // Navigation accept = vue-router push. No backend call. We
+          // also pre-warm the destination's store so the page paints
+          // without a flash.
+          if (p.to === "workspace") {
+            await router.push({ name: "workspace" });
+            if (p.query_id != null) {
+              if (ws.savedQueries.length === 0) await ws.loadSavedQueries();
+              const q = ws.savedQueries.find((x) => x.id === p.query_id);
+              if (q) await ws.openQuery(q);
+              rec.resultId = p.query_id;
+            }
+          } else if (p.to === "dashboard" && p.dashboard_id != null) {
+            await router.push({ name: "dashboard-detail", params: { id: p.dashboard_id } });
+            rec.resultId = p.dashboard_id;
+          }
         }
         rec.status = auto ? "auto-accepted" : "accepted";
-        ws.invalidateCache(rec.resultId);
-        await ws.loadSavedQueries();
+
+        // Refresh whichever store the change touched.
+        if (
+          rec.proposal.kind === "query_edit" || rec.proposal.kind === "chart_change"
+          || rec.proposal.kind === "new_query" || rec.proposal.kind === "delete_query"
+        ) {
+          ws.invalidateCache(rec.resultId);
+          await ws.loadSavedQueries();
+        }
+        if (
+          rec.proposal.kind === "new_dashboard" || rec.proposal.kind === "add_widget"
+          || rec.proposal.kind === "remove_widget"
+          || rec.proposal.kind === "dashboard_filter_change"
+          || rec.proposal.kind === "widget_mapping"
+        ) {
+          await Promise.all([dashboards.load(), ws.loadDashboards()]);
+          // Refresh the currently-open dashboard view if it's the one
+          // we just mutated. Skipped silently when the user is on the
+          // workspace page.
+          if (dashboards.current && dashboards.current.id === rec.resultId) {
+            await dashboards.open(rec.resultId);
+          }
+        }
+
         // Reflect the change in the editor immediately:
         //  - edited query → reload + auto-run
         //  - new query → switch to it + auto-run

@@ -6,6 +6,7 @@ import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
 import ParametersPanel from "./ParametersPanel.vue";
 import ProposalCard from "./ProposalCard.vue";
+import RevisionHistoryDialog from "./RevisionHistoryDialog.vue";
 
 const props = defineProps<{ collapsed?: boolean }>();
 const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
@@ -20,6 +21,22 @@ const showSaveAs = ref(false);
 const saveAsName = ref("");
 const saving = ref(false);
 const saveError = ref("");
+const showHistory = ref(false);
+
+async function onReverted() {
+  // Reload the saved query list and the active query so the editor
+  // reflects the reverted state. The backend has already stamped the
+  // revert as a new revision; we just pull the new shape.
+  await ws.loadSavedQueries();
+  const id = ws.activeQueryId;
+  if (id != null) {
+    const fresh = ws.savedQueries.find((q) => q.id === id);
+    if (fresh) {
+      ws.invalidateCache(id);
+      await ws.openQuery(fresh);
+    }
+  }
+}
 
 // "sql" = edit the query; "python" = customize the chart in Python.
 // Mirrors `ws.chartMode` ("picker" vs "python") so the chart panel and
@@ -415,6 +432,14 @@ const activeQueryProposal = computed(() => {
           Sync from picker
         </button>
         <button
+          v-if="activeQuery"
+          class="btn btn-ghost btn-sm"
+          title="Show this query's revision history"
+          @click="showHistory = true"
+        >
+          History
+        </button>
+        <button
           v-if="tab === 'sql'"
           class="btn btn-ghost btn-sm"
           :disabled="saving"
@@ -484,6 +509,15 @@ const activeQueryProposal = computed(() => {
         :turn-id="activeQueryProposal.turnId"
       />
     </div>
+
+    <RevisionHistoryDialog
+      v-if="showHistory && activeQuery"
+      kind="query"
+      :target-id="activeQuery.id"
+      :title="activeQuery.name"
+      @close="showHistory = false"
+      @reverted="onReverted"
+    />
   </div>
 </template>
 

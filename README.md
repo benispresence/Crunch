@@ -276,6 +276,39 @@ to the top bar. The gear icon on each chart opens a small dialog that
 maps each filter to a variable in that chart's underlying query. One
 filter can drive many charts at once.
 
+## Version history
+
+Every save of a query or a dashboard creates a snapshot you can revert
+to from the **History** button in the editor / dashboard header. The
+timeline is monotonic — reverting stamps a new "revert" revision on
+top instead of rewriting history, so an accidental revert is itself
+undoable. Identical back-to-back saves are deduped so the timeline
+isn't noisy.
+
+If the workspace is git-initialized (Admin → Git), each snapshot also
+runs `git add -A && git commit`, mirroring the same history to disk.
+The commit SHA shows up next to the in-app revision so you can `git
+diff` between two points or push the lot to a remote. When git isn't
+initialized, snapshots still work and live entirely in SQLite.
+
+## Agent on dashboards
+
+The assistant can build and edit dashboards too, using the same
+Accept/Reject proposal flow as queries:
+
+- `propose_new_dashboard` — create a board with optional initial
+  widgets + filters in one shot.
+- `propose_add_widget` / `propose_remove_widget` — wire saved queries
+  onto an existing board.
+- `propose_dashboard_filter_change` — edit the filter bar.
+- `propose_widget_mapping` — connect filters to per-chart variables.
+- `propose_navigate` — jump the user between workspace and a specific
+  dashboard, e.g. after creating a query and adding it to a board.
+
+With auto-accept on in the chat panel, the assistant can chain
+"create a query → add it to a dashboard → take me there" into a
+single hands-off flow.
+
 ## Tools the assistant has
 
 | Tool               | Purpose                                              |

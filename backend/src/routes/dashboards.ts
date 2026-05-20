@@ -9,6 +9,11 @@ import {
   safeParseSpecs,
   widgetParameterMappingSchema,
 } from "../services/parameters.js";
+import {
+  listDashboardRevisions,
+  revertDashboard,
+  snapshotDashboard,
+} from "../services/versioning.js";
 
 export const dashboardsRouter = Router();
 dashboardsRouter.use(requireAuth);
@@ -99,7 +104,7 @@ dashboardsRouter.get("/:id", (req, res) => {
   });
 });
 
-dashboardsRouter.post("/", (req, res) => {
+dashboardsRouter.post("/", async (req, res) => {
   const parsed = z
     .object({
       name: z.string().min(1),
@@ -121,10 +126,15 @@ dashboardsRouter.post("/", (req, res) => {
       parsed.data.description ?? null,
       parsed.data.folder_id ?? null,
     );
-  res.json({ id: Number(info.lastInsertRowid) });
+  const id = Number(info.lastInsertRowid);
+  await snapshotDashboard(id, req.user!.sub, {
+    source: "save",
+    message: "initial save",
+  });
+  res.json({ id });
 });
 
-dashboardsRouter.put("/:id", (req, res) => {
+dashboardsRouter.put("/:id", async (req, res) => {
   const parsed = z
     .object({
       name: z.string().optional(),
@@ -169,6 +179,7 @@ dashboardsRouter.put("/:id", (req, res) => {
   db.prepare(
     `UPDATE dashboards SET ${fields.join(", ")} WHERE id = ? AND user_id = ?`,
   ).run(...values);
+  await snapshotDashboard(Number(req.params.id), req.user!.sub, { source: "save" });
   res.json({ ok: true });
 });
 
@@ -196,7 +207,7 @@ const widgetSchema = z
     { message: "exactly one of query_id or visualization_id is required" },
   );
 
-dashboardsRouter.post("/:id/widgets", (req, res) => {
+dashboardsRouter.post("/:id/widgets", async (req, res) => {
   const dash = db
     .prepare("SELECT id FROM dashboards WHERE id = ? AND user_id = ?")
     .get(req.params.id, req.user!.sub);
@@ -226,10 +237,14 @@ dashboardsRouter.post("/:id/widgets", (req, res) => {
       parsed.data.title_override ?? null,
       JSON.stringify(parsed.data.parameter_mappings ?? {}),
     );
+  await snapshotDashboard(Number(req.params.id), req.user!.sub, {
+    source: "save",
+    message: "add widget",
+  });
   res.json({ id: Number(info.lastInsertRowid) });
 });
 
-dashboardsRouter.put("/:id/widgets/:widgetId", (req, res) => {
+dashboardsRouter.put("/:id/widgets/:widgetId", async (req, res) => {
   const dash = db
     .prepare("SELECT id FROM dashboards WHERE id = ? AND user_id = ?")
     .get(req.params.id, req.user!.sub);
@@ -266,10 +281,14 @@ dashboardsRouter.put("/:id/widgets/:widgetId", (req, res) => {
     `UPDATE dashboard_widgets SET ${fields.join(", ")}
      WHERE id = ? AND dashboard_id = ?`,
   ).run(...values);
+  await snapshotDashboard(Number(req.params.id), req.user!.sub, {
+    source: "save",
+    message: "edit widget",
+  });
   res.json({ ok: true });
 });
 
-dashboardsRouter.put("/:id/widgets/positions", (req, res) => {
+dashboardsRouter.put("/:id/widgets/positions", async (req, res) => {
   const dash = db
     .prepare("SELECT id FROM dashboards WHERE id = ? AND user_id = ?")
     .get(req.params.id, req.user!.sub);
@@ -306,10 +325,14 @@ dashboardsRouter.put("/:id/widgets/positions", (req, res) => {
   db.prepare(
     "UPDATE dashboards SET updated_at = strftime('%s', 'now') WHERE id = ?",
   ).run(req.params.id);
+  await snapshotDashboard(Number(req.params.id), req.user!.sub, {
+    source: "save",
+    message: "rearrange layout",
+  });
   res.json({ ok: true });
 });
 
-dashboardsRouter.delete("/:id/widgets/:widgetId", (req, res) => {
+dashboardsRouter.delete("/:id/widgets/:widgetId", async (req, res) => {
   const dash = db
     .prepare("SELECT id FROM dashboards WHERE id = ? AND user_id = ?")
     .get(req.params.id, req.user!.sub);
@@ -321,5 +344,32 @@ dashboardsRouter.delete("/:id/widgets/:widgetId", (req, res) => {
     req.params.widgetId,
     req.params.id,
   );
+  await snapshotDashboard(Number(req.params.id), req.user!.sub, {
+    source: "save",
+    message: "remove widget",
+  });
   res.json({ ok: true });
+});
+
+dashboardsRouter.get("/:id/revisions", (req, res) => {
+  const dashId = Number(req.params.id);
+  const exists = db
+    .prepare("SELECT id FROM dashboards WHERE id = ? AND user_id = ?")
+    .get(dashId, req.user!.sub);
+  if (!exists) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ revisions: listDashboardRevisions(dashId, req.user!.sub) });
+});
+
+dashboardsRouter.post("/:id/revisions/:revisionId/revert", async (req, res) => {
+  const dashId = Number(req.params.id);
+  const revisionId = Number(req.params.revisionId);
+  const rev = await revertDashboard(dashId, revisionId, req.user!.sub);
+  if (!rev) {
+    res.status(404).json({ error: "revision not found" });
+    return;
+  }
+  res.json({ revision: rev });
 });
