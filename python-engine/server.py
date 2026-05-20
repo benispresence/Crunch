@@ -31,6 +31,13 @@ from nicemeta.connections.adapters import (  # noqa: E402
     SQLServerAdapter,
 )
 from nicemeta.connections.base import ConnectionAdapter, ConnectionInfo  # noqa: E402
+from nicemeta.query.template import (  # noqa: E402
+    ParameterSpec,
+    TemplateError,
+    coerce_values,
+    parse_variable_names,
+    render as render_template,
+)
 from nicemeta.query.validator import QueryValidator  # noqa: E402
 from nicemeta.visualization.code_executor import CodeExecutor  # noqa: E402
 from nicemeta.visualization.factory import ChartFactory  # noqa: E402
@@ -127,6 +134,13 @@ class ConnectionConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class ParameterSpecModel(BaseModel):
+    name: str
+    type: str = "text"
+    default: Any = None
+    required: bool = False
+
+
 class ExecuteSqlRequest(BaseModel):
     token: str
     connection: ConnectionConfig
@@ -135,6 +149,11 @@ class ExecuteSqlRequest(BaseModel):
     # Defence in depth: the engine refuses writes unless the backend
     # explicitly opts in. The backend currently never sets this true.
     allow_writes: bool = False
+    # Metabase-style template parameters. ``parameters`` declares
+    # types + defaults; ``parameter_values`` provides the per-run
+    # values. The engine substitutes {{name}} via SQL bind params.
+    parameters: list[ParameterSpecModel] = Field(default_factory=list)
+    parameter_values: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecuteSqlResponse(BaseModel):
@@ -172,6 +191,10 @@ class ExecutePythonRequest(BaseModel):
     data: dict[str, list[Any]] = Field(default_factory=dict)
     allowed_packages: list[str] = Field(default_factory=list)
     timeout_seconds: int = 30
+    # Same parameter machinery as SQL. Validated values are exposed to
+    # user code as ``params`` so chart scripts can react to filters.
+    parameters: list[ParameterSpecModel] = Field(default_factory=list)
+    parameter_values: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutePythonResponse(BaseModel):
@@ -221,7 +244,26 @@ async def validate_sql(req: ValidateSqlRequest) -> dict[str, Any]:
 @app.post("/sql/execute", response_model=ExecuteSqlResponse)
 async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
     _check_token(req.token)
-    validation = query_validator.validate(req.sql)
+    # Render the template first — drop optional clauses with unset
+    # variables and replace {{var}} with :var bind placeholders. The
+    # validator then sees the same shape the driver will, including
+    # the rewritten clauses, so e.g. "[[ AND x = {{x}} ]]"
+    # turns into a clean SELECT before classification.
+    try:
+        specs = [
+            ParameterSpec(
+                name=p.name,
+                type=p.type,
+                default=p.default,
+                required=p.required,
+            )
+            for p in req.parameters
+        ]
+        rendered_sql, binds = render_template(req.sql, specs, req.parameter_values)
+    except TemplateError as exc:
+        return ExecuteSqlResponse(success=False, error=str(exc))
+
+    validation = query_validator.validate(rendered_sql)
     if not validation.is_valid:
         return ExecuteSqlResponse(
             success=False,
@@ -242,7 +284,9 @@ async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
     started = time.perf_counter()
     try:
         adapter = _adapter_for(req.connection.model_dump())
-        result = await adapter.execute_query(req.sql, limit=req.limit)
+        result = await adapter.execute_query(
+            rendered_sql, parameters=binds, limit=req.limit,
+        )
     except Exception as exc:  # surface engine errors to backend
         return ExecuteSqlResponse(
             success=False,
@@ -362,11 +406,26 @@ async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
         import pandas as pd
 
         df = pd.DataFrame(req.data) if req.data else pd.DataFrame()
+        try:
+            specs = [
+                ParameterSpec(
+                    name=p.name,
+                    type=p.type,
+                    default=p.default,
+                    required=p.required,
+                )
+                for p in req.parameters
+            ]
+            params = coerce_values(specs, req.parameter_values)
+        except TemplateError as exc:
+            return ExecutePythonResponse(success=False, error=str(exc))
         # CodeExecutor.execute is sync; run in threadpool to keep the loop free.
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: CodeExecutor.execute(req.code, df, timeout=req.timeout_seconds),
+            lambda: CodeExecutor.execute(
+                req.code, df, timeout=req.timeout_seconds, params=params,
+            ),
         )
     except Exception as exc:
         return ExecutePythonResponse(success=False, error=f"{type(exc).__name__}: {exc}")

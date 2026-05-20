@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import DashboardFilterBar from "@/components/DashboardFilterBar.vue";
 import DashboardWidget from "@/components/DashboardWidget.vue";
+import WidgetMappingDialog from "@/components/WidgetMappingDialog.vue";
 import { useDashboardsStore, type DashboardWidget as Widget } from "@/stores/dashboards";
 import { useWorkspaceStore } from "@/stores/workspace";
 
@@ -19,6 +21,7 @@ const showAdder = ref(false);
 const grid = ref<HTMLDivElement | null>(null);
 const draftWidgets = ref<Widget[]>([]);
 const dirty = ref(false);
+const mappingWidget = ref<Widget | null>(null);
 
 const dashboardId = computed(() => Number(route.params.id));
 
@@ -159,6 +162,19 @@ async function commitAndExit() {
   if (dirty.value) await savePositions();
   editing.value = false;
 }
+
+function valuesForWidget(w: Widget) {
+  return dashboards.parameterValuesForWidget(w);
+}
+
+function openMapping(w: Widget) {
+  // Always grab the live store widget (it has up-to-date mappings).
+  mappingWidget.value = dashboards.current?.widgets.find((x) => x.id === w.id) ?? w;
+}
+
+function closeMapping() {
+  mappingWidget.value = null;
+}
 </script>
 
 <template>
@@ -182,6 +198,8 @@ async function commitAndExit() {
       </div>
     </header>
 
+    <DashboardFilterBar :editing="editing" />
+
     <div
       ref="grid"
       class="detail__grid"
@@ -202,10 +220,12 @@ async function commitAndExit() {
         :key="w.id"
         :widget="w"
         :editing="editing"
+        :parameter-values="valuesForWidget(w)"
         :style="widgetStyle(w)"
         @drag-start="(e) => startDrag(w, e)"
         @resize-start="(e) => startResize(w, e)"
         @remove="remove(w.id)"
+        @edit-mapping="openMapping(w)"
       />
 
       <div
@@ -217,6 +237,12 @@ async function commitAndExit() {
         <button class="btn btn-primary btn-sm" @click="showAdder = true">+ Add chart</button>
       </div>
     </div>
+
+    <WidgetMappingDialog
+      v-if="mappingWidget"
+      :widget="mappingWidget"
+      @close="closeMapping"
+    />
 
     <div v-if="showAdder" class="picker" @click.self="showAdder = false">
       <div class="picker__panel">

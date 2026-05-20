@@ -59,6 +59,7 @@ class CodeExecutor:
         code: str,
         df: pd.DataFrame,
         timeout: float = 30.0,
+        params: dict[str, Any] | None = None,
     ) -> ExecutionResult:
         """
         Execute visualization code and return the result.
@@ -67,6 +68,8 @@ class CodeExecutor:
             code: Python code to execute
             df: DataFrame to make available as 'df'
             timeout: Maximum execution time in seconds
+            params: Dashboard / query parameters exposed to user code
+                as a ``params`` dict (e.g. for dynamic titles).
 
         Returns:
             ExecutionResult with figure or error
@@ -84,7 +87,7 @@ class CodeExecutor:
             allowed_modules = cls._get_allowed_modules()
 
             # Build the restricted namespace
-            namespace = cls._build_namespace(df, allowed_modules)
+            namespace = cls._build_namespace(df, allowed_modules, params or {})
 
             # Execute with timeout enforcement
             def _timeout_handler(signum, frame):
@@ -223,7 +226,12 @@ class CodeExecutor:
         return _controlled_import
 
     @classmethod
-    def _build_namespace(cls, df: pd.DataFrame, allowed_modules: dict[str, str]) -> dict[str, Any]:
+    def _build_namespace(
+        cls,
+        df: pd.DataFrame,
+        allowed_modules: dict[str, str],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Build the restricted execution namespace with controlled imports."""
         import datetime
         import math
@@ -244,6 +252,9 @@ class CodeExecutor:
 
             # Data
             "df": df,
+            # Query / dashboard parameter values. Always present so
+            # `params.get("foo")` is safe even when nothing is set.
+            "params": dict(params or {}),
 
             # Pre-imported modules (backward compatibility)
             "pd": pd_module,

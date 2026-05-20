@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useTheme } from "@/composables/theme";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import ParametersPanel from "./ParametersPanel.vue";
 import ProposalCard from "./ProposalCard.vue";
 
 const props = defineProps<{ collapsed?: boolean }>();
@@ -54,7 +55,8 @@ const hasUnsavedChanges = computed(() => {
     q.chart_type !== ws.chartType ||
     q.chart_mode !== ws.chartMode ||
     (q.chart_python_code ?? "") !== (ws.pythonCode ?? "") ||
-    JSON.stringify(q.chart_config ?? {}) !== JSON.stringify(ws.chartConfig ?? {})
+    JSON.stringify(q.chart_config ?? {}) !== JSON.stringify(ws.chartConfig ?? {}) ||
+    JSON.stringify(q.parameters ?? []) !== JSON.stringify(ws.parameters ?? [])
   );
 });
 
@@ -447,6 +449,8 @@ const activeQueryProposal = computed(() => {
     <div v-if="!props.collapsed && tab === 'python'" class="editor__pyhint">
       <code>df</code> = last query result · assign <code>fig</code> · use Plotly express or graph_objects
     </div>
+
+    <ParametersPanel v-if="!props.collapsed" />
 
     <div v-show="!props.collapsed && tab === 'sql'" ref="sqlHost" class="editor__host" />
     <div v-show="!props.collapsed && tab === 'python'" ref="pyHost" class="editor__host" />

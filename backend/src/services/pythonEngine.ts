@@ -67,8 +67,13 @@ export const pythonEngine = {
   validateSql: (sql: string) =>
     call<{ valid: boolean; error?: string }>({ path: "/sql/validate", body: { sql } }),
 
-  executeSql: (params: { connection: Record<string, unknown>; sql: string; limit?: number }) =>
-    call<SqlResult>({ path: "/sql/execute", body: params }),
+  executeSql: (params: {
+    connection: Record<string, unknown>;
+    sql: string;
+    limit?: number;
+    parameters?: Array<Record<string, unknown>>;
+    parameter_values?: Record<string, unknown>;
+  }) => call<SqlResult>({ path: "/sql/execute", body: params }),
 
   renderChart: (params: {
     chart_type: string;
@@ -82,6 +87,8 @@ export const pythonEngine = {
     data?: Record<string, unknown[]>;
     allowed_packages?: string[];
     timeout_seconds?: number;
+    parameters?: Array<Record<string, unknown>>;
+    parameter_values?: Record<string, unknown>;
   }) => call<PythonResult>({ path: "/python/execute", body: params }),
 
   installPackage: (name: string, versionSpec?: string) =>

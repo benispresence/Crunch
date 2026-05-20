@@ -128,12 +128,26 @@ ensureColumn("queries", "chart_renderer", "chart_renderer TEXT NOT NULL DEFAULT 
 ensureColumn("queries", "chart_config_json", "chart_config_json TEXT NOT NULL DEFAULT '{}'");
 ensureColumn("queries", "chart_python_code", "chart_python_code TEXT");
 ensureColumn("queries", "chart_mode", "chart_mode TEXT NOT NULL DEFAULT 'picker'");
+// Metabase-style query parameters. JSON array of
+// {name, display_name, type, default, required, widget}. The same
+// shape is used for {{var}} substitution and to drive the UI inputs.
+ensureColumn("queries", "parameters_json", "parameters_json TEXT NOT NULL DEFAULT '[]'");
+// Dashboard-level filters, plus a per-widget mapping so one filter
+// can drive multiple charts. ``filters_json`` is an array of filter
+// definitions (id, name, type, default, …); each widget keeps a
+// {dashboard_filter_id: query_param_name} object.
+ensureColumn("dashboards", "filters_json", "filters_json TEXT NOT NULL DEFAULT '[]'");
 // Dashboard widgets can target either a (legacy) visualization or a saved
 // query. New ones use query_id; visualization_id stays for back-compat.
 ensureColumn(
   "dashboard_widgets",
   "query_id",
   "query_id INTEGER REFERENCES queries(id) ON DELETE CASCADE",
+);
+ensureColumn(
+  "dashboard_widgets",
+  "parameter_mappings_json",
+  "parameter_mappings_json TEXT NOT NULL DEFAULT '{}'",
 );
 
 // One-time rebuild: older databases were created with

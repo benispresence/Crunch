@@ -248,6 +248,34 @@ variables — there's no need to mount `.env` files into the containers.
   change, a confirmation bar appears at the bottom of the editor — no silent
   overwrites.
 
+## Filters and variables
+
+Crunch supports Metabase-compatible filter syntax in SQL and Python charts:
+
+```sql
+SELECT *
+FROM orders
+WHERE 1 = 1
+  [[ AND created_at >= {{since}} ]]
+  [[ AND status   =  {{status}} ]]
+```
+
+- **`{{name}}`** — variable reference. Values flow through your driver as
+  SQL bind parameters, so they can't be injected.
+- **`[[ … {{name}} … ]]`** — optional clause. The bracketed chunk vanishes
+  when `name` is left blank; supply a value and it's substituted as a bind.
+
+Every `{{var}}` you type is auto-detected and shown in the **Variables**
+strip above the editor, where you set its type (`text`, `number`, `date`,
+`boolean`), a default, and whether it's required. Python charts get the
+same values exposed as a `params` dict — handy for dynamic titles,
+thresholds, etc.
+
+On a dashboard, click **Edit layout → Edit filters** to add filter chips
+to the top bar. The gear icon on each chart opens a small dialog that
+maps each filter to a variable in that chart's underlying query. One
+filter can drive many charts at once.
+
 ## Tools the assistant has
 
 | Tool               | Purpose                                              |

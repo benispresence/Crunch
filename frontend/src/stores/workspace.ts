@@ -17,6 +17,21 @@ export interface Folder {
   created_at: number;
 }
 
+export type ParameterType = "text" | "number" | "date" | "boolean";
+export type ParameterWidget = "input" | "dropdown" | "date" | "toggle";
+
+export interface ParameterSpec {
+  name: string;
+  display_name?: string;
+  type: ParameterType;
+  default?: string | number | boolean | null;
+  required?: boolean;
+  widget?: ParameterWidget;
+  options?: string[];
+}
+
+export type ParameterValues = Record<string, string | number | boolean | null>;
+
 export interface SavedQuery {
   id: number;
   connection_id: number | null;
@@ -28,6 +43,7 @@ export interface SavedQuery {
   chart_config: Record<string, unknown>;
   chart_python_code: string | null;
   chart_mode: "picker" | "python";
+  parameters: ParameterSpec[];
   created_at: number;
   updated_at: number;
 }
@@ -97,6 +113,10 @@ export const useWorkspaceStore = defineStore("workspace", {
     chartConfig: {} as Record<string, string>,
     pythonCode: "" as string,
     chartMode: "picker" as "picker" | "python",
+    // Declared parameters for the current query (auto-merged with what
+    // we detect in the SQL). Values are the per-run user inputs.
+    parameters: [] as ParameterSpec[],
+    parameterValues: {} as ParameterValues,
     pythonOutput: null as { spec?: Record<string, unknown>; stdout?: string; error?: string } | null,
     pythonRunning: false,
     result: null as SqlResult | null,
@@ -242,7 +262,12 @@ export const useWorkspaceStore = defineStore("workspace", {
           spec?: Record<string, unknown>;
           stdout?: string;
           error?: string;
-        }>("/viz/python", { code: this.pythonCode, data });
+        }>("/viz/python", {
+          code: this.pythonCode,
+          data,
+          parameters: this.parameters,
+          parameter_values: this.parameterValues,
+        });
         // python output also embeds a Plotly spec — keep it raw.
         this.pythonOutput = r ? markRaw(r) as typeof r : r;
       } catch (e) {
@@ -260,6 +285,15 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.chartConfig = { ...(q.chart_config as Record<string, string>) };
       this.pythonCode = q.chart_python_code ?? "";
       this.chartMode = q.chart_mode;
+      this.parameters = (q.parameters ?? []).map((p) => ({ ...p }));
+      // Seed input values from each parameter's default so the first
+      // Run picks up sensible inputs without the user filling anything.
+      this.parameterValues = {};
+      for (const p of this.parameters) {
+        if (p.default !== undefined && p.default !== null && p.default !== "") {
+          this.parameterValues[p.name] = p.default;
+        }
+      }
       this.chartError = "";
       this.pythonOutput = null;
       this.result = this.resultCache[q.id] ?? null;
@@ -292,6 +326,42 @@ export const useWorkspaceStore = defineStore("workspace", {
         await this.renderChart().catch(() => {});
       }
     },
+    /**
+     * Walk the current SQL, harvest every {{var}} reference, and
+     * reconcile against ``parameters``: append unknown names (default
+     * type "text"), drop specs no longer mentioned, preserve the rest
+     * in document order. Mirrors what Metabase's editor does on every
+     * keystroke.
+     */
+    syncParametersFromSql() {
+      const found: string[] = [];
+      const seen = new Set<string>();
+      const re = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(this.sql)) !== null) {
+        const name = m[1];
+        if (!seen.has(name)) {
+          seen.add(name);
+          found.push(name);
+        }
+      }
+      const keep: ParameterSpec[] = [];
+      for (const name of found) {
+        const existing = this.parameters.find((p) => p.name === name);
+        keep.push(existing ?? { name, type: "text" });
+      }
+      // Drop values for parameters that no longer exist.
+      const next: ParameterValues = {};
+      for (const p of keep) {
+        if (this.parameterValues[p.name] !== undefined) {
+          next[p.name] = this.parameterValues[p.name];
+        } else if (p.default !== undefined && p.default !== null && p.default !== "") {
+          next[p.name] = p.default;
+        }
+      }
+      this.parameters = keep;
+      this.parameterValues = next;
+    },
     invalidateCache(queryId?: number | null) {
       const id = queryId ?? this.activeQueryId;
       if (id == null) return;
@@ -308,6 +378,7 @@ export const useWorkspaceStore = defineStore("workspace", {
         chart_config: this.chartConfig,
         chart_python_code: this.pythonCode || null,
         chart_mode: this.chartMode,
+        parameters: this.parameters,
         connection_id: this.activeConnectionId,
       };
       if (this.activeQueryId != null) {
@@ -338,6 +409,7 @@ export const useWorkspaceStore = defineStore("workspace", {
         chart_config: this.chartConfig,
         chart_python_code: this.pythonCode || null,
         chart_mode: this.chartMode,
+        parameters: this.parameters,
       });
       this.activeQueryId = res.id;
       // Reset caches so the new query starts fresh.
@@ -378,6 +450,8 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.chartConfig = {};
       this.pythonCode = "";
       this.chartMode = "picker";
+      this.parameters = [];
+      this.parameterValues = {};
     },
     async runSql() {
       if (!this.activeConnectionId) throw new Error("Pick a connection first");
@@ -386,6 +460,8 @@ export const useWorkspaceStore = defineStore("workspace", {
         this.result = await api.post<SqlResult>("/queries/execute", {
           connection_id: this.activeConnectionId,
           sql: this.sql,
+          parameters: this.parameters,
+          parameter_values: this.parameterValues,
         });
         if (this.activeQueryId != null && this.result?.success) {
           this.resultCache[this.activeQueryId] = this.result;
