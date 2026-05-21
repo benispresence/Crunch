@@ -36,19 +36,32 @@ app works without one.
 
 ## Run with Docker
 
-The simplest way to try NiceMeta. Requires
+The simplest way to try Crunch. Requires
 [Docker Desktop](https://docs.docker.com/get-docker/) (macOS / Windows) or a
 recent Docker Engine + Compose plugin (Linux).
 
 ```bash
 # From the repo root
 cp docker/.env.example docker/.env
-# edit docker/.env — at minimum set ANTHROPIC_API_KEY
+
+# Generate three independent random secrets (re-run for each) and paste
+# them into docker/.env as JWT_SECRET, PYTHON_ENGINE_TOKEN, DATA_KEY.
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# Optional: set ANTHROPIC_API_KEY in docker/.env to enable the AI chat.
 
 docker compose -f docker/docker-compose.yml --env-file docker/.env up --build
 ```
 
 Then open <http://localhost:8080>.
+
+> **The backend runs in `NODE_ENV=production` and will refuse to start if
+> `JWT_SECRET`, `PYTHON_ENGINE_TOKEN`, or `DATA_KEY` is missing or matches a
+> known dev value.** This is intentional — see [Security](#security) below.
+> `DATA_KEY` is the symmetric key used to encrypt connection passwords and
+> the Anthropic API key at rest. **If you lose it, stored connection
+> passwords become unrecoverable** — back it up alongside the database
+> volume.
 
 What's running:
 
@@ -58,19 +71,38 @@ What's running:
 | `backend`  | 3691           | (internal)   | Express + Anthropic SSE                |
 | `engine`   | 8765           | (internal)   | FastAPI                                |
 
-Data is persisted in named volumes (`nicemeta-data`, `nicemeta-workspace`).
+Data is persisted in named volumes (`crunch-data`, `crunch-workspace`).
 Bring it down with `docker compose -f docker/docker-compose.yml down`; add
 `-v` to also wipe the volumes.
 
-**First-run credentials.** The backend seeds a default admin on first start
-and prints the email + temporary password to its container logs:
+**First-run credentials.** The backend seeds a default admin on first
+start. The randomly-generated password is printed to the container log
+**and** written to `/data/FIRST_RUN_ADMIN_PASSWORD` inside the `crunch-data`
+volume:
 
 ```bash
 docker compose -f docker/docker-compose.yml logs backend | grep -A4 "Default admin"
+# or, if the log scrolled away:
+docker compose -f docker/docker-compose.yml exec backend \
+  cat /data/FIRST_RUN_ADMIN_PASSWORD
 ```
 
-Sign in, then change the password via the **Change password** form on the
-login screen.
+Sign in with `admin@nicemeta.local` and the printed password. The API
+**blocks every other call** until you change the password via the modal
+that pops automatically on first login.
+
+### Security
+
+- Tokens (`JWT_SECRET`, `PYTHON_ENGINE_TOKEN`) and the encryption key
+  (`DATA_KEY`) are required in production; boot fails fast otherwise.
+- Connection passwords and the Anthropic API key are AES-256-GCM
+  encrypted at rest using `DATA_KEY`.
+- Auth endpoints (`/auth/login`, `/auth/register`, `/auth/change-password`)
+  are rate-limited (10 failures / 15 min / IP).
+- Public self-registration is **off by default**; admins provision users
+  from **Admin → Users**, or enable it from **Admin → Settings → Access**.
+- The python engine refuses non-`SELECT` SQL by default and binds CORS
+  to the backend container only.
 
 ---
 
