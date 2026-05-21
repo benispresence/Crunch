@@ -38,13 +38,37 @@ export interface AddWidgetSpec {
   parameter_mappings: Record<string, string>;
 }
 
+/** Connection-side of a query edit. Both the "before" and "after"
+ *  sides carry the same shape: id can be null (an unbound query) and
+ *  name comes along for the diff card so it can show
+ *  "Postgres prod → Snowflake warehouse" without a second lookup. */
+export interface QueryConnectionRef {
+  id: number | null;
+  name: string | null;
+}
+
+export interface BulkQueryEditChange {
+  query_id: number;
+  query_name: string;
+  before: { name: string; sql: string; connection: QueryConnectionRef };
+  after: { name: string; sql: string; connection: QueryConnectionRef };
+  has_sql_change: boolean;
+  has_name_change: boolean;
+  has_connection_change: boolean;
+}
+
 export type Proposal =
   | {
       kind: "query_edit";
       query_id: number;
       rationale?: string;
-      before: { name: string; sql: string };
-      after: { name: string; sql: string };
+      before: { name: string; sql: string; connection?: QueryConnectionRef };
+      after: { name: string; sql: string; connection?: QueryConnectionRef };
+    }
+  | {
+      kind: "bulk_query_edit";
+      rationale?: string;
+      changes: BulkQueryEditChange[];
     }
   | {
       kind: "chart_change";
@@ -428,8 +452,46 @@ export const useChatStore = defineStore("chat", {
       try {
         const p = rec.proposal;
         if (p.kind === "query_edit") {
-          await api.put(`/queries/${p.query_id}`, { name: p.after.name, sql: p.after.sql });
+          // Only send fields that actually changed. Connection
+          // retarget can ride alone — the backend leaves SQL/name
+          // untouched when we omit them, so a pure "repoint" doesn't
+          // re-trigger a chart cache invalidation.
+          const body: Record<string, unknown> = {};
+          if (p.after.name !== p.before.name) body.name = p.after.name;
+          if (p.after.sql !== p.before.sql) body.sql = p.after.sql;
+          if (
+            p.after.connection
+            && p.before.connection
+            && p.after.connection.id !== p.before.connection.id
+          ) {
+            body.connection_id = p.after.connection.id;
+          }
+          await api.put(`/queries/${p.query_id}`, body);
           rec.resultId = p.query_id;
+        } else if (p.kind === "bulk_query_edit") {
+          // Iterate. We could parallelise via Promise.all but per-row
+          // sequencing keeps the error story simple — if row 7 fails
+          // the user knows exactly which one and which weren't tried.
+          const applied: number[] = [];
+          for (const ch of p.changes) {
+            const body: Record<string, unknown> = {};
+            if (ch.has_name_change) body.name = ch.after.name;
+            if (ch.has_sql_change) body.sql = ch.after.sql;
+            if (ch.has_connection_change) body.connection_id = ch.after.connection.id;
+            if (Object.keys(body).length === 0) continue;
+            try {
+              await api.put(`/queries/${ch.query_id}`, body);
+              applied.push(ch.query_id);
+            } catch (e) {
+              throw new Error(
+                `applied ${applied.length} of ${p.changes.length}; row #${ch.query_id} failed: ${(e as Error).message}`,
+              );
+            }
+          }
+          // Land the user on the first edited query so the change
+          // is immediately visible — same pattern as single-query
+          // accept below.
+          rec.resultId = applied[0];
         } else if (p.kind === "chart_change") {
           await api.put(`/queries/${p.query_id}`, {
             chart_type: p.after.chart_type,
@@ -534,6 +596,13 @@ export const useChatStore = defineStore("chat", {
           ws.invalidateCache(rec.resultId);
           await ws.loadSavedQueries();
         }
+        if (rec.proposal.kind === "bulk_query_edit") {
+          // Invalidate every edited query's cache so the row count
+          // and chart re-fetch when the user opens one — otherwise
+          // they'd see stale data against the new connection.
+          for (const ch of rec.proposal.changes) ws.invalidateCache(ch.query_id);
+          await ws.loadSavedQueries();
+        }
         if (
           rec.proposal.kind === "new_dashboard" || rec.proposal.kind === "add_widget"
           || rec.proposal.kind === "remove_widget"
@@ -580,6 +649,25 @@ export const useChatStore = defineStore("chat", {
           if (fresh) await ws.openQuery(fresh);
         } else if (p2.kind === "delete_query") {
           if (ws.activeQueryId === p2.query_id) ws.newQuery();
+        } else if (p2.kind === "bulk_query_edit" && rec.resultId != null) {
+          // Bulk edit: send the user to the first changed query so
+          // the result of the propose/accept loop is immediately
+          // visible. If they're already on a query that got edited,
+          // re-open it in place. Otherwise hop to the workspace and
+          // open the first one — matches the "navigate after accept"
+          // pattern the other proposal kinds use.
+          const editedIds = new Set(p2.changes.map((c) => c.query_id));
+          const target =
+            ws.activeQueryId != null && editedIds.has(ws.activeQueryId)
+              ? ws.activeQueryId
+              : rec.resultId;
+          const fresh = ws.savedQueries.find((q) => q.id === target);
+          if (fresh) {
+            if (router.currentRoute.value.name !== "workspace") {
+              await router.push({ name: "workspace" });
+            }
+            await ws.openQuery(fresh);
+          }
         }
       } catch (err) {
         rec.status = "error";

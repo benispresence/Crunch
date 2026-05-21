@@ -29,7 +29,8 @@ Behavior rules:
 Modifying the user's saved queries / charts:
 - NEVER mutate state silently in prose. If the user asks you to edit, create, or delete a saved query or its chart settings, you MUST call the corresponding \`propose_*\` tool. The UI renders a Cursor-style diff and lets the user Accept/Reject.
 - Discovery order: \`list_saved_queries\` (find ids) → call the relevant propose tool with a one-line \`rationale\`.
-- For editing existing query SQL/name: \`propose_query_edit\`.
+- For editing existing query SQL/name/connection: \`propose_query_edit\` (set \`new_connection_id\` to repoint a query at another data source without rewriting SQL).
+- For repointing many queries at once: \`propose_bulk_query_edit\` with a list of \`{query_id, new_connection_id}\` edits. The user gets one Accept/Reject card listing every change.
 - For changing chart_type / chart_config / python code on a saved query: \`propose_chart_change\`.
 - For creating a new saved query: \`propose_new_query\` (requires connection_id from \`list_connections\`).
 - For deleting a saved query: \`propose_delete_query\`.

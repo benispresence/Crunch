@@ -41,6 +41,7 @@ const title = computed(() => {
   const x = p.value;
   switch (x.kind) {
     case "query_edit": return `Edit query #${x.query_id}`;
+    case "bulk_query_edit": return `Bulk edit ${x.changes.length} quer${x.changes.length === 1 ? "y" : "ies"}`;
     case "chart_change": return `Edit chart on "${x.query_name}"`;
     case "new_query": return `New query: "${x.query.name}"`;
     case "delete_query": return `Delete query "${x.target.name}"`;
@@ -77,6 +78,25 @@ const nameDiff = computed<{ before: string; after: string } | null>(() => {
   return null;
 });
 
+// Connection retarget chip for query_edit — only renders when the
+// proposal actually moves the query between connections, so a
+// "rename only" edit stays visually clean.
+function fmtConn(c: { id: number | null; name: string | null } | undefined): string {
+  if (!c) return "—";
+  if (c.id == null) return "(unbound)";
+  return c.name ?? `#${c.id}`;
+}
+
+const connectionDiff = computed<{ before: string; after: string } | null>(() => {
+  const x = p.value;
+  if (x.kind !== "query_edit") return null;
+  const a = x.before.connection;
+  const b = x.after.connection;
+  if (!a || !b) return null;
+  if (a.id === b.id) return null;
+  return { before: fmtConn(a), after: fmtConn(b) };
+});
+
 const chartDelta = computed(() => {
   const x = p.value;
   if (x.kind !== "chart_change") return null;
@@ -107,13 +127,19 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 
     <p v-if="p.rationale" class="prop__rationale">{{ p.rationale }}</p>
 
-    <!-- query_edit: name + SQL diff -->
+    <!-- query_edit: name + connection + SQL diff -->
     <template v-if="p.kind === 'query_edit'">
       <div v-if="nameDiff" class="prop__namechange">
         <span class="prop__field">name</span>
         <code class="prop__name--del">{{ nameDiff.before }}</code>
         <span class="prop__arrow">→</span>
         <code class="prop__name--add">{{ nameDiff.after }}</code>
+      </div>
+      <div v-if="connectionDiff" class="prop__namechange">
+        <span class="prop__field">connection</span>
+        <code class="prop__name--del">{{ connectionDiff.before }}</code>
+        <span class="prop__arrow">→</span>
+        <code class="prop__name--add">{{ connectionDiff.after }}</code>
       </div>
       <div v-if="sqlDiff && sqlDiff.length > 0" class="prop__diff hljs">
         <div
@@ -126,6 +152,50 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
           <span class="prop__text" v-html="highlightCode(line.text || ' ', 'sql')" />
         </div>
       </div>
+      <p
+        v-if="!nameDiff && !connectionDiff && (!sqlDiff || sqlDiff.length === 0)"
+        class="prop__nochange"
+      >
+        No effective change.
+      </p>
+    </template>
+
+    <!-- bulk_query_edit: list of changes, one row per query.  -->
+    <template v-if="p.kind === 'bulk_query_edit'">
+      <ul class="prop__bulk">
+        <li v-for="c in p.changes" :key="c.query_id" class="prop__bulk-row">
+          <div class="prop__bulk-head">
+            <span class="prop__bulk-id">#{{ c.query_id }}</span>
+            <span class="prop__bulk-name">{{ c.query_name }}</span>
+            <div class="prop__bulk-tags">
+              <span v-if="c.has_connection_change" class="prop__bulk-tag prop__bulk-tag--conn">conn</span>
+              <span v-if="c.has_name_change" class="prop__bulk-tag">name</span>
+              <span v-if="c.has_sql_change" class="prop__bulk-tag">sql</span>
+            </div>
+          </div>
+          <div v-if="c.has_connection_change" class="prop__bulk-line">
+            <span class="prop__field">connection</span>
+            <code class="prop__name--del">{{ fmtConn(c.before.connection) }}</code>
+            <span class="prop__arrow">→</span>
+            <code class="prop__name--add">{{ fmtConn(c.after.connection) }}</code>
+          </div>
+          <div v-if="c.has_name_change" class="prop__bulk-line">
+            <span class="prop__field">name</span>
+            <code class="prop__name--del">{{ c.before.name }}</code>
+            <span class="prop__arrow">→</span>
+            <code class="prop__name--add">{{ c.after.name }}</code>
+          </div>
+          <!-- SQL diffs in bulk mode get a compact summary; click
+               through to the individual query if you want the full
+               diff (rare in repoint flows). -->
+          <div v-if="c.has_sql_change" class="prop__bulk-line">
+            <span class="prop__field">sql</span>
+            <span class="prop__bulk-sqlsummary">
+              {{ c.before.sql.length }} → {{ c.after.sql.length }} chars
+            </span>
+          </div>
+        </li>
+      </ul>
     </template>
 
     <!-- chart_change: field-by-field deltas -->
@@ -428,6 +498,59 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 .prop__chart-side--del { background: rgba(224, 122, 95, 0.1); color: #e89b85; }
 .prop__chart-side--add { background: rgba(127, 176, 105, 0.1); color: #a4d18a; }
 .prop__nochange { font-size: 12px; color: var(--fg-subtle); margin: 0; }
+
+.prop__bulk {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.prop__bulk-row {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+.prop__bulk-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.prop__bulk-id {
+  font-family: var(--font-mono);
+  color: var(--fg-subtle);
+  font-size: 11px;
+}
+.prop__bulk-name { color: var(--fg); flex: 1; }
+.prop__bulk-tags { display: flex; gap: 4px; }
+.prop__bulk-tag {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--fg-subtle);
+  border: 1px solid var(--border);
+}
+.prop__bulk-tag--conn {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+.prop__bulk-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.prop__bulk-sqlsummary { color: var(--fg-subtle); font-style: italic; }
 .prop__newq { display: grid; gap: 4px; }
 .prop__newq-row { font-size: 12px; color: var(--fg-muted); }
 .prop__newq-row strong {

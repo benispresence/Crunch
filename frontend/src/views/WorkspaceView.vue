@@ -50,7 +50,10 @@ watch(
         };
       }
       const kind = active.record.proposal.kind;
-      if (kind === "query_edit" || kind === "new_query" || kind === "delete_query") {
+      if (
+        kind === "query_edit" || kind === "new_query" || kind === "delete_query"
+        || kind === "bulk_query_edit"
+      ) {
         editorCollapsed.value = false;
         chartCollapsed.value = true;
         resultsCollapsed.value = true;

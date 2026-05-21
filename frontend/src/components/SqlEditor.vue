@@ -373,7 +373,17 @@ const activeQueryProposal = computed(() => {
   const a = chat.activeProposal;
   if (!a) return null;
   const k = a.record.proposal.kind;
+  // Surface single-query proposals in the overlay. The bulk variant
+  // also touches the active query when it's in the changes list —
+  // we float the card here so the user sees the connection retarget
+  // without context-switching to the chat panel.
   if (k === "query_edit" || k === "new_query" || k === "delete_query") return a;
+  if (k === "bulk_query_edit") {
+    const inBatch = a.record.proposal.changes.some(
+      (c) => c.query_id === ws.activeQueryId,
+    );
+    return inBatch ? a : null;
+  }
   return null;
 });
 </script>
