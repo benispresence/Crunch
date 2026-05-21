@@ -21,6 +21,7 @@ import cronParser from "cron-parser";
 import { db } from "../db/index.js";
 import { decryptConnectionConfig } from "./crypto.js";
 import { pythonEngine } from "./pythonEngine.js";
+import { getSetting } from "./settings.js";
 
 export type LoadMode = "replace" | "append" | "merge" | "incremental" | "streaming";
 export type SourceType = "rest_api" | "sql" | "file" | "kafka" | "custom";
@@ -240,9 +241,46 @@ export async function runPipeline(
      WHERE id = ?`,
   ).run(runId, status, pipelineId);
 
+  // Trim history right after this insert so the table never grows
+  // unboundedly. Default kept generously (100) but admin can override
+  // via Settings.
+  trimRunHistory(pipelineId);
+
   return db
     .prepare("SELECT * FROM pipeline_runs WHERE id = ?")
     .get(runId) as PipelineRunRow;
+}
+
+/** Default number of runs to keep per pipeline before older rows are
+ *  pruned. The admin can override via the ``pipeline_run_retention``
+ *  setting; anything outside [1, 10_000] falls back to the default. */
+const DEFAULT_RUN_RETENTION = 100;
+
+export function getRunRetention(): number {
+  const raw = (getSetting("pipeline_run_retention") || "").trim();
+  if (!raw) return DEFAULT_RUN_RETENTION;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 10_000) return DEFAULT_RUN_RETENTION;
+  return n;
+}
+
+/** Delete pipeline_runs for one pipeline beyond the configured cap.
+ *  Keeps the newest N by id, deletes the rest. Safe to call on every
+ *  insert — bounded work since we only ever exceed by one row. */
+export function trimRunHistory(pipelineId: number): number {
+  const keep = getRunRetention();
+  const r = db
+    .prepare(
+      `DELETE FROM pipeline_runs
+       WHERE pipeline_id = ?
+       AND id NOT IN (
+         SELECT id FROM pipeline_runs
+         WHERE pipeline_id = ?
+         ORDER BY id DESC LIMIT ?
+       )`,
+    )
+    .run(pipelineId, pipelineId, keep);
+  return r.changes;
 }
 
 // ---------- Scheduler ----------------------------------------------

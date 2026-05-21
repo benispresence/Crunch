@@ -13,11 +13,13 @@ import { connectionsRouter } from "./routes/connections.js";
 import { dashboardsRouter } from "./routes/dashboards.js";
 import { foldersRouter } from "./routes/folders.js";
 import { gitRouter } from "./routes/git.js";
+import { mcpRouter } from "./routes/mcp.js";
 import { pipelinesRouter } from "./routes/pipelines.js";
 import { queriesRouter } from "./routes/queries.js";
 import { visualizationsRouter } from "./routes/visualizations.js";
 import { vizRouter } from "./routes/viz.js";
 import { seedDefaultAdmin } from "./services/auth.js";
+import { seedPermissions } from "./services/permissions.js";
 import { startScheduler } from "./services/pipelines.js";
 import { pythonEngine } from "./services/pythonEngine.js";
 
@@ -62,11 +64,16 @@ app.use("/api/pipelines", pipelinesRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/chat", chatRouter);
 app.use("/api/git", gitRouter);
+app.use("/api/mcp", mcpRouter);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
   res.status(500).json({ error: err.message });
 });
+
+// Seed the capability registry + default groups before any user
+// activity. Idempotent on every restart.
+seedPermissions();
 
 const seed = seedDefaultAdmin();
 if (seed.created && seed.password) {

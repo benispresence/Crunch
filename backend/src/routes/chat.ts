@@ -11,7 +11,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
-import { chatTools, runTool } from "../services/chatTools.js";
+import { chatToolsForRequest, runTool } from "../services/chatTools.js";
 import { getAnthropicApiKey, getAnthropicModel } from "../services/settings.js";
 
 export const chatRouter = Router();
@@ -258,7 +258,7 @@ chatRouter.post("/send", async (req, res) => {
         model,
         max_tokens: 4096,
         system: systemBlocks,
-        tools: chatTools,
+        tools: chatToolsForRequest(),
         messages: history,
         // Claude 4.x uses adaptive thinking with an effort knob. The older
         // `{ type: "enabled", budget_tokens }` shape returns 400 on Sonnet 4.6+.

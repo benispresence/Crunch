@@ -2,6 +2,7 @@
 import * as monaco from "monaco-editor";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import PipelineLogViewer from "@/components/PipelineLogViewer.vue";
 import { useTheme } from "@/composables/theme";
 import { usePipelinesStore, type PipelineRun } from "@/stores/pipelines";
 import { useWorkspaceStore, type SavedPipeline } from "@/stores/workspace";
@@ -438,8 +439,11 @@ const dirty = computed(() => {
 
       <div v-if="currentRun" class="run-detail">
         <h4>Run #{{ currentRun.id }} — {{ currentRun.status }}</h4>
-        <p v-if="currentRun.error_message" class="run-detail__err">{{ currentRun.error_message }}</p>
-        <pre class="run-detail__log">{{ currentRun.log || "(no output)" }}</pre>
+        <PipelineLogViewer
+          :log="currentRun.log || ''"
+          :status="currentRun.status"
+          :error-message="currentRun.error_message"
+        />
       </div>
     </section>
   </div>

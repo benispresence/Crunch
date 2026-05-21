@@ -53,6 +53,31 @@ const SELECT_COLS = `
   created_at, updated_at
 `;
 
+/** Cross-pipeline timeline: one row per recent run, with the
+ *  pipeline's name + status + start/end timestamps so the UI can
+ *  build a Gantt chart. Lookback is capped so this stays cheap. */
+pipelinesRouter.get("/timeline", (req, res) => {
+  const lookbackHours = Math.min(
+    24 * 30,
+    Math.max(1, Number(req.query.hours ?? 24)),
+  );
+  const limit = Math.min(500, Math.max(10, Number(req.query.limit ?? 200)));
+  const since = Math.floor(Date.now() / 1000) - lookbackHours * 3600;
+  const rows = db
+    .prepare(
+      `SELECT r.id, r.pipeline_id, r.status, r.started_at, r.finished_at,
+              r.rows_loaded, r.triggered_by, r.error_message,
+              p.name AS pipeline_name
+       FROM pipeline_runs r
+       JOIN pipelines p ON p.id = r.pipeline_id
+       WHERE p.user_id = ? AND r.started_at >= ?
+       ORDER BY r.started_at DESC
+       LIMIT ?`,
+    )
+    .all(req.user!.sub, since, limit);
+  res.json({ runs: rows, lookback_hours: lookbackHours });
+});
+
 pipelinesRouter.get("/", (req, res) => {
   const rows = db
     .prepare(

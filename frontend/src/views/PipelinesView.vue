@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import PipelineTimeline from "@/components/PipelineTimeline.vue";
 import { usePipelinesStore } from "@/stores/pipelines";
 import { useWorkspaceStore } from "@/stores/workspace";
 
@@ -153,8 +154,10 @@ const empty = computed(() => pipelines.list.length === 0);
       <button class="btn btn-primary btn-sm" @click="creating = true">+ Create your first pipeline</button>
     </div>
 
-    <ul v-else class="pipes__list">
-      <li
+    <template v-if="!empty">
+      <PipelineTimeline />
+      <ul class="pipes__list">
+        <li
         v-for="p in pipelines.list"
         :key="p.id"
         class="pipes__card"
@@ -194,8 +197,9 @@ const empty = computed(() => pipelines.list.length === 0);
           </button>
           <button class="btn btn-ghost btn-sm" @click="remove(p.id)">Delete</button>
         </div>
-      </li>
-    </ul>
+        </li>
+      </ul>
+    </template>
   </div>
 </template>
 

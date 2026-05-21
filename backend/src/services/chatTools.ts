@@ -16,6 +16,11 @@ import { navigateTools } from "./chatTools/navigate.js";
 import { pipelineTools } from "./chatTools/pipelines.js";
 import { queryTools } from "./chatTools/queries.js";
 import type { ToolContext, ToolHandler, ToolModule } from "./chatTools/types.js";
+import {
+  callExternalTool,
+  listExternalTools,
+  splitPrefixedTool,
+} from "./mcpClient.js";
 
 const MODULES: ToolModule[] = [
   dataTools,
@@ -47,28 +52,56 @@ for (const m of MODULES) {
   }
 }
 
-export const chatTools: Tool[] = tools;
+/** Snapshot of built-in tools at module load. The exported
+ *  ``chatTools`` array (below) is rebuilt per-request so it includes
+ *  whatever external MCP servers the admin has configured. */
+const BUILT_IN_TOOLS: Tool[] = tools;
 
 export type { ToolContext };
+
+/** Tool list the chat route hands to the SDK. Re-evaluated per call
+ *  so newly-added MCP servers show up without a server restart. */
+export function chatToolsForRequest(): Tool[] {
+  const external = listExternalTools().map<Tool>((t) => ({
+    name: t.prefixed_name,
+    description: t.description,
+    input_schema: t.input_schema as Tool["input_schema"],
+  }));
+  return [...BUILT_IN_TOOLS, ...external];
+}
+
+/** Legacy export retained for callers (notably the MCP server route)
+ *  that only need the built-in tool catalogue, not the merged set. */
+export const chatTools: Tool[] = BUILT_IN_TOOLS;
 
 /**
  * Dispatch a tool call. Normalises every error path to the same
  * `{success: false, error: string}` shape so the agent (and the chat
  * route) only has to handle one failure envelope. Handlers can still
  * return `{error}` or throw — both get converted here.
+ *
+ * External MCP tools live under a ``mcp__<server>__<tool>`` prefix
+ * and are dispatched through :func:`callExternalTool`.
  */
 export async function runTool(
   ctx: ToolContext,
   name: string,
   input: Record<string, unknown>,
 ): Promise<unknown> {
+  // External MCP tool path first — these have a distinct prefix and
+  // can't collide with built-in names.
+  if (splitPrefixedTool(name)) {
+    try {
+      return await callExternalTool(name, input);
+    } catch (e) {
+      return { success: false, error: (e as Error).message };
+    }
+  }
+
   const fn = dispatch[name];
   if (!fn) return { success: false, error: `unknown tool ${name}` };
   try {
     const result = await fn(ctx, input);
-    // Handlers that returned the legacy `{error: "..."}` shape get
-    // upgraded to the unified one so the SDK always sees a consistent
-    // failure envelope.
     if (
       result
       && typeof result === "object"

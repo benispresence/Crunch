@@ -1,10 +1,19 @@
 import type { NextFunction, Request, Response } from "express";
 import { userMustChangePassword, verifyToken, type JwtPayload } from "../services/auth.js";
 import { findUserByApiKey } from "../services/authProviders.js";
+import {
+  effectivePermissions,
+  hasPermission,
+  type CapabilityName,
+} from "../services/permissions.js";
 
 declare module "express-serve-static-core" {
   interface Request {
     user?: JwtPayload;
+    /** Scopes the bearer token allows. ``null`` for JWT (use full
+     *  user permissions); a Set for API keys (intersection of the
+     *  key's stored scopes + the owner's permissions). */
+    bearerScopes?: Set<CapabilityName> | null;
   }
 }
 
@@ -31,6 +40,10 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
       sub: apiUser.id, email: apiUser.email,
       role: apiUser.role, tv: apiUser.token_version,
     };
+    // API keys carry a (possibly empty) scope list. Empty = inherit
+    // all of the owner's permissions; non-empty = intersection with
+    // owner's. Never wider than the owner — see permissions.ts.
+    req.bearerScopes = effectivePermissions(apiUser.id, apiUser.scopes);
     next();
     return;
   }
@@ -49,6 +62,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     return;
   }
   req.user = payload;
+  // JWT bearers get the full user permission set — no scope narrowing.
+  req.bearerScopes = null;
   next();
 }
 
@@ -58,4 +73,35 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
     return;
   }
   next();
+}
+
+/**
+ * Gate a route on a capability flag. Combines the user's effective
+ * permissions (from groups) with the bearer token's scopes (from the
+ * API key, if any). A capability passes only when *both* sides say
+ * yes — keys never grant more than the owner has.
+ *
+ * Stack this *after* `requireAuth`. Returns 403 + the missing
+ * capability name in the response body so the UI can render a
+ * useful message.
+ */
+export function requirePermission(cap: CapabilityName) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const uid = req.user?.sub;
+    if (uid == null) {
+      res.status(401).json({ error: "not authenticated" });
+      return;
+    }
+    if (!hasPermission(uid, cap)) {
+      res.status(403).json({ error: "permission_denied", capability: cap });
+      return;
+    }
+    if (req.bearerScopes && !req.bearerScopes.has(cap)) {
+      res
+        .status(403)
+        .json({ error: "permission_denied_by_token", capability: cap });
+      return;
+    }
+    next();
+  };
 }

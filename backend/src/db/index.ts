@@ -287,7 +287,69 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline
     ON pipeline_runs(pipeline_id, id DESC);
+
+  -- Capability registry. Code seeds this; users never INSERT.
+  -- A capability is a string like "query.write" that gates a specific
+  -- action. Permissions on groups + permissions on api_keys both
+  -- reference these names.
+  CREATE TABLE IF NOT EXISTS permissions (
+    name TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL
+  );
+
+  -- Groups bundle permissions. Each user belongs to >=0 groups; the
+  -- union of their groups' permissions is the user's effective set.
+  -- is_system=1 rows can be edited but not deleted so we never
+  -- end up with zero groups (and no path to add a user back).
+  CREATE TABLE IF NOT EXISTS user_groups_def (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS group_permissions (
+    group_id INTEGER NOT NULL REFERENCES user_groups_def(id) ON DELETE CASCADE,
+    permission TEXT NOT NULL REFERENCES permissions(name) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, permission)
+  );
+
+  CREATE TABLE IF NOT EXISTS user_group_membership (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES user_groups_def(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, group_id)
+  );
+
+  -- Outbound MCP connections — Crunch as a client of external MCP
+  -- servers. The chat agent loads tools from these alongside the
+  -- built-ins. Auth header values are encrypted at rest.
+  CREATE TABLE IF NOT EXISTS mcp_servers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL,
+    transport TEXT NOT NULL DEFAULT 'http',   -- 'http' for now
+    auth_header_name TEXT,
+    auth_header_value TEXT,                   -- encrypted
+    enabled INTEGER NOT NULL DEFAULT 1,
+    allowed_tools TEXT NOT NULL DEFAULT '[]', -- JSON: empty = all
+    last_handshake_at INTEGER,
+    last_error TEXT,
+    cached_tools_json TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+  );
 `);
+
+// API keys get a JSON scope list. Empty/null = inherit all of the
+// owner's permissions. Non-empty = the intersection of (owner's perms)
+// and (scope list) — keys can never widen, only narrow.
+ensureColumn(
+  "api_keys",
+  "scopes_json",
+  "scopes_json TEXT NOT NULL DEFAULT '[]'",
+);
 
 // Track the external identity behind an SSO-provisioned user so we
 // can re-bind safely (same external_id always returns the same Crunch

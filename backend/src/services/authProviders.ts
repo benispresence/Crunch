@@ -272,16 +272,25 @@ export function createApiKey(opts: {
   user_id: number;
   name: string;
   expires_at?: number | null;
+  /** Capability names this key is allowed to use. Empty = inherit
+   *  the owner's full permission set. Non-empty narrows access —
+   *  the bearer middleware intersects with the owner's effective
+   *  permissions, so a key can never widen what the owner has. */
+  scopes?: string[];
 }): { row: ApiKeyRow; plaintext: string } {
   const plaintext = generateApiKey();
   const prefix = plaintext.slice(0, 16);
   const keyHash = hashApiKey(plaintext);
+  const scopesJson = JSON.stringify(opts.scopes ?? []);
   const info = db
     .prepare(
-      `INSERT INTO api_keys (user_id, name, prefix, key_hash, expires_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO api_keys (user_id, name, prefix, key_hash, expires_at, scopes_json)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(opts.user_id, opts.name, prefix, keyHash, opts.expires_at ?? null);
+    .run(
+      opts.user_id, opts.name, prefix, keyHash,
+      opts.expires_at ?? null, scopesJson,
+    );
   const row = db
     .prepare("SELECT * FROM api_keys WHERE id = ?")
     .get(Number(info.lastInsertRowid)) as ApiKeyRow;
@@ -314,17 +323,24 @@ export function revokeApiKey(id: number): boolean {
 }
 
 /** Look up an API key by its plaintext secret. Returns the owning
- *  user when the key is valid (matched hash, not revoked, not
- *  expired); ``null`` otherwise. Updates ``last_used_at`` on hit
- *  so the admin UI can show "last used …". */
+ *  user + the key's stored scope list when the key is valid (matched
+ *  hash, not revoked, not expired); ``null`` otherwise. Updates
+ *  ``last_used_at`` on hit so the admin UI can show "last used …". */
 export function findUserByApiKey(secret: string):
-  | { id: number; email: string; role: string; token_version: number; api_key_id: number }
+  | {
+      id: number; email: string; role: string; token_version: number;
+      api_key_id: number;
+      /** The key's stored scope list. Empty = inherit all of the
+       *  owner's permissions. The middleware intersects with the
+       *  owner's effective perms so keys can never widen access. */
+      scopes: string[];
+    }
   | null {
   if (!secret.startsWith(API_KEY_PREFIX)) return null;
   const hash = hashApiKey(secret);
   const row = db
     .prepare(
-      `SELECT k.id AS api_key_id, k.revoked_at, k.expires_at,
+      `SELECT k.id AS api_key_id, k.revoked_at, k.expires_at, k.scopes_json,
               u.id, u.email, u.role, u.token_version
        FROM api_keys k JOIN users u ON u.id = k.user_id
        WHERE k.key_hash = ?`,
@@ -332,6 +348,7 @@ export function findUserByApiKey(secret: string):
     .get(hash) as
     | {
         api_key_id: number; revoked_at: number | null; expires_at: number | null;
+        scopes_json: string;
         id: number; email: string; role: string; token_version: number;
       }
     | undefined;
@@ -342,8 +359,16 @@ export function findUserByApiKey(secret: string):
   db.prepare("UPDATE api_keys SET last_used_at = ? WHERE id = ?").run(
     now, row.api_key_id,
   );
+  let scopes: string[] = [];
+  try {
+    const parsed = JSON.parse(row.scopes_json || "[]");
+    if (Array.isArray(parsed)) scopes = parsed.map((s) => String(s));
+  } catch {
+    /* leave empty */
+  }
   return {
     id: row.id, email: row.email, role: row.role,
     token_version: row.token_version, api_key_id: row.api_key_id,
+    scopes,
   };
 }
