@@ -599,11 +599,35 @@ async def pipeline_execute(req: PipelineExecuteRequest) -> PipelineExecuteRespon
     )
     # CPU-bound script; off-load to a thread so the asyncio loop stays
     # responsive and the FastAPI worker can serve health checks.
+    # SIGALRM inside execute_pipeline only works from the main thread,
+    # so we also bound the asyncio await — a runaway script can no
+    # longer hold the engine's request indefinitely.  The orphaned
+    # worker thread will finish eventually (Python can't kill threads
+    # cooperatively), but the engine is freed to handle further calls.
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: execute_pipeline(req.code, ctx, timeout_seconds=req.timeout_seconds),
-    )
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: execute_pipeline(
+                    req.code, ctx, timeout_seconds=req.timeout_seconds,
+                ),
+            ),
+            # Add a small grace beyond the in-process SIGALRM so we
+            # don't race with the script's own timeout report.
+            timeout=req.timeout_seconds + 30,
+        )
+    except asyncio.TimeoutError:
+        return PipelineExecuteResponse(
+            success=False,
+            rows_loaded=0,
+            log="",
+            error=(
+                f"pipeline exceeded {req.timeout_seconds + 30}s wall-clock "
+                "limit (engine-side abort)"
+            ),
+            duration_ms=(req.timeout_seconds + 30) * 1000,
+        )
     return PipelineExecuteResponse(
         success=result.success,
         rows_loaded=result.rows_loaded,

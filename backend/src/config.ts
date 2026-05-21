@@ -47,6 +47,12 @@ export const config = {
   // Symmetric key for at-rest secret encryption (connection passwords,
   // anthropic api key). Optional in dev; required in prod (see below).
   dataKey: process.env.DATA_KEY ?? "",
+  // Optional containment for File connections. When set, the engine
+  // refuses local paths outside this directory. Cloud URIs
+  // (s3://, gs://, https://) are unaffected. Strongly recommended
+  // for multi-tenant deployments — otherwise a user can point at
+  // /etc/passwd or /home/*/.ssh and have it parsed as CSV.
+  fileSourceRoot: process.env.NICEMETA_FILE_SOURCE_ROOT ?? "",
 };
 
 if (!isDev && !config.dataKey) {

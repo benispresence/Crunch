@@ -264,7 +264,6 @@ db.exec(`
     last_run_id INTEGER,
     last_run_status TEXT,
     last_run_at INTEGER,
-    last_scheduled_check INTEGER,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
   );

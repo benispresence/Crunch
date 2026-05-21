@@ -52,6 +52,13 @@ async function loadSAML(): Promise<SAMLConstructor> {
 }
 
 function callbackUrl(req: Request, providerId: number): string {
+  // Same source of truth as the OIDC callback URL — ``NICEMETA_PUBLIC_BASE_URL``
+  // pin or X-Forwarded-* derivation. The ACS URL must match the value
+  // the admin pre-registered with the IdP.
+  const envBase = (process.env.NICEMETA_PUBLIC_BASE_URL || "").trim();
+  if (envBase) {
+    return `${envBase.replace(/\/+$/, "")}/api/auth/saml/${providerId}/acs`;
+  }
   const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol;
   const host = (req.headers["x-forwarded-host"] as string) || req.get("host");
   return `${proto}://${host}/api/auth/saml/${providerId}/acs`;

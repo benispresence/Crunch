@@ -19,6 +19,7 @@
 
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
+import { createRemoteJWKSet, decodeJwt, jwtVerify } from "jose";
 import { db } from "../db/index.js";
 import type { UserRow } from "./auth.js";
 import {
@@ -84,10 +85,16 @@ function pkce(): { verifier: string; challenge: string } {
 }
 
 function publicCallbackUrl(req: Request, providerId: number): string {
-  // The callback URL must match what the admin pre-registered with the
-  // IdP. We synthesize it from the inbound request's headers; admins
-  // can pin this via the `public_base_url` setting (TODO) if the
-  // backend sits behind a non-standard proxy.
+  // The callback URL must match what the admin pre-registered with
+  // the IdP. We synthesize it from the inbound request's headers,
+  // honouring ``X-Forwarded-*`` so the URL is correct behind a TLS-
+  // terminating proxy. To pin the URL explicitly (e.g. when the
+  // backend sits behind a path-rewriting proxy), set
+  // ``NICEMETA_PUBLIC_BASE_URL`` and we'll use that as the origin.
+  const envBase = (process.env.NICEMETA_PUBLIC_BASE_URL || "").trim();
+  if (envBase) {
+    return `${envBase.replace(/\/+$/, "")}/api/auth/oidc/${providerId}/callback`;
+  }
   const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol;
   const host = (req.headers["x-forwarded-host"] as string) || req.get("host");
   return `${proto}://${host}/api/auth/oidc/${providerId}/callback`;
@@ -136,16 +143,57 @@ interface Claims {
   [key: string]: unknown;
 }
 
-/** Decode (without signature verification) the payload of a JWT.
- *  We pair this with a fresh token-endpoint exchange + a userinfo
- *  call where available, so a forged id_token alone can't sign anyone
- *  in. (Full JWKS verification is on the follow-up list.) */
+// Cache JWKS handles per jwks_uri so we don't refetch the keyset on
+// every sign-in. `createRemoteJWKSet` itself caches signing keys with
+// rotation handling, so the cache is just "one factory per IdP".
+const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+function jwksFor(uri: string): ReturnType<typeof createRemoteJWKSet> {
+  let h = jwksCache.get(uri);
+  if (!h) {
+    h = createRemoteJWKSet(new URL(uri));
+    jwksCache.set(uri, h);
+  }
+  return h;
+}
+
+/** Verify an id_token against the IdP's JWKS and return its claims.
+ *  Falls back to throwing on any failure — callers treat that as
+ *  "abandon the sign-in".
+ *
+ *  This *replaces* the previous unsafe decode. Even when paired with
+ *  a token-endpoint call, a signed id_token is the standard contract
+ *  for OIDC sign-in and skipping verification creates a class of
+ *  attacks (TLS interception, IdP bugs, public-client flows) that
+ *  defence-in-depth should cover.
+ */
+async function verifyIdToken(
+  jwt: string,
+  doc: DiscoveryDocument,
+  cfg: OIDCConfig,
+): Promise<Claims> {
+  if (!doc.jwks_uri) {
+    // No JWKS endpoint advertised — we *can't* verify. Refuse to
+    // accept the id_token's claims rather than silently trust them.
+    throw new Error(
+      "IdP did not advertise a jwks_uri — id_token cannot be verified. "
+      + "Pin one explicitly in the provider config.",
+    );
+  }
+  const jwks = jwksFor(doc.jwks_uri);
+  const { payload } = await jwtVerify(jwt, jwks, {
+    issuer: doc.issuer ?? cfg.issuer,
+    audience: cfg.client_id,
+  });
+  return payload as Claims;
+}
+
+/** Unsigned decode used only as a *fallback* identification when the
+ *  IdP couldn't be verified (no JWKS). Callers must also enforce
+ *  domain checks before honouring claims from this path. */
 function decodeJwtPayload(jwt: string): Claims {
-  const parts = jwt.split(".");
-  if (parts.length < 2) return {};
   try {
-    const payload = Buffer.from(parts[1]!, "base64url").toString("utf8");
-    return JSON.parse(payload) as Claims;
+    return decodeJwt(jwt) as Claims;
   } catch {
     return {};
   }
@@ -202,9 +250,26 @@ export async function handleCallback(
   }
   const tokens = (await tokenRes.json()) as TokenResponse;
 
-  // Prefer userinfo since some IdPs (notably GitHub) don't issue an
-  // OIDC id_token. We fall back to id_token claims for vanilla OIDC.
-  let claims: Claims = tokens.id_token ? decodeJwtPayload(tokens.id_token) : {};
+  // id_token comes first when present and verifiable. If the IdP
+  // advertises a JWKS endpoint, signature + issuer + audience are
+  // checked; failure aborts the flow. Userinfo is then merged on top
+  // for IdPs (e.g. GitHub OAuth) that don't ship an id_token.
+  let claims: Claims = {};
+  if (tokens.id_token) {
+    try {
+      claims = await verifyIdToken(tokens.id_token, doc, cfg);
+    } catch (e) {
+      const msg = (e as Error).message;
+      // If the only failure is "no jwks_uri", we degrade to userinfo
+      // below — the IdP simply doesn't support id_token verification.
+      // Any other verification failure (bad signature, wrong issuer,
+      // wrong audience) is fatal.
+      if (!/did not advertise a jwks_uri/.test(msg)) {
+        return { ok: false, error: `id_token verification failed: ${msg}` };
+      }
+      claims = decodeJwtPayload(tokens.id_token);
+    }
+  }
   if (doc.userinfo_endpoint && tokens.access_token) {
     try {
       const r = await fetch(doc.userinfo_endpoint, {

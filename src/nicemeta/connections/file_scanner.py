@@ -96,10 +96,33 @@ def scan_folder(
 ) -> ScanResult:
     """Walk ``root`` and return a :class:`ScanResult` describing every
     supported file underneath. ``max_files`` caps the result so a
-    pathological directory tree doesn't blow up the UI."""
+    pathological directory tree doesn't blow up the UI.
+
+    Honours ``NICEMETA_FILE_SOURCE_ROOT`` (same env var as
+    :mod:`file_adapter`): when set, the scan refuses any path that
+    isn't under that root. Empty or unset → no containment, useful
+    for single-user dev installs.
+    """
+    import os
+
     p = Path(root).expanduser()
     if not p.exists():
         return ScanResult(root=str(p), error=f"path does not exist: {p}")
+
+    contain = os.environ.get("NICEMETA_FILE_SOURCE_ROOT", "").strip()
+    if contain:
+        contain_root = Path(contain).resolve()
+        try:
+            resolved = p.resolve()
+            resolved.relative_to(contain_root)
+        except (ValueError, OSError):
+            return ScanResult(
+                root=str(p),
+                error=(
+                    f"path is outside the configured file source root "
+                    f"({contain_root})"
+                ),
+            )
 
     if p.is_file():
         # Treat a single file as a one-element folder so the UI flow stays

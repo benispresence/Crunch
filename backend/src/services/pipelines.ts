@@ -8,9 +8,10 @@
  * credentials, so user code doesn't have to handle secrets.
  *
  * A small in-process ticker scans `pipelines` every 30s and fires any
- * pipeline whose cron expression matches the current minute and which
- * hasn't already been run in this window (the ``last_scheduled_check``
- * + minute-floor pair is the dedupe key).
+ * pipeline whose cron expression has a match inside the window
+ * between the previous tick and now (``fireBetween`` below). The
+ * ticker holds an in-memory set of running pipeline ids so a slow
+ * run can't fire twice while still executing.
  *
  * Runs are persisted to ``pipeline_runs`` so the UI can show history
  * and the user can read logs from failed runs without SSH.
@@ -47,7 +48,6 @@ export interface PipelineRow {
   last_run_id: number | null;
   last_run_status: string | null;
   last_run_at: number | null;
-  last_scheduled_check: number | null;
   created_at: number;
   updated_at: number;
 }

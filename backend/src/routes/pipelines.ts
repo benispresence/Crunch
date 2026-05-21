@@ -49,7 +49,7 @@ const SELECT_COLS = `
   python_code, code_mode,
   schedule, schedule_enabled,
   stream_max_seconds, stream_max_messages,
-  last_run_id, last_run_status, last_run_at, last_scheduled_check,
+  last_run_id, last_run_status, last_run_at,
   created_at, updated_at
 `;
 
@@ -113,7 +113,7 @@ pipelinesRouter.post("/template", async (req, res) => {
     stream_max_seconds: parsed.data.stream_max_seconds ?? 60,
     stream_max_messages: parsed.data.stream_max_messages ?? 10_000,
     last_run_id: null, last_run_status: null,
-    last_run_at: null, last_scheduled_check: null,
+    last_run_at: null,
     created_at: 0, updated_at: 0,
   };
   const spec = buildTemplateSpec(row, req.user!.sub);

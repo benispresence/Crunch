@@ -70,9 +70,17 @@ class PostgreSQLAdapter(ConnectionAdapter):
         return [row[0] for row in result.rows]
 
     async def get_tables(self, schema: str | None = None) -> list[TableInfo]:
-        """Get list of tables in PostgreSQL database."""
-        schema_filter = f"AND table_schema = '{schema}'" if schema else ""
-        
+        """Get list of tables in PostgreSQL database.
+
+        Schema name is bound as a SQL parameter, not interpolated, so a
+        malicious picker value can't escape the LIKE/= position.
+        """
+        params: dict[str, str] = {}
+        schema_filter = ""
+        if schema:
+            schema_filter = "AND table_schema = :schema"
+            params["schema"] = schema
+
         query = f"""
             SELECT table_schema, table_name, table_type
             FROM information_schema.tables
@@ -80,10 +88,10 @@ class PostgreSQLAdapter(ConnectionAdapter):
             {schema_filter}
             ORDER BY table_schema, table_name
         """
-        result = await self.execute_query(query, limit=None)
+        result = await self.execute_query(query, parameters=params, limit=None)
         if result.error:
             return []
-        
+
         return [
             TableInfo(
                 name=row[1],
@@ -96,11 +104,13 @@ class PostgreSQLAdapter(ConnectionAdapter):
     async def get_columns(
         self, table: str, schema: str | None = None
     ) -> list[ColumnInfo]:
-        """Get columns for a PostgreSQL table."""
+        """Get columns for a PostgreSQL table. Bind params used for
+        ``table`` and ``schema`` so picker-controlled values can't
+        inject SQL into the introspection query."""
         schema_name = schema or "public"
-        
-        query = f"""
-            SELECT 
+
+        query = """
+            SELECT
                 c.column_name,
                 c.data_type,
                 c.is_nullable,
@@ -113,14 +123,16 @@ class PostgreSQLAdapter(ConnectionAdapter):
                 JOIN information_schema.key_column_usage ku
                     ON tc.constraint_name = ku.constraint_name
                 WHERE tc.constraint_type = 'PRIMARY KEY'
-                    AND tc.table_schema = '{schema_name}'
-                    AND tc.table_name = '{table}'
+                    AND tc.table_schema = :schema
+                    AND tc.table_name = :table
             ) pk ON c.column_name = pk.column_name
-            WHERE c.table_schema = '{schema_name}'
-                AND c.table_name = '{table}'
+            WHERE c.table_schema = :schema
+                AND c.table_name = :table
             ORDER BY c.ordinal_position
         """
-        result = await self.execute_query(query, limit=None)
+        result = await self.execute_query(
+            query, parameters={"schema": schema_name, "table": table}, limit=None,
+        )
         if result.error:
             return []
         

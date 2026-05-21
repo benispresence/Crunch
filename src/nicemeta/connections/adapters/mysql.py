@@ -73,10 +73,19 @@ class MySQLAdapter(ConnectionAdapter):
         return [row[0] for row in result.rows]
 
     async def get_tables(self, schema: str | None = None) -> list[TableInfo]:
-        """Get list of tables in MySQL database."""
-        # Use current database if no schema specified
-        schema_filter = f"AND TABLE_SCHEMA = '{schema}'" if schema else f"AND TABLE_SCHEMA = DATABASE()"
-        
+        """Get list of tables in MySQL database.
+
+        Schema is bound as a SQL parameter — the previous f-string
+        interpolation would have let a malicious picker value inject
+        arbitrary clauses into the introspection query.
+        """
+        params: dict[str, str] = {}
+        if schema:
+            schema_filter = "AND TABLE_SCHEMA = :schema"
+            params["schema"] = schema
+        else:
+            schema_filter = "AND TABLE_SCHEMA = DATABASE()"
+
         query = f"""
             SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
             FROM information_schema.TABLES
@@ -84,10 +93,10 @@ class MySQLAdapter(ConnectionAdapter):
             {schema_filter}
             ORDER BY TABLE_SCHEMA, TABLE_NAME
         """
-        result = await self.execute_query(query, limit=None)
+        result = await self.execute_query(query, parameters=params, limit=None)
         if result.error:
             return []
-        
+
         return [
             TableInfo(
                 name=row[1],
@@ -100,11 +109,17 @@ class MySQLAdapter(ConnectionAdapter):
     async def get_columns(
         self, table: str, schema: str | None = None
     ) -> list[ColumnInfo]:
-        """Get columns for a MySQL table."""
-        schema_filter = f"TABLE_SCHEMA = '{schema}'" if schema else "TABLE_SCHEMA = DATABASE()"
-        
+        """Get columns for a MySQL table. Bind params used for ``table``
+        and ``schema``."""
+        params: dict[str, str] = {"table": table}
+        if schema:
+            schema_filter = "TABLE_SCHEMA = :schema"
+            params["schema"] = schema
+        else:
+            schema_filter = "TABLE_SCHEMA = DATABASE()"
+
         query = f"""
-            SELECT 
+            SELECT
                 COLUMN_NAME,
                 DATA_TYPE,
                 IS_NULLABLE,
@@ -112,10 +127,10 @@ class MySQLAdapter(ConnectionAdapter):
                 COLUMN_KEY
             FROM information_schema.COLUMNS
             WHERE {schema_filter}
-                AND TABLE_NAME = '{table}'
+                AND TABLE_NAME = :table
             ORDER BY ORDINAL_POSITION
         """
-        result = await self.execute_query(query, limit=None)
+        result = await self.execute_query(query, parameters=params, limit=None)
         if result.error:
             return []
         

@@ -164,17 +164,16 @@ class SQLAlchemyWarehouseAdapter(ConnectionAdapter):
         return [r[0] for r in result.rows]
 
     async def get_tables(self, schema: str | None = None) -> list[TableInfo]:
+        params: dict[str, str] = {}
         where = ""
         if schema:
-            # Quoting via string interpolation is OK here — schema is
-            # already known to the user (selected via the picker) and
-            # never user-typed SQL.
-            safe = schema.replace("'", "''")
-            where = f"WHERE table_schema = '{safe}'"
+            where = "WHERE table_schema = :schema"
+            params["schema"] = schema
         result = await self.execute_query(
             f"SELECT table_schema, table_name, table_type "
             f"FROM information_schema.tables {where} "
             f"ORDER BY table_schema, table_name",
+            parameters=params,
             limit=None,
         )
         if result.error:
@@ -186,15 +185,16 @@ class SQLAlchemyWarehouseAdapter(ConnectionAdapter):
         ]
 
     async def get_columns(self, table: str, schema: str | None = None) -> list[ColumnInfo]:
-        safe_table = table.replace("'", "''")
-        where = f"table_name = '{safe_table}'"
+        params: dict[str, str] = {"table": table}
+        where = "table_name = :table"
         if schema:
-            safe_schema = schema.replace("'", "''")
-            where += f" AND table_schema = '{safe_schema}'"
+            where += " AND table_schema = :schema"
+            params["schema"] = schema
         result = await self.execute_query(
             f"SELECT column_name, data_type, is_nullable, column_default "
             f"FROM information_schema.columns WHERE {where} "
             f"ORDER BY ordinal_position",
+            parameters=params,
             limit=None,
         )
         if result.error:

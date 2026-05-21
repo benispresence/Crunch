@@ -182,6 +182,11 @@ class MongoDBAdapter(ConnectionAdapter):
                 execution_time_ms=(time.time() - started) * 1000, error=str(e),
             )
 
+    # Mongo aggregation operators that execute arbitrary JavaScript on
+    # the server. We reject pipelines containing these so a malicious
+    # query body can't run arbitrary code on the MongoDB host.
+    _BLOCKED_OPERATORS = {"$where", "$function", "$accumulator", "$expr.$function"}
+
     def _parse_query(self, body: str) -> dict:
         try:
             spec = json.loads(body)
@@ -189,7 +194,27 @@ class MongoDBAdapter(ConnectionAdapter):
             raise ValueError(f"MongoDB queries must be JSON: {e}") from e
         if not isinstance(spec, dict):
             raise ValueError("MongoDB query must be a JSON object")
+        self._reject_dangerous_operators(spec)
         return spec
+
+    def _reject_dangerous_operators(self, spec: object) -> None:
+        """Walk the query/pipeline JSON and reject any server-side-JS
+        operators ($where / $function / $accumulator). MongoDB lets
+        these execute arbitrary JS on the server, which is RCE for
+        anyone who can submit a pipeline."""
+        stack: list[object] = [spec]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k in self._BLOCKED_OPERATORS:
+                        raise ValueError(
+                            f"MongoDB operator {k!r} is not allowed — it "
+                            "executes arbitrary JavaScript on the server."
+                        )
+                    stack.append(v)
+            elif isinstance(node, list):
+                stack.extend(node)
 
     async def close(self) -> None:
         if self._client is not None:

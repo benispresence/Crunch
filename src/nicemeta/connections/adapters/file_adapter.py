@@ -75,6 +75,34 @@ def _looks_remote(uri: str) -> bool:
     return uri.lower().startswith(REMOTE_SCHEMES)
 
 
+def _file_source_root() -> str | None:
+    """Optional containment root for local file sources. When set,
+    every local path the adapter touches must resolve under this
+    directory — defence against a user pointing a File connection at
+    ``/etc/passwd`` or ``/home/*/.ssh``. Set the env var to enable;
+    cloud URIs are unaffected."""
+    import os
+
+    root = os.environ.get("NICEMETA_FILE_SOURCE_ROOT", "").strip()
+    return root or None
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """True when ``path`` resolves inside ``root``. Uses ``resolve()``
+    so symlinks can't tunnel out."""
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except (AttributeError, OSError, ValueError):
+        # ``is_relative_to`` arrived in 3.9; older paths get a manual
+        # check. resolve() failure (broken symlink, missing dir) is
+        # treated as "not allowed".
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except (ValueError, OSError):
+            return False
+
+
 def _split_sheet_fragment(src: str) -> tuple[str, str | None]:
     """Split an Excel-with-sheet URI like ``book.xlsx#Sheet1`` into
     ``("book.xlsx", "Sheet1")``. Returns the original src + ``None``
@@ -146,6 +174,20 @@ class FileAdapter(ConnectionAdapter):
         """
         sources: list[str] = []
 
+        root = _file_source_root()
+        contain_root = Path(root) if root else None
+
+        def _accept_local(path: Path) -> bool:
+            if contain_root is None:
+                return True
+            ok = _is_within(path, contain_root)
+            if not ok:
+                logger.warning(
+                    "Refusing local source %s: outside NICEMETA_FILE_SOURCE_ROOT=%s",
+                    path, contain_root,
+                )
+            return ok
+
         if self.info.options and self.info.options.get("files"):
             for f in self.info.options["files"]:
                 uri = str(f).strip()
@@ -158,6 +200,8 @@ class FileAdapter(ConnectionAdapter):
                 # existence-checking — the on-disk file is the bare path.
                 base, _ = _split_sheet_fragment(uri)
                 p = Path(base)
+                if not _accept_local(p):
+                    continue
                 if p.exists() and _extension_of(base) in ALL_EXTENSIONS:
                     sources.append(uri)  # keep the fragment so adapter sees it
 
@@ -170,9 +214,11 @@ class FileAdapter(ConnectionAdapter):
         # Fallback: scan a local directory.
         if not sources and db:
             upload_dir = Path(db)
-            if upload_dir.is_dir():
+            if upload_dir.is_dir() and _accept_local(upload_dir):
                 for p in sorted(upload_dir.iterdir()):
-                    if p.is_file() and _extension_of(p.name) in ALL_EXTENSIONS:
+                    if not p.is_file() or not _accept_local(p):
+                        continue
+                    if _extension_of(p.name) in ALL_EXTENSIONS:
                         sources.append(str(p))
 
         return sources
