@@ -1,7 +1,12 @@
-# NiceMeta
+# Crunch
 
 **Open-source Business Intelligence platform** — a Metabase alternative with a
 Cursor-style workspace and a built-in Anthropic-powered assistant.
+
+> Crunch was previously named NiceMeta. The project's Python package
+> identifier (`nicemeta`), the legacy SQLite filename, and the default
+> admin email still use the old name for backward compatibility with
+> existing installs.
 
 ```
 ┌──────────────────┐   HTTP    ┌──────────────────┐   HTTP   ┌──────────────────┐
@@ -12,13 +17,15 @@ Cursor-style workspace and a built-in Anthropic-powered assistant.
                                                               └──────────────────┘
 ```
 
-- **Python engine** — SQL execution, chart rendering (Plotly et al.), and the
-  sandboxed user-Python executor, exposed as a small FastAPI service.
-- **Express/TypeScript backend** — auth, persistent state (SQLite), AI chat
-  orchestration; proxies compute-heavy work to the engine.
-- **Vue 3 / TypeScript frontend** — a Cursor-style workspace: SQL editor,
-  visualization panel, results table, and assistant — every panel is
-  resizable and collapsible.
+- **Python engine** — SQL execution, chart rendering (Plotly et al.), and a
+  sandboxed user-Python executor, exposed as a small FastAPI service. Refuses
+  non-`SELECT` SQL by default.
+- **Express/TypeScript backend** — auth, persistent state (SQLite), agent
+  orchestration with at-rest encryption for connection passwords + the
+  Anthropic API key.
+- **Vue 3 / TypeScript frontend** — a Cursor-style workspace: collections
+  sidebar with inline queries, SQL/Python editor, chart canvas, results
+  table, and a streaming chat assistant with diff-based proposal cards.
 
 ---
 
@@ -75,34 +82,55 @@ Data is persisted in named volumes (`crunch-data`, `crunch-workspace`).
 Bring it down with `docker compose -f docker/docker-compose.yml down`; add
 `-v` to also wipe the volumes.
 
-**First-run credentials.** The backend seeds a default admin on first
-start. The randomly-generated password is printed to the container log
-**and** written to `/data/FIRST_RUN_ADMIN_PASSWORD` inside the `crunch-data`
-volume:
+### First-launch admin
+
+On the first start the backend generates a random 18-character admin
+password. **You'll see it right on the login screen** — a highlighted
+"First launch — default admin" panel shows the email + password with a
+Copy button and a "Use these credentials" autofill link. No need to dig
+through logs.
+
+After signing in, a modal asks you to set your own password. You can:
+
+- **Update** — pick a new password (recommended).
+- **Keep default** — accept the random one as-is. It stays valid until
+  you change it later from the same modal in the top bar.
+
+Either choice clears the password from the public `/auth/config` endpoint
+so subsequent visitors don't see it.
+
+If you ever lose the password, it's also written to a 0600-mode file
+inside the data volume:
 
 ```bash
-docker compose -f docker/docker-compose.yml logs backend | grep -A4 "Default admin"
-# or, if the log scrolled away:
 docker compose -f docker/docker-compose.yml exec backend \
   cat /data/FIRST_RUN_ADMIN_PASSWORD
+# or
+docker compose -f docker/docker-compose.yml logs backend | grep -A6 "Default admin"
 ```
-
-Sign in with `admin@nicemeta.local` and the printed password. The API
-**blocks every other call** until you change the password via the modal
-that pops automatically on first login.
 
 ### Security
 
 - Tokens (`JWT_SECRET`, `PYTHON_ENGINE_TOKEN`) and the encryption key
   (`DATA_KEY`) are required in production; boot fails fast otherwise.
 - Connection passwords and the Anthropic API key are AES-256-GCM
-  encrypted at rest using `DATA_KEY`.
+  encrypted at rest using `DATA_KEY`. `GET /api/connections` returns
+  masked values.
 - Auth endpoints (`/auth/login`, `/auth/register`, `/auth/change-password`)
-  are rate-limited (10 failures / 15 min / IP).
-- Public self-registration is **off by default**; admins provision users
-  from **Admin → Users**, or enable it from **Admin → Settings → Access**.
-- The python engine refuses non-`SELECT` SQL by default and binds CORS
-  to the backend container only.
+  are rate-limited (10 failures / 15 min / IP). Failed attempts are
+  logged.
+- JWT tokens carry a `token_version` claim that's bumped on password
+  change — rotating your password invalidates every existing session.
+- Public self-registration is **off by default**; admins provision
+  users from **Admin → Users**, or enable self-registration from
+  **Admin → Settings → Access**.
+- Python engine refuses non-`SELECT` SQL by default and locks CORS to
+  the backend container only.
+- Git remote URLs are validated against a scheme allowlist
+  (`https/http/ssh/git`, plus `git@host:path`) and reject `file://` or
+  leading-`-` injection attempts.
+- Workspace export path traversal is guarded by sanitised slugs and a
+  `path.resolve` boundary check.
 
 ---
 
@@ -149,13 +177,14 @@ PYTHON_ENGINE_TOKEN=dev-engine-token python server.py
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env and paste your ANTHROPIC_API_KEY
+# Edit .env and (optionally) paste your ANTHROPIC_API_KEY
 npm install
 npm run dev
 ```
 
-The first start prints a default admin email and temporary password to the
-terminal — write it down.
+The first start prints a default admin email and randomly-generated
+password — copy it down, or read it later from
+`backend/FIRST_RUN_ADMIN_PASSWORD` (mode 0600 next to the SQLite file).
 
 **Terminal 3 — Vue frontend (port 5173)**
 
@@ -165,7 +194,8 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:5173>.
+Open <http://localhost:5173>. The login screen will pre-fill the
+bootstrap credentials for you on the first visit.
 
 ### Linux (Debian / Ubuntu)
 
@@ -229,7 +259,7 @@ If you'd rather run natively on Windows:
    ```powershell
    cd backend
    Copy-Item .env.example .env
-   # Open .env in your editor and paste your ANTHROPIC_API_KEY
+   # Open .env in your editor and (optionally) paste your ANTHROPIC_API_KEY
    npm install
    npm run dev
    ```
@@ -260,55 +290,88 @@ DATABASE_FILE=./nicemeta.sqlite
 CORS_ORIGIN=http://localhost:5173
 ```
 
+In native dev mode (the default, no `NODE_ENV` set) the boot-time secret
+checks are skipped, so the dev placeholder values above work as-is. For
+any production-style deployment set `NODE_ENV=production` and supply
+strong values for `JWT_SECRET`, `PYTHON_ENGINE_TOKEN`, and `DATA_KEY` —
+the backend will exit with a clear error if any is missing.
+
 When running with Docker, the equivalent values come from `docker/.env`
-(see `docker/.env.example`). The backend reads them as container environment
-variables — there's no need to mount `.env` files into the containers.
+(see `docker/.env.example`). The backend reads them as container
+environment variables — no need to mount `.env` files into the
+containers.
 
 ---
 
 ## Workspace UX
 
-- **Three collapsible panes** stacked in the centre — SQL/Python editor on
-  top, the big chart in the middle, results at the bottom. Each pane has a
-  chevron on its header to focus on a single surface.
-- **SQL ↔ Visualization Python tabs** in the top pane. Picking any standard
-  chart type generates editable starter Python code that reproduces it; edit
-  freely and save it as a custom Python visualization.
-- **Sidebar** lists connections, saved queries, saved visualizations, and
-  folders. **Chat** sits on the right.
-- **Assistant** streams thinking + tool calls inline. When it proposes a SQL
-  change, a confirmation bar appears at the bottom of the editor — no silent
-  overwrites.
+- **Three collapsible stacked panes** in the centre — SQL/Python editor
+  on top, chart in the middle, results table at the bottom. Each pane has
+  a chevron to focus on a single surface.
+- **One shared title** for the query+chart unit, with a dirty dot when
+  in-editor SQL or chart settings differ from the saved record.
+- **Collections sidebar** — folders containing your saved queries inline,
+  each row showing the connection type chip and a chart-type chip. Click
+  a query → it loads, runs, and renders the chart in one go (per-query
+  result + chart cache makes re-opens instant).
+- **Chart panel** — pick from 35+ chart types, edit field bindings
+  (collapsible), or write custom Python that operates on the result
+  DataFrame. "Save to <query>" overwrites the active query's chart;
+  "Save as new query…" forks a copy.
+- **Chat** sits on the right — streaming responses, expandable tool
+  calls (bundled into a single bar when >5 in one turn), and a History
+  drawer of stored conversations you can keep going.
+- **Agent-driven UI orchestration** — when the assistant proposes a
+  query edit, the workspace auto-collapses the chart pane and surfaces
+  a Cursor-style diff overlay on the SQL editor with Accept/Reject. Chart
+  proposals do the mirror image (collapse the editor, overlay on the
+  chart). Multiple proposals in one turn queue up — you click through
+  them one at a time.
 
 ## Tools the assistant has
 
-| Tool               | Purpose                                              |
-| ------------------ | ---------------------------------------------------- |
-| `list_connections` | Browse the user's saved connections                  |
-| `execute_sql`      | Run a read-only query through the Python engine      |
-| `render_chart`     | Render a chart spec from columnar data               |
-| `run_python`       | Execute sandboxed Python (the existing CodeExecutor) |
+| Tool                    | Purpose                                                          |
+| ----------------------- | ---------------------------------------------------------------- |
+| `list_connections`      | Browse the user's saved connections.                             |
+| `list_saved_queries`    | Browse saved queries with their chart settings.                  |
+| `execute_sql`           | Run a read-only query through the Python engine.                 |
+| `render_chart`          | Render a chart spec from columnar data.                          |
+| `run_python`            | Execute sandboxed Python (the existing `CodeExecutor`).          |
+| `propose_query_edit`    | Propose changing the SQL or name of an existing query.           |
+| `propose_chart_change`  | Propose changing the chart type / config / Python on a query.    |
+| `propose_new_query`     | Propose creating a brand-new saved query.                        |
+| `propose_delete_query`  | Propose deleting an existing query.                              |
 
-Destructive SQL is rejected by the engine's validator before any adapter
-sees it.
+The agent **never mutates state silently** — every change funnels through
+a `propose_*` tool which produces a diff card the user must accept. A
+per-browser **Auto / Review** toggle in the chat header lets power users
+auto-accept every proposal.
 
 ## Surfaces
 
-- **Workspace** — connections sidebar, SQL/Python editor, results, chart,
-  chat. `Save` on the chart panel persists a Visualization.
+- **Workspace** — collections sidebar, SQL/Python editor, results, chart,
+  chat. Charts are part of the saved query (no separate "visualization"
+  records to manage).
 - **Dashboards** — 12-column grid; toggle **Edit layout** to drag/resize
-  widgets that point at saved visualizations.
+  charts. Add a chart from any saved query via **+ Add chart**.
 - **Admin** (role = `admin` only):
-  - *Allowed packages* — install/uninstall pip packages on the engine, toggle
-    enablement; defaults (pandas, numpy, plotly, matplotlib, seaborn, scipy,
-    altair) can't be deleted.
-  - *Users* — flip roles between `viewer`, `editor`, `admin`. The first
-    registered user is auto-promoted to admin.
+  - *Settings* — Anthropic API key + model picker (key encrypted at
+    rest), public self-registration toggle.
+  - *Allowed packages* — install/uninstall pip packages on the engine,
+    toggle enablement; defaults (pandas, numpy, plotly, matplotlib,
+    seaborn, scipy, altair) can't be deleted.
+  - *Users* — provision new accounts inline with email + temp password
+    + role, reset passwords, delete users, flip roles between `viewer`,
+    `editor`, `admin`. The seeded default admin can be removed once
+    another admin exists.
+  - *Git* — back the workspace with a real git repo (init / set remote /
+    commit / push / pull / clone). Useful for syncing collections
+    between machines or sharing dashboards.
 
 ## Repository layout
 
 ```
-nicemeta/
+crunch/
 ├── python-engine/   FastAPI service (server.py + requirements)
 ├── backend/         Express + TypeScript API + Anthropic chat
 ├── frontend/        Vue 3 + TypeScript + Vite UI
