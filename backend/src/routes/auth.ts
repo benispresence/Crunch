@@ -6,6 +6,8 @@ import {
   createUser,
   findUserByEmail,
   findUserById,
+  getDefaultAdminBootstrapPassword,
+  keepDefaultPassword,
   signToken,
   updatePassword,
   userMustChangePassword,
@@ -45,17 +47,24 @@ const changePasswordSchema = z.object({
 
 // Public bootstrap info — the login page reads this to decide whether
 // to show the Register tab and the first-run hint, with no auth needed.
+//
+// We also surface the seeded admin's bootstrap password here while it's
+// still pending. The trade-off is deliberate: it's only visible during
+// the brief window between very-first launch and either a password
+// change or "keep default" acknowledgement. After that the field is
+// nulled and never returned again.
 authRouter.get("/config", (_req, res) => {
-  // Has the default admin account already changed its password? If yes
-  // we hide the "First launch?" hint so we don't display stale advice.
   const row = db
     .prepare(
       "SELECT must_change_password FROM users WHERE email = ?",
     )
     .get("admin@nicemeta.local") as { must_change_password: number } | undefined;
+  const pending = !!row && row.must_change_password === 1;
   res.json({
     registration_enabled: isPublicRegistrationEnabled(),
-    default_admin_pending: !!row && row.must_change_password === 1,
+    default_admin_pending: pending,
+    default_admin_email: pending ? "admin@nicemeta.local" : null,
+    default_admin_password: pending ? getDefaultAdminBootstrapPassword() : null,
   });
 });
 
@@ -105,6 +114,18 @@ authRouter.post("/login", authLimiter, (req, res) => {
       must_change_password: userMustChangePassword(user.id),
     },
   });
+});
+
+// User explicitly accepts the seeded bootstrap password as their own.
+// Clears the must-change flag (which is what's blocking other API calls)
+// and nulls the stored bootstrap so /auth/config stops returning it.
+authRouter.post("/keep-default-password", requireAuth, (req, res) => {
+  if (!userMustChangePassword(req.user!.sub)) {
+    res.json({ ok: true });
+    return;
+  }
+  keepDefaultPassword(req.user!.sub);
+  res.json({ ok: true });
 });
 
 authRouter.post("/change-password", requireAuth, authLimiter, (req, res) => {
