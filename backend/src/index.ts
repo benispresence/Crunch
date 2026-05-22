@@ -19,6 +19,14 @@ import { seedDefaultAdmin } from "./services/auth.js";
 import { pythonEngine } from "./services/pythonEngine.js";
 
 const app = express();
+// Trust exactly one upstream hop. In the Docker stack the nginx
+// frontend forwards client IPs via X-Forwarded-For; without this,
+// express-rate-limit refuses to use the header and throws
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every limited route. The
+// value `1` is safe because no untrusted proxy ever sits in front of
+// our nginx in a normal Crunch deployment.
+app.set("trust proxy", 1);
+
 // Helmet sets a sensible baseline of security headers
 // (X-Content-Type-Options, Strict-Transport-Security, etc.). We disable
 // CSP/COEP since this is a JSON API and the static frontend is served

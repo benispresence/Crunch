@@ -8,7 +8,7 @@ import pytest
 def test_import():
     """Test that the package can be imported."""
     import crunch
-    assert crunch.__version__ == "1.0.0"
+    assert crunch.__version__ == "1.0.1"
 
 
 def test_settings_import():
