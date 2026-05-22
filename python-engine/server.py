@@ -1,5 +1,5 @@
 """
-NiceMeta Python Engine - thin FastAPI service that exposes the existing
+Crunch Python Engine - thin FastAPI service that exposes the existing
 SQL execution, visualization rendering, and sandboxed Python code
 execution to the Express/TypeScript backend.
 
@@ -23,17 +23,17 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from nicemeta.connections.adapters import (  # noqa: E402
+from crunch.connections.adapters import (  # noqa: E402
     FileAdapter,
     MySQLAdapter,
     PostgreSQLAdapter,
     SQLiteAdapter,
     SQLServerAdapter,
 )
-from nicemeta.connections.base import ConnectionAdapter, ConnectionInfo  # noqa: E402
-from nicemeta.query.validator import QueryValidator  # noqa: E402
-from nicemeta.visualization.code_executor import CodeExecutor  # noqa: E402
-from nicemeta.visualization.factory import ChartFactory  # noqa: E402
+from crunch.connections.base import ConnectionAdapter, ConnectionInfo  # noqa: E402
+from crunch.query.validator import QueryValidator  # noqa: E402
+from crunch.visualization.code_executor import CodeExecutor  # noqa: E402
+from crunch.visualization.factory import ChartFactory  # noqa: E402
 
 _DEV_ENGINE_TOKEN = "dev-engine-token"
 ENGINE_TOKEN = os.environ.get("PYTHON_ENGINE_TOKEN", _DEV_ENGINE_TOKEN)
@@ -183,13 +183,13 @@ class ExecutePythonResponse(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "nicemeta-python-engine"}
+    return {"status": "ok", "service": "crunch-python-engine"}
 
 
 @app.get("/viz/chart-types")
 async def list_chart_types() -> dict[str, Any]:
     """Return the catalog of supported chart types for the picker."""
-    from nicemeta.visualization.chart_types import CHART_TYPES
+    from crunch.visualization.chart_types import CHART_TYPES
 
     out = []
     for ct in CHART_TYPES.values():
@@ -272,7 +272,7 @@ async def render_chart(req: RenderChartRequest) -> RenderChartResponse:
     _check_token(req.token)
     try:
         import pandas as pd
-        from nicemeta.visualization.base import ChartConfig
+        from crunch.visualization.base import ChartConfig
 
         df = pd.DataFrame(req.data)
         cfg_kwargs = {"chart_type": req.chart_type}

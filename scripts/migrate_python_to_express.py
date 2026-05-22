@@ -195,8 +195,8 @@ def migrate(source: Path, target: Path, user_id: int, dry_run: bool) -> None:
 def main() -> None:
     here = Path(__file__).resolve().parent.parent
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--source", type=Path, default=here / "nicemeta.db")
-    p.add_argument("--target", type=Path, default=here / "backend" / "nicemeta.sqlite")
+    p.add_argument("--source", type=Path, default=here / "crunch.db")
+    p.add_argument("--target", type=Path, default=here / "backend" / "crunch.sqlite")
     p.add_argument("--user-id", type=int, default=1)
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()

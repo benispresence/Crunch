@@ -64,7 +64,7 @@ Then open <http://localhost:8080>.
 
 > **The backend runs in `NODE_ENV=production` and will refuse to start if
 > `JWT_SECRET`, `PYTHON_ENGINE_TOKEN`, or `DATA_KEY` is missing or matches a
-> known dev value.** This is intentional — see [Security](#security) below.
+> known dev value.** This is intentional.
 > `DATA_KEY` is the symmetric key used to encrypt connection passwords and
 > the Anthropic API key at rest. **If you lose it, stored connection
 > passwords become unrecoverable** — back it up alongside the database
@@ -108,29 +108,6 @@ docker compose -f docker/docker-compose.yml exec backend \
 # or
 docker compose -f docker/docker-compose.yml logs backend | grep -A6 "Default admin"
 ```
-
-### Security
-
-- Tokens (`JWT_SECRET`, `PYTHON_ENGINE_TOKEN`) and the encryption key
-  (`DATA_KEY`) are required in production; boot fails fast otherwise.
-- Connection passwords and the Anthropic API key are AES-256-GCM
-  encrypted at rest using `DATA_KEY`. `GET /api/connections` returns
-  masked values.
-- Auth endpoints (`/auth/login`, `/auth/register`, `/auth/change-password`)
-  are rate-limited (10 failures / 15 min / IP). Failed attempts are
-  logged.
-- JWT tokens carry a `token_version` claim that's bumped on password
-  change — rotating your password invalidates every existing session.
-- Public self-registration is **off by default**; admins provision
-  users from **Admin → Users**, or enable self-registration from
-  **Admin → Settings → Access**.
-- Python engine refuses non-`SELECT` SQL by default and locks CORS to
-  the backend container only.
-- Git remote URLs are validated against a scheme allowlist
-  (`https/http/ssh/git`, plus `git@host:path`) and reject `file://` or
-  leading-`-` injection attempts.
-- Workspace export path traversal is guarded by sanitised slugs and a
-  `path.resolve` boundary check.
 
 ---
 
@@ -375,7 +352,8 @@ crunch/
 ├── python-engine/   FastAPI service (server.py + requirements)
 ├── backend/         Express + TypeScript API + Anthropic chat
 ├── frontend/        Vue 3 + TypeScript + Vite UI
-├── src/nicemeta/    Original Python package (SQL, viz, connections)
+├── src/crunch/      Python package — SQL adapters, chart rendering,
+│                    sandboxed code executor, used by python-engine
 ├── docker/          Dockerfile.{engine,backend,frontend}, compose, nginx
 ├── config/          Engine config
 └── scripts/         Maintenance scripts
