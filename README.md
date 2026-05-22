@@ -129,8 +129,8 @@ brew install python@3.11 node@20 git
 xcode-select --install || true
 
 # Clone and enter the repo
-git clone https://github.com/benispresence/NiceMeta.git
-cd NiceMeta
+git clone https://github.com/benispresence/Crunch.git
+cd Crunch
 ```
 
 Three terminals — one per service. From the repo root:
@@ -177,8 +177,8 @@ sudo apt install -y python3.11 python3.11-venv python3-pip nodejs npm git build-
 #   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 #   sudo apt install -y nodejs
 
-git clone https://github.com/benispresence/NiceMeta.git
-cd NiceMeta
+git clone https://github.com/benispresence/Crunch.git
+cd Crunch
 ```
 
 Then run the three terminals exactly as in the macOS section above.
@@ -206,8 +206,8 @@ If you'd rather run natively on Windows:
    - [Git for Windows](https://git-scm.com/download/win).
 2. **Clone the repo**
    ```powershell
-   git clone https://github.com/benispresence/NiceMeta.git
-   cd NiceMeta
+   git clone https://github.com/benispresence/Crunch.git
+   cd Crunch
    ```
 3. **Run the three services in three PowerShell windows** (commands below
    use `python` — on some systems it's `py -3.11`):

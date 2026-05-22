@@ -58,10 +58,10 @@ __pycache__/
 """
 
 _README = """\
-# NiceMeta Workspace
+# Crunch Workspace
 
 This repository contains queries, visualizations, dashboards and connection
-configurations exported from a [NiceMeta](https://github.com/nicemeta/nicemeta)
+configurations exported from a [Crunch](https://github.com/benispresence/Crunch)
 instance.
 
 ## Structure
