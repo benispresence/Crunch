@@ -3,6 +3,8 @@
 **Open-source Business Intelligence platform** — a Metabase alternative with a
 Cursor-style workspace and a built-in Anthropic-powered assistant.
 
+![Crunch workspace — SQL editor, chart panel, and AI assistant side by side](docs/workspace.png)
+
 > Crunch was previously named NiceMeta. The project's Python package
 > identifier (`nicemeta`), the legacy SQLite filename, and the default
 > admin email still use the old name for backward compatibility with
