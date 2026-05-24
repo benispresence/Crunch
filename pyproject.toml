@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "nicemeta"
+name = "crunch"
 version = "0.1.0"
 description = "Open-source business intelligence platform - Metabase alternative built with Python"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
-    { name = "NiceMeta Contributors" }
+    { name = "Crunch Contributors" }
 ]
 keywords = ["business-intelligence", "analytics", "dashboard", "visualization", "sql"]
 classifiers = [
@@ -113,16 +113,16 @@ all-sources = [
 ]
 
 [project.scripts]
-nicemeta = "nicemeta.cli:main"
+crunch = "crunch.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/nicemeta/nicemeta"
-Documentation = "https://github.com/nicemeta/nicemeta#readme"
-Repository = "https://github.com/nicemeta/nicemeta"
-Issues = "https://github.com/nicemeta/nicemeta/issues"
+Homepage = "https://github.com/benispresence/Crunch"
+Documentation = "https://github.com/benispresence/Crunch#readme"
+Repository = "https://github.com/benispresence/Crunch"
+Issues = "https://github.com/benispresence/Crunch/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/nicemeta"]
+packages = ["src/crunch"]
 
 [tool.black]
 line-length = 100

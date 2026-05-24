@@ -23,6 +23,9 @@ const registrationEnabled = ref(false);
 const defaultAdminPending = ref(false);
 const ssoProviders = ref<SsoProvider[]>([]);
 const selectedLdap = ref<number | null>(null);
+const defaultAdminEmail = ref<string | null>(null);
+const defaultAdminPassword = ref<string | null>(null);
+const copyToast = ref("");
 
 const ssoButtons = computed(() =>
   ssoProviders.value.filter((p) => p.kind === "oidc" || p.kind === "saml"),
@@ -52,10 +55,14 @@ onMounted(async () => {
     const cfg = await api.get<{
       registration_enabled: boolean;
       default_admin_pending: boolean;
+      default_admin_email: string | null;
+      default_admin_password: string | null;
       sso_providers: SsoProvider[];
     }>("/auth/config");
     registrationEnabled.value = cfg.registration_enabled;
     defaultAdminPending.value = cfg.default_admin_pending;
+    defaultAdminEmail.value = cfg.default_admin_email;
+    defaultAdminPassword.value = cfg.default_admin_password;
     ssoProviders.value = cfg.sso_providers ?? [];
     if (ldapProviders.value.length > 0) {
       selectedLdap.value = ldapProviders.value[0]!.id;
@@ -95,6 +102,21 @@ async function consumeToken(token: string) {
     await router.push({ name: "workspace" });
   } catch (e) {
     error.value = (e as Error).message;
+  }
+}
+
+function autofillBootstrap() {
+  if (defaultAdminEmail.value) email.value = defaultAdminEmail.value;
+  if (defaultAdminPassword.value) password.value = defaultAdminPassword.value;
+}
+async function copyBootstrap() {
+  if (!defaultAdminPassword.value) return;
+  try {
+    await navigator.clipboard.writeText(defaultAdminPassword.value);
+    copyToast.value = "Copied";
+    setTimeout(() => (copyToast.value = ""), 1500);
+  } catch {
+    copyToast.value = "Copy failed";
   }
 }
 
@@ -153,11 +175,33 @@ const useLdap = ref(false);
       <h1 class="login__title">Crunch</h1>
       <p class="login__subtitle">Sign in to continue.</p>
 
-      <div v-if="mode === 'login' && defaultAdminPending" class="login__hint">
-        First launch? Sign in as <code>admin@nicemeta.local</code> using the
-        one-time password printed in the backend startup log (also saved to
-        <code>FIRST_RUN_ADMIN_PASSWORD</code> next to the database file).
-        You'll be required to set a new password before doing anything else.
+      <div
+        v-if="mode === 'login' && defaultAdminPending && defaultAdminPassword"
+        class="login__bootstrap"
+      >
+        <div class="login__bootstrap-title">First launch — default admin</div>
+        <div class="login__bootstrap-row">
+          <span class="login__bootstrap-label">Email</span>
+          <code class="login__bootstrap-value">{{ defaultAdminEmail }}</code>
+        </div>
+        <div class="login__bootstrap-row">
+          <span class="login__bootstrap-label">Password</span>
+          <code class="login__bootstrap-value login__bootstrap-pw">{{ defaultAdminPassword }}</code>
+          <button type="button" class="login__bootstrap-copy" @click="copyBootstrap">
+            {{ copyToast || "Copy" }}
+          </button>
+        </div>
+        <button
+          type="button"
+          class="login__bootstrap-fill"
+          @click="autofillBootstrap"
+        >
+          Use these credentials →
+        </button>
+        <p class="login__bootstrap-note">
+          Hidden from this page after your first sign-in. You can change the
+          password then — or keep it.
+        </p>
       </div>
 
       <!-- SSO buttons. One full-width button per OIDC/SAML provider so
@@ -364,5 +408,75 @@ const useLdap = ref(false);
   padding: 1px 4px;
   border-radius: 3px;
   color: var(--fg);
+}
+.login__bootstrap {
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  display: grid;
+  gap: 8px;
+}
+.login__bootstrap-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  font-weight: 600;
+}
+.login__bootstrap-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.login__bootstrap-label {
+  width: 60px;
+  color: var(--fg-subtle);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.login__bootstrap-value {
+  flex: 1;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: var(--bg);
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.login__bootstrap-pw { user-select: all; }
+.login__bootstrap-copy {
+  font-size: 11px;
+  padding: 3px 9px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.login__bootstrap-copy:hover {
+  color: var(--fg);
+  border-color: var(--accent-border);
+}
+.login__bootstrap-fill {
+  font-size: 12px;
+  padding: 6px 0;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  text-align: left;
+  cursor: pointer;
+  font-weight: 500;
+}
+.login__bootstrap-fill:hover { text-decoration: underline; }
+.login__bootstrap-note {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+  line-height: 1.5;
 }
 </style>

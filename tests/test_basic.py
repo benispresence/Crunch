@@ -1,5 +1,5 @@
 """
-Basic tests for NiceMeta.
+Basic tests for Crunch.
 """
 
 import pytest
@@ -7,22 +7,22 @@ import pytest
 
 def test_import():
     """Test that the package can be imported."""
-    import nicemeta
-    assert nicemeta.__version__ == "0.1.0"
+    import crunch
+    assert crunch.__version__ == "1.0.1"
 
 
 def test_settings_import():
     """Test that settings can be imported."""
-    from nicemeta.config.settings import Settings, get_settings
-    
+    from crunch.config.settings import Settings, get_settings
+
     settings = Settings()
-    assert settings.app.title == "NiceMeta"
+    assert settings.app.title == "NiceMeta"  # legacy display name in settings
     assert settings.app.port == 8080
 
 
 def test_query_builder():
     """Test the visual query builder."""
-    from nicemeta.query.builder import (
+    from crunch.query.builder import (
         Column,
         Filter,
         FilterOperator,
@@ -55,7 +55,7 @@ def test_query_builder():
 
 def test_query_validator():
     """Test SQL query validation."""
-    from nicemeta.query.validator import QueryValidator, QueryType
+    from crunch.query.validator import QueryValidator, QueryType
     
     validator = QueryValidator()
     
@@ -78,7 +78,7 @@ def test_query_validator():
 
 def test_chart_types():
     """Test chart type definitions."""
-    from nicemeta.visualization.chart_types import (
+    from crunch.visualization.chart_types import (
         CHART_TYPES,
         ChartCategory,
         get_chart_type,
@@ -99,7 +99,7 @@ def test_chart_types():
 
 def test_chart_factory():
     """Test chart factory."""
-    from nicemeta.visualization.factory import ChartFactory
+    from crunch.visualization.factory import ChartFactory
     
     # Test renderer listing
     renderers = ChartFactory.get_available_renderers()
@@ -120,8 +120,8 @@ def test_chart_factory():
 @pytest.mark.asyncio
 async def test_connection_manager():
     """Test connection manager."""
-    from nicemeta.connections.manager import ConnectionManager
-    from nicemeta.config.connections import ConnectionConfig
+    from crunch.connections.manager import ConnectionManager
+    from crunch.config.connections import ConnectionConfig
     
     manager = ConnectionManager()
     

@@ -1,77 +1,96 @@
-# NiceMeta — 3-service stack (frontend / backend / python-engine)
+# Crunch — 3-service stack (frontend / backend / python-engine)
 #
 # Usage (from the repo root):
-#   cp docker/.env.example docker/.env   # then edit ANTHROPIC_API_KEY
+#   cp docker/.env.example docker/.env
+#   # then edit docker/.env: generate JWT_SECRET, PYTHON_ENGINE_TOKEN, DATA_KEY
 #   docker compose -f docker/docker-compose.yml --env-file docker/.env up --build
 #
 # Open http://localhost:8080
 #
 # Volumes:
-#   nicemeta-data       — backend SQLite DB (users, queries, viz metadata)
-#   nicemeta-workspace  — git-backed workspace for saved collections
+#   crunch-data       — backend SQLite DB + first-run admin password file
+#   crunch-workspace  — git-backed workspace for saved collections
+#
+# Security notes:
+#   - NODE_ENV / ENGINE_ENV are pinned to "production" so the boot-time
+#     secret checks fire. The backend will REFUSE TO START if JWT_SECRET,
+#     PYTHON_ENGINE_TOKEN, or DATA_KEY is the dev default or unset.
+#   - DATA_KEY is the symmetric key used to encrypt connection passwords
+#     and the Anthropic API key at rest in the SQLite file.
+#   - The first-run admin password is written to
+#     /data/FIRST_RUN_ADMIN_PASSWORD inside the `backend` container; mount
+#     the `crunch-data` volume and grep that file on first launch.
 
 services:
   engine:
     build:
       context: ..
       dockerfile: docker/Dockerfile.engine
-    image: nicemeta/engine:local
+    image: crunch/engine:local
     environment:
+      ENGINE_ENV: "production"
       PYTHON_ENGINE_HOST: "0.0.0.0"
       PYTHON_ENGINE_PORT: "8765"
-      PYTHON_ENGINE_TOKEN: "${PYTHON_ENGINE_TOKEN:-dev-engine-token}"
+      # Required — boot check refuses the dev default in production.
+      PYTHON_ENGINE_TOKEN: "${PYTHON_ENGINE_TOKEN:?set PYTHON_ENGINE_TOKEN in docker/.env}"
+      # Lock down CORS to the backend service inside the compose network.
+      ENGINE_ALLOWED_ORIGIN: "http://backend:3691"
     expose:
       - "8765"
     networks:
-      - nicemeta
+      - crunch
     restart: unless-stopped
 
   backend:
     build:
       context: ..
       dockerfile: docker/Dockerfile.backend
-    image: nicemeta/backend:local
+    image: crunch/backend:local
     environment:
+      NODE_ENV: "production"
       PORT: "3691"
-      JWT_SECRET: "${JWT_SECRET:-change-me-in-production}"
+      # All three are required in production. The `?msg` form makes compose
+      # exit immediately if the operator forgot to set them in docker/.env.
+      JWT_SECRET: "${JWT_SECRET:?set JWT_SECRET in docker/.env}"
+      DATA_KEY: "${DATA_KEY:?set DATA_KEY in docker/.env}"
+      PYTHON_ENGINE_TOKEN: "${PYTHON_ENGINE_TOKEN:?set PYTHON_ENGINE_TOKEN in docker/.env}"
       PYTHON_ENGINE_URL: "http://engine:8765"
-      PYTHON_ENGINE_TOKEN: "${PYTHON_ENGINE_TOKEN:-dev-engine-token}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-opus-4-7}"
       DATABASE_FILE: "/data/nicemeta.sqlite"
       CORS_ORIGIN: "http://localhost:${FRONTEND_PORT:-8080}"
       NICEMETA_WORKSPACE_DIR: "/workspace"
     volumes:
-      - nicemeta-data:/data
-      - nicemeta-workspace:/workspace
+      - crunch-data:/data
+      - crunch-workspace:/workspace
     expose:
       - "3691"
     depends_on:
       - engine
     networks:
-      - nicemeta
+      - crunch
     restart: unless-stopped
 
   frontend:
     build:
       context: ..
       dockerfile: docker/Dockerfile.frontend
-    image: nicemeta/frontend:local
+    image: crunch/frontend:local
     ports:
       - "${FRONTEND_PORT:-8080}:80"
     depends_on:
       - backend
     networks:
-      - nicemeta
+      - crunch
     restart: unless-stopped
 
 volumes:
-  nicemeta-data:
-    name: nicemeta-data
-  nicemeta-workspace:
-    name: nicemeta-workspace
+  crunch-data:
+    name: crunch-data
+  crunch-workspace:
+    name: crunch-workspace
 
 networks:
-  nicemeta:
-    name: nicemeta-network
+  crunch:
+    name: crunch-network
     driver: bridge

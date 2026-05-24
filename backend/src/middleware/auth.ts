@@ -52,11 +52,12 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     res.status(401).json({ error: "invalid token" });
     return;
   }
-  // Force password change before allowing access to anything besides the
-  // change-password endpoint itself.
+  // Force the bootstrap-password decision: the user must either change
+  // it or explicitly keep it. Both endpoints clear the must-change flag.
   if (
     userMustChangePassword(payload.sub)
     && req.path !== "/change-password"
+    && req.path !== "/keep-default-password"
   ) {
     res.status(403).json({ error: "password_change_required" });
     return;

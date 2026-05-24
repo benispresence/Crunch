@@ -1,2 +1,2 @@
-"""Tests for NiceMeta."""
+"""Tests for Crunch."""
 

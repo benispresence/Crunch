@@ -46,8 +46,25 @@ function openChangePassword() {
 }
 
 function closeChangePassword() {
-  if (mustChange.value && !pwSuccess.value) return; // force completion
+  // Outside the must-change flow, anyone can close. While must-change is
+  // active, the only ways out are submitting a new password (default
+  // flow) or the explicit "Keep default" button below.
+  if (mustChange.value && !pwSuccess.value) return;
   showChangePassword.value = false;
+}
+
+async function keepDefault() {
+  pwBusy.value = true;
+  pwError.value = "";
+  try {
+    await api.post<{ ok: true }>("/auth/keep-default-password", {});
+    auth.clearMustChange();
+    showChangePassword.value = false;
+  } catch (e) {
+    pwError.value = (e as Error).message;
+  } finally {
+    pwBusy.value = false;
+  }
 }
 
 async function submitChangePassword() {
@@ -148,11 +165,12 @@ async function submitChangePassword() {
   <div v-if="showChangePassword" class="pw-overlay" @click.self="closeChangePassword">
     <div class="pw-modal">
       <h3 class="pw-modal__title">
-        {{ mustChange ? "Set a new password to continue" : "Change password" }}
+        {{ mustChange ? "Set your password (recommended)" : "Change password" }}
       </h3>
       <p v-if="mustChange" class="pw-modal__hint">
-        You're signed in with the auto-generated first-launch password. Set your
-        own before doing anything else.
+        You're signed in with the auto-generated first-launch password. We
+        recommend setting your own now. You can also keep the default — it
+        was randomly generated and remains valid until you change it.
       </p>
       <form class="pw-modal__form" @submit.prevent="submitChangePassword">
         <label>
@@ -167,7 +185,17 @@ async function submitChangePassword() {
         <p v-if="pwSuccess" class="pw-modal__success">Password updated.</p>
         <div class="pw-modal__actions">
           <button
-            v-if="!mustChange"
+            v-if="mustChange"
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :disabled="pwBusy"
+            @click="keepDefault"
+            title="Skip — keep the auto-generated default password"
+          >
+            Keep default
+          </button>
+          <button
+            v-else
             type="button"
             class="btn btn-ghost btn-sm"
             @click="closeChangePassword"

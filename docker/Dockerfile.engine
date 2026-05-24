@@ -15,8 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the package (pulls in all dataviz + driver deps via
-# pyproject.toml) plus the engine-specific extras.
-COPY pyproject.toml ./
+# pyproject.toml) plus the engine-specific extras. README.md is
+# required because pyproject.toml declares it via `readme = "README.md"`
+# and hatchling reads it during metadata generation.
+COPY pyproject.toml README.md ./
 COPY src ./src
 COPY python-engine/requirements.txt ./python-engine/requirements.txt
 

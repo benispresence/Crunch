@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
+import { decryptString, encryptString } from "./crypto.js";
 
 export interface UserRow {
   id: number;
@@ -49,6 +50,7 @@ export function updatePassword(userId: number, newPassword: string): void {
     `UPDATE users SET
        password_hash = ?,
        must_change_password = 0,
+       bootstrap_password_encrypted = NULL,
        token_version = token_version + 1
      WHERE id = ?`,
   ).run(stored, userId);
@@ -69,9 +71,13 @@ export function seedDefaultAdmin(): { created: boolean; email: string; password:
   }
   const password = generateRandomPassword();
   const user = createUser(DEFAULT_ADMIN_EMAIL, password);
-  // Flag the user so the API can require a password change before any
-  // other action. Cleared by updatePassword().
-  db.prepare("UPDATE users SET must_change_password = 1 WHERE id = ?").run(user.id);
+  // Stash the plaintext password encrypted on the user row so the login
+  // page can fetch it on the first visit and either auto-fill it or
+  // display it next to the form. Cleared the moment the user changes
+  // the password OR explicitly chooses to keep the default.
+  db.prepare(
+    "UPDATE users SET must_change_password = 1, bootstrap_password_encrypted = ? WHERE id = ?",
+  ).run(encryptString(password), user.id);
   return { created: true, email: DEFAULT_ADMIN_EMAIL, password };
 }
 
@@ -80,6 +86,32 @@ export function userMustChangePassword(userId: number): boolean {
     .prepare("SELECT must_change_password FROM users WHERE id = ?")
     .get(userId) as { must_change_password: number } | undefined;
   return row?.must_change_password === 1;
+}
+
+/**
+ * Returns the bootstrap password (decrypted) for the seeded admin if it
+ * hasn't been acknowledged yet, otherwise null. Public — read by the
+ * unauthenticated /auth/config endpoint so the login page can prefill it.
+ */
+export function getDefaultAdminBootstrapPassword(): string | null {
+  const row = db
+    .prepare(
+      "SELECT bootstrap_password_encrypted FROM users WHERE email = ? AND must_change_password = 1",
+    )
+    .get(DEFAULT_ADMIN_EMAIL) as { bootstrap_password_encrypted: string | null } | undefined;
+  if (!row || !row.bootstrap_password_encrypted) return null;
+  try { return decryptString(row.bootstrap_password_encrypted); }
+  catch { return null; }
+}
+
+/**
+ * Mark that the user has accepted the bootstrap password as their own —
+ * clears the must-change flag without rotating the password hash.
+ */
+export function keepDefaultPassword(userId: number): void {
+  db.prepare(
+    "UPDATE users SET must_change_password = 0, bootstrap_password_encrypted = NULL WHERE id = ?",
+  ).run(userId);
 }
 
 export function verifyPassword(user: UserRow, password: string): boolean {

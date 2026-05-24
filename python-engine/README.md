@@ -1,4 +1,4 @@
-# NiceMeta Python Engine
+# Crunch Python Engine
 
 Thin FastAPI service that exposes the existing Python BI engine
 (SQL execution, visualization rendering, sandboxed Python code) over
