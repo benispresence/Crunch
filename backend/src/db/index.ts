@@ -356,6 +356,38 @@ ensureColumn(
   "scopes_json TEXT NOT NULL DEFAULT '[]'",
 );
 
+// Outbound MCP servers can authenticate with OAuth 2.0 (auth code + PKCE
+// + refresh) in addition to the original single static header. All new
+// columns are nullable so existing static-header rows are untouched;
+// auth_mode defaults to 'header' to preserve current behavior. Token and
+// secret columns are AES-encrypted at rest via crypto.ts.
+ensureColumn("mcp_servers", "auth_mode", "auth_mode TEXT NOT NULL DEFAULT 'header'");
+ensureColumn("mcp_servers", "oauth_issuer", "oauth_issuer TEXT");
+ensureColumn("mcp_servers", "oauth_client_id", "oauth_client_id TEXT");
+ensureColumn("mcp_servers", "oauth_client_secret", "oauth_client_secret TEXT"); // encrypted
+ensureColumn("mcp_servers", "oauth_scope", "oauth_scope TEXT");
+ensureColumn("mcp_servers", "oauth_token_endpoint", "oauth_token_endpoint TEXT");
+ensureColumn("mcp_servers", "oauth_authorization_endpoint", "oauth_authorization_endpoint TEXT");
+ensureColumn("mcp_servers", "oauth_registration_access_token", "oauth_registration_access_token TEXT"); // encrypted
+ensureColumn("mcp_servers", "oauth_access_token", "oauth_access_token TEXT");   // encrypted
+ensureColumn("mcp_servers", "oauth_refresh_token", "oauth_refresh_token TEXT"); // encrypted
+ensureColumn("mcp_servers", "oauth_expires_at", "oauth_expires_at INTEGER");    // epoch seconds
+ensureColumn("mcp_servers", "oauth_resource", "oauth_resource TEXT");
+
+// In-flight authorization codes. One row per "Connect" click; the
+// callback looks the request up by ``state`` to recover the PKCE
+// verifier and the exact redirect_uri used. Short-lived — rows are
+// deleted on success and swept on age.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
+    state TEXT PRIMARY KEY,
+    server_id INTEGER NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    code_verifier TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+  );
+`);
+
 // Track the external identity behind an SSO-provisioned user so we
 // can re-bind safely (same external_id always returns the same Crunch
 // user even if the email changes downstream).

@@ -39,6 +39,16 @@ export const config = {
   anthropicModel: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7",
   databaseFile: process.env.DATABASE_FILE ?? "./nicemeta.sqlite",
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
+  // Browser-facing origin of the deployment, used to build OAuth redirect
+  // URIs that must match exactly across registration + authorize + token.
+  // Prefer the explicit pin (shared with OIDC/SAML); otherwise fall back to
+  // the frontend origin (CORS_ORIGIN) — http://localhost:8080 in the docker
+  // stack, http://localhost:5173 in native dev.
+  publicBaseUrl: (
+    process.env.NICEMETA_PUBLIC_BASE_URL ??
+    process.env.CORS_ORIGIN ??
+    "http://localhost:5173"
+  ).replace(/\/+$/, ""),
   // Local working tree mirrored to git for queries / dashboards / viz.
   // Default to the existing repo-root nicemeta-workspace directory.
   workspaceDir:

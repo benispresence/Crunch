@@ -607,6 +607,11 @@ const mcpServerSchema = z.object({
   auth_header_value: z.string().nullable().optional(),
   enabled: z.boolean().optional(),
   allowed_tools: z.array(z.string()).optional(),
+  // OAuth config (tokens are managed by the OAuth flow, never set here).
+  auth_mode: z.enum(["header", "oauth2"]).optional(),
+  oauth_issuer: z.string().nullable().optional(),
+  oauth_scope: z.string().nullable().optional(),
+  oauth_resource: z.string().nullable().optional(),
 });
 
 adminRouter.post("/mcp/servers", (req, res) => {
