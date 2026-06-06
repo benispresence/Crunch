@@ -466,6 +466,18 @@ export const useWorkspaceStore = defineStore("workspace", {
       delete this.chartCache[this.activeQueryId];
       await this.loadSavedQueries();
     },
+    /**
+     * Rename the active saved query in place (title-only edit). No-op when
+     * nothing is selected; throws on a blank name so the caller can revert
+     * the inline editor to the previous title.
+     */
+    async renameActiveQuery(name: string) {
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error("Name is required");
+      if (this.activeQueryId == null) return;
+      await api.put(`/queries/${this.activeQueryId}`, { name: trimmed });
+      await this.loadSavedQueries();
+    },
     async deleteSavedQuery(id: number) {
       await api.del(`/queries/${id}`);
       if (this.activeQueryId === id) this.activeQueryId = null;

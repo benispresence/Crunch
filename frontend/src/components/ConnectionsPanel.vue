@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { api } from "@/api/client";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { useWorkspaceStore, type Connection } from "@/stores/workspace";
 import FolderScanDialog from "./FolderScanDialog.vue";
 import FolderTree from "./FolderTree.vue";
 
@@ -151,12 +151,49 @@ function blankDraft() {
   };
 }
 
+// Rebuild a form draft from an existing connection so it can be edited.
+// Reverses the config-shaping done in submit(): secrets come back as the
+// "••••••" mask and are left untouched unless the user retypes them.
+function draftFromConnection(c: Connection) {
+  const cfg = (c.config ?? {}) as Record<string, unknown>;
+  const options = (cfg.options ?? {}) as Record<string, unknown>;
+  const type = c.type as ConnectionType;
+  const d = blankDraft();
+  d.name = c.name;
+  d.type = type;
+  d.port = typeof cfg.port === "number" ? cfg.port : DEFAULT_PORTS[type] ?? 0;
+  d.host = typeof cfg.host === "string" ? cfg.host : "localhost";
+  d.user = typeof cfg.user === "string" ? cfg.user : "";
+  d.password = typeof cfg.password === "string" ? cfg.password : "";
+  d.database = typeof cfg.database === "string" ? cfg.database : "";
+  d.extras = {};
+  for (const f of EXTRAS_BY_TYPE[type] ?? []) {
+    if (f.key === "database") {
+      d.extras[f.key] = typeof cfg.database === "string" ? cfg.database : "";
+    } else if (f.key === "host") {
+      d.extras[f.key] = typeof cfg.host === "string" ? cfg.host : "";
+    } else if (f.key === "files") {
+      d.extras[f.key] = Array.isArray(options.files) ? (options.files as string[]).join("\n") : "";
+    } else if (f.key === "secure") {
+      d.extras[f.key] = options.secure == null ? "" : String(options.secure);
+    } else {
+      d.extras[f.key] = options[f.key] != null ? String(options[f.key]) : "";
+    }
+  }
+  return d;
+}
+
 const ws = useWorkspaceStore();
 const adding = ref(false);
+const editingId = ref<number | null>(null);
 const submitting = ref(false);
 const error = ref("");
 const draft = ref(blankDraft());
 const showFolderScan = ref(false);
+// Set while populating the form from an existing connection so the
+// type-change watcher (which clears extras/port) doesn't wipe the
+// values we're loading.
+let loadingDraft = false;
 
 function onFolderPicked(uris: string[]) {
   if (uris.length === 0) return;
@@ -203,6 +240,7 @@ const showGenericDatabase = computed(() => {
 watch(
   () => draft.value.type,
   (t) => {
+    if (loadingDraft) return;
     draft.value.port = DEFAULT_PORTS[t];
     draft.value.extras = {};
   },
@@ -210,12 +248,25 @@ watch(
 
 function openForm() {
   draft.value = blankDraft();
+  editingId.value = null;
   error.value = "";
   adding.value = true;
 }
 
+async function openEditForm(c: Connection) {
+  loadingDraft = true;
+  draft.value = draftFromConnection(c);
+  editingId.value = c.id;
+  error.value = "";
+  adding.value = true;
+  // Let the type-change watcher run (and skip) before re-arming it.
+  await nextTick();
+  loadingDraft = false;
+}
+
 function closeForm() {
   adding.value = false;
+  editingId.value = null;
   error.value = "";
 }
 
@@ -258,11 +309,16 @@ async function add() {
       }
     }
     if (Object.keys(options).length > 0) config.options = options;
-    await api.post("/connections", {
+    const payload = {
       name: draft.value.name.trim(),
       type: draft.value.type,
       config,
-    });
+    };
+    if (editingId.value != null) {
+      await api.put(`/connections/${editingId.value}`, payload);
+    } else {
+      await api.post("/connections", payload);
+    }
     closeForm();
     await ws.loadConnections();
   } catch (e) {
@@ -421,10 +477,18 @@ async function remove(id: number) {
 
         <p v-if="error" class="conn-form__error">{{ error }}</p>
 
+        <p v-if="editingId != null" class="conn-form__hint">
+          Leave a password or secret field showing <code>••••••</code> to keep the stored value.
+        </p>
+
         <div class="conn-form__actions">
           <button type="button" class="btn btn-ghost btn-sm" @click="closeForm">Cancel</button>
           <button type="submit" class="btn btn-primary btn-sm" :disabled="submitting">
-            {{ submitting ? "Adding..." : "Add connection" }}
+            {{ submitting
+              ? "Saving..."
+              : editingId != null
+                ? "Save changes"
+                : "Add connection" }}
           </button>
         </div>
       </form>
@@ -441,13 +505,29 @@ async function remove(id: number) {
             <span class="sidebar__type">{{ c.type }}</span>
             <span class="sidebar__name" :title="c.name">{{ c.name }}</span>
           </div>
-          <button
-            class="btn btn-ghost btn-icon sidebar__delete"
-            @click.stop="remove(c.id)"
-            title="Delete"
-          >
-            ×
-          </button>
+          <div class="sidebar__item-actions">
+            <button
+              class="btn btn-ghost btn-icon sidebar__edit"
+              @click.stop="openEditForm(c)"
+              title="Edit connection"
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                <path
+                  d="M11.5 2.5a1.4 1.4 0 0 1 2 2L6 12l-3 1 1-3 7.5-7.5Z"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+            <button
+              class="btn btn-ghost btn-icon sidebar__delete"
+              @click.stop="remove(c.id)"
+              title="Delete"
+            >
+              ×
+            </button>
+          </div>
         </li>
         <li v-if="ws.connections.length === 0 && !adding" class="sidebar__empty">
           No connections yet. Click <strong>+ New</strong> to add one.
@@ -618,13 +698,24 @@ async function remove(id: number) {
   text-overflow: ellipsis;
   min-width: 0;
 }
+.sidebar__item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.sidebar__edit,
 .sidebar__delete {
   opacity: 0;
   transition: opacity 120ms;
   flex-shrink: 0;
 }
+.sidebar__item:hover .sidebar__edit,
 .sidebar__item:hover .sidebar__delete,
+.sidebar__item--active .sidebar__edit,
 .sidebar__item--active .sidebar__delete { opacity: 1; }
+.sidebar__edit { color: var(--fg-subtle); }
+.sidebar__edit:hover { color: var(--accent); }
 .sidebar__empty {
   color: var(--fg-subtle);
   font-size: 12px;

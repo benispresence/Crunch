@@ -5,6 +5,7 @@ import { requireAuth } from "../middleware/auth.js";
 import {
   encryptConnectionConfig,
   maskConnectionConfig,
+  restoreMaskedSecrets,
 } from "../services/crypto.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 
@@ -49,6 +50,35 @@ connectionsRouter.post("/", (req, res) => {
     .prepare("INSERT INTO connections (user_id, name, type, config_json) VALUES (?, ?, ?, ?)")
     .run(req.user!.sub, parsed.data.name, parsed.data.type, JSON.stringify(encrypted));
   res.json({ id: Number(info.lastInsertRowid) });
+});
+
+connectionsRouter.put("/:id", (req, res) => {
+  const parsed = upsertSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const existing = db
+    .prepare("SELECT config_json FROM connections WHERE id = ? AND user_id = ?")
+    .get(req.params.id, req.user!.sub) as { config_json: string } | undefined;
+  if (!existing) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  // Carry over any secret the user left masked, then (re-)encrypt the rest.
+  const stored = JSON.parse(existing.config_json) as Record<string, unknown>;
+  const merged = restoreMaskedSecrets(parsed.data.config, stored);
+  const encrypted = encryptConnectionConfig(merged);
+  db.prepare(
+    "UPDATE connections SET name = ?, type = ?, config_json = ? WHERE id = ? AND user_id = ?",
+  ).run(
+    parsed.data.name,
+    parsed.data.type,
+    JSON.stringify(encrypted),
+    req.params.id,
+    req.user!.sub,
+  );
+  res.json({ id: Number(req.params.id) });
 });
 
 connectionsRouter.delete("/:id", (req, res) => {

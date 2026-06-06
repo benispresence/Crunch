@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import * as monaco from "monaco-editor";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useTheme } from "@/composables/theme";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -64,6 +64,44 @@ const activeQuery = computed(() =>
 // One title for the whole query+chart unit. SqlEditor sits on top of
 // ChartPanel so showing the name once here serves both panes.
 const headerName = computed(() => activeQuery.value?.name ?? "Untitled query");
+
+// Inline title editing: click the name to rename a saved query in place.
+// The edit commits on blur or Enter and reverts on Escape. Only saved
+// queries can be renamed — there's nothing to persist for a scratch query.
+const editingTitle = ref(false);
+const titleDraft = ref("");
+const titleSaving = ref(false);
+const titleInput = ref<HTMLInputElement | null>(null);
+
+function startEditTitle() {
+  if (!activeQuery.value || titleSaving.value) return;
+  titleDraft.value = activeQuery.value.name;
+  editingTitle.value = true;
+  nextTick(() => {
+    titleInput.value?.focus();
+    titleInput.value?.select();
+  });
+}
+
+async function commitTitle() {
+  if (!editingTitle.value) return; // guard against blur firing after Escape
+  const next = titleDraft.value.trim();
+  const current = activeQuery.value?.name ?? "";
+  editingTitle.value = false;
+  if (!next || next === current) return;
+  titleSaving.value = true;
+  try {
+    await ws.renameActiveQuery(next);
+  } catch {
+    // Rename failed — the computed headerName falls back to the stored name.
+  } finally {
+    titleSaving.value = false;
+  }
+}
+
+function cancelEditTitle() {
+  editingTitle.value = false;
+}
 const hasUnsavedChanges = computed(() => {
   const q = activeQuery.value;
   if (!q) return false;
@@ -423,7 +461,22 @@ const activeQueryProposal = computed(() => {
       </div>
 
       <div class="editor__title">
-        <span class="editor__name" :title="headerName">{{ headerName }}</span>
+        <input
+          v-if="editingTitle"
+          ref="titleInput"
+          v-model="titleDraft"
+          class="editor__name-input"
+          @blur="commitTitle"
+          @keyup.enter="commitTitle"
+          @keyup.escape="cancelEditTitle"
+        />
+        <span
+          v-else
+          class="editor__name"
+          :class="{ 'editor__name--editable': !!activeQuery }"
+          :title="activeQuery ? `${headerName} — click to rename` : headerName"
+          @click="startEditTitle"
+        >{{ headerName }}</span>
         <span
           v-if="hasUnsavedChanges"
           class="editor__dirty"
@@ -619,6 +672,31 @@ const activeQueryProposal = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 360px;
+}
+.editor__name--editable {
+  cursor: text;
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  margin: -2px -4px;
+}
+.editor__name--editable:hover {
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.editor__name-input {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  max-width: 360px;
+  font-family: inherit;
+  outline: none;
+}
+.editor__name-input:focus {
+  box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 .editor__dirty {
   color: var(--accent);
