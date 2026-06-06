@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { api } from "@/api/client";
 
 /**
@@ -21,6 +21,8 @@ interface ExposedTools {
   available: Array<{ name: string; description: string }>;
 }
 
+type AuthMode = "header" | "oauth2";
+
 interface McpServer {
   id: number;
   name: string;
@@ -34,20 +36,36 @@ interface McpServer {
   last_error: string | null;
   cached_tools: Array<{ name: string; description?: string }>;
   updated_at: number;
+  auth_mode: AuthMode;
+  oauth_issuer: string | null;
+  oauth_scope: string | null;
+  oauth_resource: string | null;
+  oauth_client_id: string | null;
+  oauth_connected: boolean;
+  oauth_expires_at: number | null;
 }
+
+// Metabase's built-in MCP agent scopes — prefilled for OAuth servers.
+const METABASE_SCOPES =
+  "agent:table:read agent:metric:read agent:search agent:query:construct " +
+  "agent:query agent:query:execute agent:question:create agent:dashboard:create";
 
 const sub = ref<"outbound" | "inbound">("outbound");
 const exposed = ref<ExposedTools | null>(null);
 const servers = ref<McpServer[]>([]);
 const error = ref("");
 const toast = ref("");
+const connecting = ref<number | null>(null);
 
 const draft = ref<{
   id?: number;
   name: string;
   url: string;
+  auth_mode: AuthMode;
   auth_header_name: string;
   auth_header_value: string;
+  oauth_issuer: string;
+  oauth_scope: string;
   enabled: boolean;
 } | null>(null);
 
@@ -69,7 +87,11 @@ async function load() {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  window.addEventListener("message", onOauthMessage);
+});
+onUnmounted(() => window.removeEventListener("message", onOauthMessage));
 
 const exposedSet = computed(() => new Set(exposed.value?.exposed ?? []));
 
@@ -89,7 +111,9 @@ async function toggleExposed(name: string) {
 
 function startAdd() {
   draft.value = {
-    name: "", url: "", auth_header_name: "Authorization", auth_header_value: "", enabled: true,
+    name: "", url: "", auth_mode: "header",
+    auth_header_name: "Authorization", auth_header_value: "",
+    oauth_issuer: "", oauth_scope: "", enabled: true,
   };
 }
 
@@ -98,10 +122,22 @@ function startEdit(s: McpServer) {
     id: s.id,
     name: s.name,
     url: s.url,
+    auth_mode: s.auth_mode,
     auth_header_name: s.auth_header_name ?? "",
     auth_header_value: "",  // placeholder triggers "keep existing"
+    oauth_issuer: s.oauth_issuer ?? "",
+    oauth_scope: s.oauth_scope ?? "",
     enabled: s.enabled,
   };
+}
+
+// When the user flips to OAuth in a fresh form, prefill the Metabase
+// scopes so the common case is one click. Cleared going back to header.
+function onAuthModeChange() {
+  if (!draft.value) return;
+  if (draft.value.auth_mode === "oauth2" && !draft.value.oauth_scope.trim()) {
+    draft.value.oauth_scope = METABASE_SCOPES;
+  }
 }
 
 async function saveServer() {
@@ -110,11 +146,16 @@ async function saveServer() {
     error.value = "Name and URL are required";
     return;
   }
+  const isOauth = draft.value.auth_mode === "oauth2";
   const body = {
     name: draft.value.name.trim(),
     url: draft.value.url.trim(),
-    auth_header_name: draft.value.auth_header_name.trim() || null,
-    auth_header_value: draft.value.auth_header_value || null,
+    auth_mode: draft.value.auth_mode,
+    // Header fields only apply to header mode; null them out for OAuth.
+    auth_header_name: isOauth ? null : draft.value.auth_header_name.trim() || null,
+    auth_header_value: isOauth ? null : draft.value.auth_header_value || null,
+    oauth_issuer: isOauth ? draft.value.oauth_issuer.trim() || null : null,
+    oauth_scope: isOauth ? draft.value.oauth_scope.trim() || null : null,
     enabled: draft.value.enabled,
   };
   try {
@@ -124,10 +165,42 @@ async function saveServer() {
       await api.post("/admin/mcp/servers", body);
     }
     draft.value = null;
-    flash("Server saved.");
+    flash(isOauth ? "Saved. Click Connect to authorize." : "Server saved.");
     await load();
   } catch (e) {
     error.value = (e as Error).message;
+  }
+}
+
+// OAuth: ask the backend for an authorize URL, open it in a popup, and
+// wait for the callback page to postMessage back success/failure.
+async function connectOauth(s: McpServer) {
+  error.value = "";
+  connecting.value = s.id;
+  let popup: Window | null = null;
+  try {
+    popup = window.open("about:blank", "crunch-mcp-oauth", "width=520,height=680");
+    const r = await api.post<{ authorize_url: string }>(
+      `/mcp-client/${s.id}/oauth/start`, {},
+    );
+    if (popup) popup.location.href = r.authorize_url;
+    else window.location.href = r.authorize_url;
+  } catch (e) {
+    if (popup) popup.close();
+    connecting.value = null;
+    error.value = (e as Error).message;
+  }
+}
+
+function onOauthMessage(ev: MessageEvent) {
+  const d = ev.data as { type?: string; ok?: boolean; message?: string } | null;
+  if (!d || d.type !== "mcp-oauth") return;
+  connecting.value = null;
+  if (d.ok) {
+    flash("Connected. Tools discovered.");
+    load();
+  } else {
+    error.value = d.message || "Authorization failed";
   }
 }
 
@@ -196,10 +269,26 @@ function fmtTime(ts: number | null): string {
           <input v-model="draft.name" placeholder="github" required />
         </label>
         <label>
-          <span>URL</span>
-          <input v-model="draft.url" placeholder="https://mcp.example.com/jsonrpc" required />
+          <span>{{ draft.auth_mode === 'oauth2' ? 'MCP URL' : 'URL' }}</span>
+          <input
+            v-model="draft.url"
+            :placeholder="draft.auth_mode === 'oauth2'
+              ? 'http://localhost:3000/api/mcp'
+              : 'https://mcp.example.com/jsonrpc'"
+            required
+          />
         </label>
-        <div class="mcp__row">
+
+        <label>
+          <span>Auth mode</span>
+          <select v-model="draft.auth_mode" @change="onAuthModeChange">
+            <option value="header">Static header</option>
+            <option value="oauth2">OAuth 2.0 (authorization code + PKCE)</option>
+          </select>
+        </label>
+
+        <!-- Static-header mode -->
+        <div v-if="draft.auth_mode === 'header'" class="mcp__row">
           <label>
             <span>Auth header name (optional)</span>
             <input v-model="draft.auth_header_name" placeholder="Authorization" />
@@ -213,6 +302,23 @@ function fmtTime(ts: number | null): string {
             />
           </label>
         </div>
+
+        <!-- OAuth 2.0 mode -->
+        <template v-else>
+          <label>
+            <span>Issuer / Base URL (optional — auto-discovered)</span>
+            <input v-model="draft.oauth_issuer" placeholder="http://localhost:3000" />
+          </label>
+          <label>
+            <span>Scopes (space-separated)</span>
+            <textarea v-model="draft.oauth_scope" rows="2" class="mcp__textarea" />
+          </label>
+          <p class="mcp__hint">
+            Save first, then use <strong>Connect</strong> on the server below to authorize in
+            the browser. Crunch registers itself as a public client (PKCE) and stores the
+            issued tokens encrypted, refreshing them automatically.
+          </p>
+        </template>
         <label class="mcp__checkbox">
           <input v-model="draft.enabled" type="checkbox" />
           <span>Enabled — chat agent can call this server</span>
@@ -227,18 +333,39 @@ function fmtTime(ts: number | null): string {
         <li v-for="s in servers" :key="s.id" class="mcp__item">
           <div class="mcp__item-head">
             <span class="mcp__name">{{ s.name }}</span>
+            <span v-if="s.auth_mode === 'oauth2'" class="mcp__pill mcp__pill--oauth">OAuth</span>
+            <span
+              v-if="s.auth_mode === 'oauth2'"
+              class="mcp__pill"
+              :class="s.oauth_connected ? 'mcp__pill--ok' : 'mcp__pill--off'"
+            >{{ s.oauth_connected ? 'connected' : 'not connected' }}</span>
             <span v-if="!s.enabled" class="mcp__pill mcp__pill--off">disabled</span>
             <span class="mcp__url">{{ s.url }}</span>
           </div>
           <div class="mcp__item-meta">
             <span>{{ s.cached_tools.length }} tool{{ s.cached_tools.length === 1 ? '' : 's' }}</span>
             <span>· last handshake: {{ fmtTime(s.last_handshake_at) }}</span>
+            <span v-if="s.auth_mode === 'oauth2' && s.oauth_connected">
+              · token expires: {{ fmtTime(s.oauth_expires_at) }}
+            </span>
             <span v-if="s.last_error" class="mcp__err">⚠ {{ s.last_error }}</span>
           </div>
           <div v-if="s.cached_tools.length > 0" class="mcp__tools">
             <span v-for="t in s.cached_tools" :key="t.name" class="mcp__tool-chip">{{ t.name }}</span>
           </div>
           <div class="mcp__item-actions">
+            <button
+              v-if="s.auth_mode === 'oauth2'"
+              class="btn btn-primary btn-sm"
+              :disabled="connecting === s.id"
+              @click="connectOauth(s)"
+            >
+              {{ connecting === s.id
+                ? "Waiting…"
+                : s.oauth_connected
+                  ? "Reconnect"
+                  : "Connect" }}
+            </button>
             <button class="btn btn-sm" @click="refreshServer(s)">Discover tools</button>
             <button class="btn btn-sm" @click="startEdit(s)">Edit</button>
             <button class="btn btn-ghost btn-sm" @click="deleteServer(s)">Delete</button>
@@ -350,6 +477,24 @@ function fmtTime(ts: number | null): string {
   color: var(--fg);
 }
 .mcp__row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mcp__form select {
+  font-size: 13px;
+  padding: 6px 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+}
+.mcp__textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  resize: vertical;
+}
 .mcp__checkbox { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-muted); }
 .mcp__form footer { display: flex; justify-content: flex-end; gap: 6px; }
 
@@ -374,6 +519,8 @@ function fmtTime(ts: number | null): string {
   padding: 1px 6px; border-radius: 999px;
 }
 .mcp__pill--off { background: var(--bg-elev); color: var(--fg-subtle); border: 1px solid var(--border); }
+.mcp__pill--ok { background: rgba(127, 176, 105, 0.15); color: var(--success); }
+.mcp__pill--oauth { background: var(--accent-subtle); color: var(--accent); }
 .mcp__item-meta {
   display: flex; gap: 8px; flex-wrap: wrap;
   font-size: 11px; color: var(--fg-subtle);

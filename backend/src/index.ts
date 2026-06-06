@@ -14,6 +14,7 @@ import { dashboardsRouter } from "./routes/dashboards.js";
 import { foldersRouter } from "./routes/folders.js";
 import { gitRouter } from "./routes/git.js";
 import { mcpRouter } from "./routes/mcp.js";
+import { mcpClientOAuthRouter } from "./routes/mcpClientOAuth.js";
 import { pipelinesRouter } from "./routes/pipelines.js";
 import { queriesRouter } from "./routes/queries.js";
 import { visualizationsRouter } from "./routes/visualizations.js";
@@ -73,6 +74,7 @@ app.use("/api/admin", adminRouter);
 app.use("/api/chat", chatRouter);
 app.use("/api/git", gitRouter);
 app.use("/api/mcp", mcpRouter);
+app.use("/api/mcp-client", mcpClientOAuthRouter);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
