@@ -69,6 +69,14 @@ const draft = ref<{
   enabled: boolean;
 } | null>(null);
 
+// The server name doubles as the tool-name prefix (mcp__<name>__<tool>),
+// so the backend only accepts [A-Za-z0-9_-]. Coerce as the user types:
+// spaces/dots → underscores, everything else dropped — no more rejected
+// "Metabase MCP" submissions.
+function sanitizeName(raw: string): string {
+  return raw.replace(/[\s.]+/g, "_").replace(/[^A-Za-z0-9_-]/g, "");
+}
+
 function flash(msg: string) {
   toast.value = msg;
   setTimeout(() => (toast.value = ""), 2500);
@@ -91,7 +99,10 @@ onMounted(() => {
   load();
   window.addEventListener("message", onOauthMessage);
 });
-onUnmounted(() => window.removeEventListener("message", onOauthMessage));
+onUnmounted(() => {
+  window.removeEventListener("message", onOauthMessage);
+  stopConnectPoll();
+});
 
 const exposedSet = computed(() => new Set(exposed.value?.exposed ?? []));
 
@@ -172,11 +183,24 @@ async function saveServer() {
   }
 }
 
-// OAuth: ask the backend for an authorize URL, open it in a popup, and
-// wait for the callback page to postMessage back success/failure.
+// OAuth: ask the backend for an authorize URL and open it in a popup.
+// Completion is detected by polling the backend (the source of truth):
+// the popup's postMessage is unreliable because navigating cross-origin
+// to the auth server severs window.opener under COOP. We poll until the
+// server reports connected (or the popup closes / we time out).
+let connectPoll: ReturnType<typeof setInterval> | null = null;
+
+function stopConnectPoll() {
+  if (connectPoll) {
+    clearInterval(connectPoll);
+    connectPoll = null;
+  }
+}
+
 async function connectOauth(s: McpServer) {
   error.value = "";
   connecting.value = s.id;
+  stopConnectPoll();
   let popup: Window | null = null;
   try {
     popup = window.open("about:blank", "crunch-mcp-oauth", "width=520,height=680");
@@ -189,12 +213,38 @@ async function connectOauth(s: McpServer) {
     if (popup) popup.close();
     connecting.value = null;
     error.value = (e as Error).message;
+    return;
   }
+
+  const startedAt = Date.now();
+  connectPoll = setInterval(async () => {
+    // Give up after 3 minutes so the spinner can't get stuck.
+    if (Date.now() - startedAt > 180_000) {
+      stopConnectPoll();
+      if (connecting.value === s.id) connecting.value = null;
+      return;
+    }
+    await load();
+    const fresh = servers.value.find((x) => x.id === s.id);
+    if (fresh?.oauth_connected) {
+      stopConnectPoll();
+      connecting.value = null;
+      flash("Connected. Tools discovered.");
+      try { popup?.close(); } catch { /* cross-origin, ignore */ }
+    } else if (fresh?.last_error) {
+      stopConnectPoll();
+      connecting.value = null;
+      error.value = fresh.last_error;
+    }
+  }, 2000);
 }
 
+// Fast path: if postMessage does survive (same-origin / no COOP), clear
+// the spinner immediately instead of waiting for the next poll tick.
 function onOauthMessage(ev: MessageEvent) {
   const d = ev.data as { type?: string; ok?: boolean; message?: string } | null;
   if (!d || d.type !== "mcp-oauth") return;
+  stopConnectPoll();
   connecting.value = null;
   if (d.ok) {
     flash("Connected. Tools discovered.");
@@ -265,8 +315,13 @@ function fmtTime(ts: number | null): string {
       <form v-if="draft" class="mcp__form" @submit.prevent="saveServer">
         <header><h4>{{ draft.id ? "Edit MCP server" : "New MCP server" }}</h4></header>
         <label>
-          <span>Name (URL-safe identifier)</span>
-          <input v-model="draft.name" placeholder="github" required />
+          <span>Name (identifier — letters, numbers, <code>-</code> and <code>_</code> only)</span>
+          <input
+            :value="draft.name"
+            placeholder="metabase"
+            required
+            @input="draft.name = sanitizeName(($event.target as HTMLInputElement).value)"
+          />
         </label>
         <label>
           <span>{{ draft.auth_mode === 'oauth2' ? 'MCP URL' : 'URL' }}</span>
