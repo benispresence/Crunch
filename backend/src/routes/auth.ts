@@ -1,6 +1,7 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import { config } from "../config.js";
 import { db } from "../db/index.js";
 import {
   createUser,
@@ -74,11 +75,18 @@ authRouter.get("/config", (_req, res) => {
     .filter((p) => p.is_enabled === 1)
     .map((p) => ({ id: p.id, kind: p.kind, name: p.name }));
   const pending = !!row && row.must_change_password === 1;
+  // The seeded admin password is a secret. In production we never return
+  // it over HTTP (an unauthenticated caller could otherwise read it
+  // during the first-run window) — the operator reads it from the
+  // backend/FIRST_RUN_ADMIN_PASSWORD file (mode 0600). In dev we still
+  // pre-fill it on the login page for convenience, where exposure is
+  // local-only (F10).
   res.json({
     registration_enabled: isPublicRegistrationEnabled(),
     default_admin_pending: pending,
     default_admin_email: pending ? "admin@nicemeta.local" : null,
-    default_admin_password: pending ? getDefaultAdminBootstrapPassword() : null,
+    default_admin_password:
+      pending && config.isDev ? getDefaultAdminBootstrapPassword() : null,
     sso_providers: providers,
   });
 });
@@ -127,7 +135,7 @@ authRouter.get("/oidc/:id/start", async (req, res) => {
   }
 });
 
-authRouter.get("/oidc/:id/callback", async (req, res) => {
+authRouter.get("/oidc/:id/callback", authLimiter, async (req, res) => {
   try {
     const result = await oidcAuth.handleCallback(req, res);
     if (!result.ok) {
@@ -162,7 +170,7 @@ authRouter.get("/saml/:id/start", async (req, res) => {
   }
 });
 
-authRouter.post("/saml/:id/acs", async (req, res) => {
+authRouter.post("/saml/:id/acs", authLimiter, async (req, res) => {
   const provider = getProvider(Number(req.params.id));
   if (!provider || provider.kind !== "saml") {
     res.status(404).send("provider not found");

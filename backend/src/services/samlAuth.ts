@@ -20,7 +20,7 @@ import {
   type ProviderRow,
   type SAMLConfig,
 } from "./authProviders.js";
-import { upsertSsoUser } from "./oidc.js";
+import { resolvePublicBaseUrl, upsertSsoUser } from "./oidc.js";
 
 interface SAMLClient {
   getAuthorizeUrlAsync(
@@ -52,16 +52,10 @@ async function loadSAML(): Promise<SAMLConstructor> {
 }
 
 function callbackUrl(req: Request, providerId: number): string {
-  // Same source of truth as the OIDC callback URL — ``NICEMETA_PUBLIC_BASE_URL``
-  // pin or X-Forwarded-* derivation. The ACS URL must match the value
-  // the admin pre-registered with the IdP.
-  const envBase = (process.env.NICEMETA_PUBLIC_BASE_URL || "").trim();
-  if (envBase) {
-    return `${envBase.replace(/\/+$/, "")}/api/auth/saml/${providerId}/acs`;
-  }
-  const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol;
-  const host = (req.headers["x-forwarded-host"] as string) || req.get("host");
-  return `${proto}://${host}/api/auth/saml/${providerId}/acs`;
+  // Same trusted source of truth as the OIDC callback URL: the pinned
+  // NICEMETA_PUBLIC_BASE_URL (required in prod), never attacker-supplied
+  // forwarded headers. The ACS URL must match what the admin registered.
+  return `${resolvePublicBaseUrl(req)}/api/auth/saml/${providerId}/acs`;
 }
 
 function clientForProvider(req: Request, provider: ProviderRow): Promise<SAMLClient> {
@@ -78,6 +72,12 @@ function clientForProvider(req: Request, provider: ProviderRow): Promise<SAMLCli
         wantAssertionsSigned: true,
         signatureAlgorithm: "sha256",
         disableRequestedAuthnContext: true,
+        // Replay/scope hardening (F6): pin the audience to our SP entity
+        // id so an assertion minted for another SP can't be replayed
+        // here, and allow only a small clock skew on the signed
+        // NotBefore/NotOnOrAfter conditions that bound the replay window.
+        audience: cfg.issuer,
+        acceptedClockSkewMs: 5000,
       }) as SAMLClient,
   );
 }
@@ -132,17 +132,22 @@ export async function handleAcs(
     || (profile["http://schemas.xmlsoap.org/claims/UPN"] as string | undefined)
     || undefined;
 
-  const user = upsertSsoUser({
-    provider_id: provider.id,
-    external_id: externalId,
-    email: emailLower,
-    default_role: provider.default_role,
-  });
-  return {
-    ok: true,
-    token: signToken(user),
-    user: { id: user.id, email: user.email, role: user.role },
-  };
+  try {
+    const user = upsertSsoUser({
+      provider_id: provider.id,
+      external_id: externalId,
+      email: emailLower,
+      default_role: provider.default_role,
+      allow_email_link: cfg.link_existing_by_email,
+    });
+    return {
+      ok: true,
+      token: signToken(user),
+      user: { id: user.id, email: user.email, role: user.role },
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
 }
 
 export function getProviderRow(id: number): ProviderRow | null {

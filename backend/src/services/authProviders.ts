@@ -48,6 +48,16 @@ export const oidcConfigSchema = z.object({
   // Optional: pin to a specific HD claim (Google Workspace) or a set
   // of email domains. Empty means "accept anyone the IdP accepts".
   allowed_domains: z.array(z.string()).default([]),
+  // Require the IdP to assert ``email_verified: true`` before we trust
+  // the email for sign-in. On by default — turn it off only for IdPs
+  // that authoritatively own every address and omit the claim.
+  require_verified_email: z.boolean().default(true),
+  // Allow a verified SSO email to attach to a *pre-existing local*
+  // account (one not already linked to this provider). Off by default:
+  // without it, an SSO email that collides with an existing account is
+  // refused rather than silently taking it over. Even when on, linking
+  // to a more-privileged account than ``default_role`` is still refused.
+  link_existing_by_email: z.boolean().default(false),
 });
 export type OIDCConfig = z.infer<typeof oidcConfigSchema>;
 
@@ -63,6 +73,9 @@ export const samlConfigSchema = z.object({
   email_attribute: z.string().default("email"),
   name_attribute: z.string().default("displayName"),
   allowed_domains: z.array(z.string()).default([]),
+  // See OIDC: allow a signed-assertion email to attach to a pre-existing
+  // local account. Off by default; role-capped even when on.
+  link_existing_by_email: z.boolean().default(false),
 });
 export type SAMLConfig = z.infer<typeof samlConfigSchema>;
 
@@ -76,6 +89,9 @@ export const ldapConfigSchema = z.object({
   email_attribute: z.string().default("mail"),
   name_attribute: z.string().default("displayName"),
   start_tls: z.boolean().default(false),
+  // See OIDC: allow an LDAP-authenticated email to attach to a
+  // pre-existing local account. Off by default; role-capped even when on.
+  link_existing_by_email: z.boolean().default(false),
 });
 export type LDAPConfig = z.infer<typeof ldapConfigSchema>;
 
@@ -320,6 +336,20 @@ export function revokeApiKey(id: number): boolean {
     )
     .run(id);
   return r.changes > 0;
+}
+
+/** Revoke every live API key owned by a user. Called when the user's
+ *  password is changed/reset: bumping ``token_version`` kills their JWT
+ *  sessions, and this closes the parallel API-key credential so a leaked
+ *  key can't outlive the credentials it was minted under. Returns the
+ *  number of keys revoked. */
+export function revokeAllApiKeysForUser(userId: number): number {
+  const r = db
+    .prepare(
+      "UPDATE api_keys SET revoked_at = strftime('%s', 'now') WHERE user_id = ? AND revoked_at IS NULL",
+    )
+    .run(userId);
+  return r.changes;
 }
 
 /** Look up an API key by its plaintext secret. Returns the owning

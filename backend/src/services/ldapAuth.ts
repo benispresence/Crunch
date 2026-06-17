@@ -126,6 +126,7 @@ export async function login(
       external_id: entry.dn,
       email: emailLower,
       default_role: provider.default_role,
+      allow_email_link: cfg.link_existing_by_email,
     });
     return {
       ok: true,

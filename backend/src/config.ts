@@ -33,6 +33,10 @@ export const config = {
   port: Number(process.env.PORT ?? 3691),
   isDev,
   jwtSecret,
+  // Access-token lifetime. Long-lived tokens are a bigger blast radius
+  // if one leaks; operators who want tighter sessions can shorten this
+  // (e.g. "12h", "7d"). Revocation is still immediate via token_version.
+  jwtTtl: process.env.JWT_TTL ?? "30d",
   pythonEngineUrl: process.env.PYTHON_ENGINE_URL ?? "http://127.0.0.1:8765",
   pythonEngineToken: engineToken,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",

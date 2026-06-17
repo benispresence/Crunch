@@ -54,6 +54,10 @@ function resultPage(ok: boolean, message: string): string {
   // Notify the opener (the MCP settings panel) and close the popup. If
   // there's no opener (user navigated directly), bounce to the app.
   const payload = JSON.stringify({ type: "mcp-oauth", ok, message });
+  // Target the app's own origin rather than "*" so the result message
+  // can only be delivered to our SPA, never a window the user was
+  // tricked into opening this popup from (F8).
+  const targetOrigin = JSON.stringify(config.publicBaseUrl);
   return `<!doctype html><html><head><meta charset="utf-8"><title>${
     ok ? "Connected" : "Connection failed"
   }</title><style>
@@ -66,7 +70,7 @@ function resultPage(ok: boolean, message: string): string {
     <h2 class="${ok ? "ok" : "err"}">${ok ? "✓ Connected" : "✗ Connection failed"}</h2>
     <p>${ok ? "You can close this window and return to Crunch." : "<code>" + message.replace(/[<>&]/g, "") + "</code>"}</p>
   </div><script>
-    try { if (window.opener) window.opener.postMessage(${payload}, "*"); } catch (e) {}
+    try { if (window.opener) window.opener.postMessage(${payload}, ${targetOrigin}); } catch (e) {}
     if (${ok ? "true" : "false"}) { setTimeout(function(){ try{window.close();}catch(e){} }, 800); }
   </script></body></html>`;
 }

@@ -19,8 +19,9 @@
 
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
-import { createRemoteJWKSet, decodeJwt, jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import { db } from "../db/index.js";
+import { config } from "../config.js";
 import type { UserRow } from "./auth.js";
 import {
   getDecryptedConfig,
@@ -30,6 +31,40 @@ import {
   type ProviderRow,
 } from "./authProviders.js";
 import { signToken } from "./auth.js";
+import { assertSafeUrl, safeFetch } from "./ssrfGuard.js";
+
+/** Privilege ordering for SSO role-capping. A higher number means more
+ *  privilege; an SSO sign-in may never *bind to* an existing account
+ *  whose role outranks the provider's configured default_role. */
+const ROLE_RANK: Record<string, number> = { viewer: 0, editor: 1, admin: 2 };
+function roleRank(role: string): number {
+  return ROLE_RANK[role] ?? 0;
+}
+
+/**
+ * Single source of truth for the externally-reachable origin, used to
+ * build OAuth redirect / SAML ACS URLs that must match what the admin
+ * registered with the IdP.
+ *
+ * Security: we do NOT trust ``X-Forwarded-Host`` / ``X-Forwarded-Proto``
+ * in production — those are attacker-controllable and a poisoned value
+ * would steer the OAuth round-trip. In production the operator must pin
+ * ``NICEMETA_PUBLIC_BASE_URL``. Only in dev do we fall back to the
+ * request's own host so the native 3691/5173 split keeps working.
+ */
+export function resolvePublicBaseUrl(req: Request): string {
+  const envBase = (process.env.NICEMETA_PUBLIC_BASE_URL || "").trim();
+  if (envBase) return envBase.replace(/\/+$/, "");
+  if (config.isDev) {
+    const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol;
+    const host = (req.headers["x-forwarded-host"] as string) || req.get("host");
+    return `${proto}://${host}`;
+  }
+  throw new Error(
+    "NICEMETA_PUBLIC_BASE_URL must be set to the public origin (e.g. "
+    + "https://crunch.example.com) for SSO to build a trusted callback URL.",
+  );
+}
 
 const STATE_COOKIE = "crunch_oidc_state";
 const VERIFIER_COOKIE = "crunch_oidc_verifier";
@@ -69,7 +104,7 @@ async function discover(cfg: OIDCConfig): Promise<DiscoveryDocument> {
   }
   const cached = discoveryCache.get(cfg.discovery_url);
   if (cached && Date.now() - cached.ts < DISCOVERY_TTL_MS) return cached.doc;
-  const r = await fetch(cfg.discovery_url);
+  const r = await safeFetch(cfg.discovery_url);
   if (!r.ok) throw new Error(`discovery fetch failed (${r.status})`);
   const doc = (await r.json()) as DiscoveryDocument;
   discoveryCache.set(cfg.discovery_url, { doc, ts: Date.now() });
@@ -85,19 +120,10 @@ function pkce(): { verifier: string; challenge: string } {
 }
 
 function publicCallbackUrl(req: Request, providerId: number): string {
-  // The callback URL must match what the admin pre-registered with
-  // the IdP. We synthesize it from the inbound request's headers,
-  // honouring ``X-Forwarded-*`` so the URL is correct behind a TLS-
-  // terminating proxy. To pin the URL explicitly (e.g. when the
-  // backend sits behind a path-rewriting proxy), set
-  // ``NICEMETA_PUBLIC_BASE_URL`` and we'll use that as the origin.
-  const envBase = (process.env.NICEMETA_PUBLIC_BASE_URL || "").trim();
-  if (envBase) {
-    return `${envBase.replace(/\/+$/, "")}/api/auth/oidc/${providerId}/callback`;
-  }
-  const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol;
-  const host = (req.headers["x-forwarded-host"] as string) || req.get("host");
-  return `${proto}://${host}/api/auth/oidc/${providerId}/callback`;
+  // The callback URL must match what the admin pre-registered with the
+  // IdP. Built from the trusted public base (see resolvePublicBaseUrl)
+  // rather than attacker-controllable forwarded headers.
+  return `${resolvePublicBaseUrl(req)}/api/auth/oidc/${providerId}/callback`;
 }
 
 export async function startLogin(
@@ -180,23 +206,14 @@ async function verifyIdToken(
       + "Pin one explicitly in the provider config.",
     );
   }
+  // SSRF guard the JWKS URI before jose fetches it.
+  await assertSafeUrl(doc.jwks_uri);
   const jwks = jwksFor(doc.jwks_uri);
   const { payload } = await jwtVerify(jwt, jwks, {
     issuer: doc.issuer ?? cfg.issuer,
     audience: cfg.client_id,
   });
   return payload as Claims;
-}
-
-/** Unsigned decode used only as a *fallback* identification when the
- *  IdP couldn't be verified (no JWKS). Callers must also enforce
- *  domain checks before honouring claims from this path. */
-function decodeJwtPayload(jwt: string): Claims {
-  try {
-    return decodeJwt(jwt) as Claims;
-  } catch {
-    return {};
-  }
 }
 
 export async function handleCallback(
@@ -239,7 +256,7 @@ export async function handleCallback(
   });
   if (cfg.client_secret) tokenBody.set("client_secret", cfg.client_secret);
 
-  const tokenRes = await fetch(doc.token_endpoint, {
+  const tokenRes = await safeFetch(doc.token_endpoint, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: tokenBody.toString(),
@@ -250,38 +267,56 @@ export async function handleCallback(
   }
   const tokens = (await tokenRes.json()) as TokenResponse;
 
-  // id_token comes first when present and verifiable. If the IdP
-  // advertises a JWKS endpoint, signature + issuer + audience are
-  // checked; failure aborts the flow. Userinfo is then merged on top
-  // for IdPs (e.g. GitHub OAuth) that don't ship an id_token.
-  let claims: Claims = {};
+  // Two independent identity sources, tracked separately so the
+  // signature-verified one always wins for identity-critical fields:
+  //   - verifiedClaims: from a JWKS-verified id_token (trusted).
+  //   - userinfoClaims: from the userinfo endpoint, fetched with the
+  //     access_token (trusted transport, but not signed identity).
+  // We never trust an *unsigned* id_token: if the IdP advertises no
+  // JWKS we drop the id_token entirely and rely on userinfo.
+  let verifiedClaims: Claims = {};
+  let idTokenVerified = false;
   if (tokens.id_token) {
     try {
-      claims = await verifyIdToken(tokens.id_token, doc, cfg);
+      verifiedClaims = await verifyIdToken(tokens.id_token, doc, cfg);
+      idTokenVerified = true;
     } catch (e) {
       const msg = (e as Error).message;
-      // If the only failure is "no jwks_uri", we degrade to userinfo
-      // below — the IdP simply doesn't support id_token verification.
-      // Any other verification failure (bad signature, wrong issuer,
-      // wrong audience) is fatal.
+      // "no jwks_uri" → degrade to userinfo-only (handled below).
+      // Any real verification failure (bad signature, wrong issuer /
+      // audience) is fatal — never fall back to unsigned claims.
       if (!/did not advertise a jwks_uri/.test(msg)) {
         return { ok: false, error: `id_token verification failed: ${msg}` };
       }
-      claims = decodeJwtPayload(tokens.id_token);
     }
   }
+
+  let userinfoClaims: Claims = {};
   if (doc.userinfo_endpoint && tokens.access_token) {
     try {
-      const r = await fetch(doc.userinfo_endpoint, {
+      const r = await safeFetch(doc.userinfo_endpoint, {
         headers: { authorization: `Bearer ${tokens.access_token}` },
       });
-      if (r.ok) {
-        const userinfo = (await r.json()) as Claims;
-        claims = { ...claims, ...userinfo };
-      }
+      if (r.ok) userinfoClaims = (await r.json()) as Claims;
     } catch {
-      /* keep claims from id_token */
+      /* keep verified claims */
     }
+  }
+
+  // Merge: userinfo as the base, verified id_token overlaid on top so a
+  // signed claim can never be overridden by the unsigned userinfo body.
+  const claims: Claims = idTokenVerified
+    ? { ...userinfoClaims, ...verifiedClaims }
+    : userinfoClaims;
+
+  if (!idTokenVerified && Object.keys(userinfoClaims).length === 0) {
+    // No verified id_token AND no userinfo — we have no trustworthy
+    // identity. Refuse rather than trust an unsigned token.
+    return {
+      ok: false,
+      error:
+        "no verifiable identity from IdP (no JWKS signature and no userinfo endpoint)",
+    };
   }
 
   const externalId = claims.sub ? String(claims.sub) : undefined;
@@ -290,6 +325,23 @@ export async function handleCallback(
     return { ok: false, error: "IdP did not return an email claim" };
   }
   const emailLower = email.toLowerCase();
+
+  // Email-verification gate (F1). ``email_verified`` is only meaningful
+  // when it rode in on a signed id_token or a same-origin userinfo
+  // response; we treat a literal ``true``/``"true"`` as verified.
+  if (cfg.require_verified_email) {
+    // Some IdPs send a boolean, others a "true"/"false" string.
+    const ev = claims.email_verified as unknown;
+    const verified = ev === true || ev === "true";
+    if (!verified) {
+      return {
+        ok: false,
+        error:
+          "IdP did not assert email_verified for this account. Verify the "
+          + "address at the IdP, or disable require_verified_email for this provider.",
+      };
+    }
+  }
 
   // Domain checks: provider-scoped, then global allowlist.
   if (cfg.allowed_domains.length > 0) {
@@ -302,17 +354,22 @@ export async function handleCallback(
     return { ok: false, error: "email domain not on the allowlist" };
   }
 
-  const user = upsertSsoUser({
-    provider_id: provider.id,
-    external_id: externalId,
-    email: emailLower,
-    default_role: provider.default_role,
-  });
-  return {
-    ok: true,
-    token: signToken(user),
-    user: { id: user.id, email: user.email, role: user.role },
-  };
+  try {
+    const user = upsertSsoUser({
+      provider_id: provider.id,
+      external_id: externalId,
+      email: emailLower,
+      default_role: provider.default_role,
+      allow_email_link: cfg.link_existing_by_email,
+    });
+    return {
+      ok: true,
+      token: signToken(user),
+      user: { id: user.id, email: user.email, role: user.role },
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
 }
 
 interface MinimalUser {
@@ -321,6 +378,7 @@ interface MinimalUser {
   password_hash: string;
   role: string;
   token_version: number;
+  auth_provider_id?: number | null;
 }
 
 /** Look up (or auto-provision) the local user backing this SSO sign-in.
@@ -338,11 +396,15 @@ export function upsertSsoUser(opts: {
   external_id?: string;
   email: string;
   default_role: string;
+  /** Whether the provider permits attaching this identity to a
+   *  pre-existing local account matched only by email. Defaults to the
+   *  safe ``false`` — without it a colliding email is refused. */
+  allow_email_link?: boolean;
 }): MinimalUser {
   if (opts.external_id) {
     const byExt = db
       .prepare(
-        `SELECT id, email, password_hash, role, token_version
+        `SELECT id, email, password_hash, role, token_version, auth_provider_id
          FROM users WHERE auth_provider_id = ? AND external_id = ?`,
       )
       .get(opts.provider_id, opts.external_id) as MinimalUser | undefined;
@@ -360,11 +422,32 @@ export function upsertSsoUser(opts: {
 
   const byEmail = db
     .prepare(
-      `SELECT id, email, password_hash, role, token_version
+      `SELECT id, email, password_hash, role, token_version, auth_provider_id
        FROM users WHERE email = ?`,
     )
     .get(opts.email) as MinimalUser | undefined;
   if (byEmail) {
+    const alreadyLinked = byEmail.auth_provider_id === opts.provider_id;
+    if (!alreadyLinked) {
+      // First time this provider sees an email that already belongs to a
+      // local (or other-provider) account. This is the account-takeover
+      // surface: an attacker who can make the IdP assert a victim's email
+      // would otherwise log straight into the victim's account.
+      if (!opts.allow_email_link) {
+        throw new Error(
+          "an account with this email already exists; ask an admin to link "
+          + "it to this identity provider (link_existing_by_email is off)",
+        );
+      }
+      // Even when linking is allowed, never let SSO climb privilege:
+      // refuse to bind onto an account that outranks default_role.
+      if (roleRank(byEmail.role) > roleRank(opts.default_role)) {
+        throw new Error(
+          "refusing to bind SSO sign-in to a more-privileged existing "
+          + `account (${byEmail.role}); an admin must link it explicitly`,
+        );
+      }
+    }
     db.prepare(
       `UPDATE users SET auth_provider_id = ?, external_id = ?
        WHERE id = ?`,
