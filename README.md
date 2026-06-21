@@ -87,10 +87,29 @@ Bring it down with `docker compose -f docker/docker-compose.yml down`; add
 ### First-launch admin
 
 On the first start the backend generates a random 18-character admin
-password. **You'll see it right on the login screen** — a highlighted
-"First launch — default admin" panel shows the email + password with a
-Copy button and a "Use these credentials" autofill link. No need to dig
-through logs.
+password for `admin@nicemeta.local`.
+
+**Where to find it depends on how you're running:**
+
+- **Docker / any production deploy** (`NODE_ENV=production`): the password
+  is **not** exposed over HTTP — read it from the 0600-mode file in the
+  data volume (or the logs):
+
+  ```bash
+  docker compose -f docker/docker-compose.yml exec backend \
+    cat /data/FIRST_RUN_ADMIN_PASSWORD
+  # or
+  docker compose -f docker/docker-compose.yml logs backend | grep -A6 "Default admin"
+  ```
+
+- **Native dev** (`NODE_ENV` unset): for convenience the login screen
+  shows it for you — a highlighted "First launch — default admin" panel
+  with the email + password, a Copy button, and a "Use these credentials"
+  autofill link. It's also written to `backend/FIRST_RUN_ADMIN_PASSWORD`.
+
+> Not showing the seeded password over HTTP in production is deliberate
+> (a hardening from the v1.1 security audit): otherwise any unauthenticated
+> visitor could read it during the first-run window.
 
 After signing in, a modal asks you to set your own password. You can:
 
@@ -98,18 +117,8 @@ After signing in, a modal asks you to set your own password. You can:
 - **Keep default** — accept the random one as-is. It stays valid until
   you change it later from the same modal in the top bar.
 
-Either choice clears the password from the public `/auth/config` endpoint
-so subsequent visitors don't see it.
-
-If you ever lose the password, it's also written to a 0600-mode file
-inside the data volume:
-
-```bash
-docker compose -f docker/docker-compose.yml exec backend \
-  cat /data/FIRST_RUN_ADMIN_PASSWORD
-# or
-docker compose -f docker/docker-compose.yml logs backend | grep -A6 "Default admin"
-```
+Either choice clears the seeded password so it's no longer returned by
+the `/auth/config` endpoint (in dev) and the first-run file is wiped.
 
 ---
 
