@@ -1,0 +1,106 @@
+name: Release — build & push container images
+
+# Builds the three Crunch images (engine / backend / frontend) and
+# pushes them to GitHub Container Registry (ghcr.io).
+#
+# Triggers:
+#   - push of a version tag (v*)  -> publishes :<tag> and :latest
+#   - manual run (workflow_dispatch) -> build any ref, tag with the
+#     `version` input. Use this to (re)publish an already-existing tag
+#     such as v1.1.0. NOTE: manual dispatch only works once this file
+#     lives on the repository's default branch.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (tag / branch / SHA) to build from"
+        required: true
+        default: "v1.1.0"
+      version:
+        description: "Image version tag to publish (e.g. v1.1.0)"
+        required: true
+        default: "v1.1.0"
+      push_latest:
+        description: "Also update the :latest tag"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: engine
+            dockerfile: docker/Dockerfile.engine
+          - service: backend
+            dockerfile: docker/Dockerfile.backend
+          - service: frontend
+            dockerfile: docker/Dockerfile.frontend
+    steps:
+      - name: Resolve ref & version
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            REF="${{ github.ref_name }}"
+            VERSION="${{ github.ref_name }}"
+            LATEST="true"
+          else
+            REF="${{ inputs.ref }}"
+            VERSION="${{ inputs.version }}"
+            LATEST="${{ inputs.push_latest }}"
+          fi
+          echo "ref=$REF"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST"   >> "$GITHUB_OUTPUT"
+          # ghcr image names must be lowercase.
+          OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/$OWNER/crunch-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout ${{ steps.vars.outputs.ref }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.vars.outputs.ref }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          TAGS="${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}"
+          if [ "${{ steps.vars.outputs.latest }}" = "true" ]; then
+            TAGS="$TAGS
+          ${{ steps.vars.outputs.image }}:latest"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build & push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
