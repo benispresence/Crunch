@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { api } from "@/api/client";
+import AuthSettingsPanel from "@/components/AuthSettingsPanel.vue";
+import McpSettingsPanel from "@/components/McpSettingsPanel.vue";
+import PermissionsPanel from "@/components/PermissionsPanel.vue";
+import PipelineSettingsPanel from "@/components/PipelineSettingsPanel.vue";
 import { useAuthStore } from "@/stores/auth";
 
 interface Pkg {
@@ -23,7 +27,7 @@ interface AdminUser {
 }
 
 const auth = useAuthStore();
-const tab = ref<"settings" | "packages" | "users" | "git">("settings");
+const tab = ref<"settings" | "packages" | "users" | "auth" | "permissions" | "pipelines" | "mcp" | "git">("settings");
 
 interface ModelOption { id: string; label: string }
 interface SettingsState {
@@ -387,6 +391,34 @@ async function deleteUser(u: AdminUser) {
       </button>
       <button
         class="admin__tab"
+        :class="{ 'admin__tab--active': tab === 'auth' }"
+        @click="tab = 'auth'"
+      >
+        Authentication
+      </button>
+      <button
+        class="admin__tab"
+        :class="{ 'admin__tab--active': tab === 'permissions' }"
+        @click="tab = 'permissions'"
+      >
+        Permissions
+      </button>
+      <button
+        class="admin__tab"
+        :class="{ 'admin__tab--active': tab === 'pipelines' }"
+        @click="tab = 'pipelines'"
+      >
+        Pipelines
+      </button>
+      <button
+        class="admin__tab"
+        :class="{ 'admin__tab--active': tab === 'mcp' }"
+        @click="tab = 'mcp'"
+      >
+        MCP
+      </button>
+      <button
+        class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'git' }"
         @click="tab = 'git'"
       >
@@ -643,6 +675,26 @@ async function deleteUser(u: AdminUser) {
           </tr>
         </tbody>
       </table>
+    </section>
+
+    <!-- Authentication: SSO providers, API keys, email allowlist -->
+    <section v-if="tab === 'auth'" class="admin__section">
+      <AuthSettingsPanel />
+    </section>
+
+    <!-- Permissions: groups + user assignment -->
+    <section v-if="tab === 'permissions'" class="admin__section">
+      <PermissionsPanel />
+    </section>
+
+    <!-- Pipelines: scheduler health + throttle -->
+    <section v-if="tab === 'pipelines'" class="admin__section">
+      <PipelineSettingsPanel />
+    </section>
+
+    <!-- MCP: outbound servers + inbound exposed tools -->
+    <section v-if="tab === 'mcp'" class="admin__section">
+      <McpSettingsPanel />
     </section>
 
     <!-- Git -->

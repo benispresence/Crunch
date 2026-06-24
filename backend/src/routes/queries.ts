@@ -3,7 +3,17 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { decryptConnectionConfig } from "../services/crypto.js";
+import {
+  parameterSpecArraySchema,
+  parameterValuesSchema,
+  safeParseSpecs,
+} from "../services/parameters.js";
 import { pythonEngine } from "../services/pythonEngine.js";
+import {
+  listQueryRevisions,
+  revertQuery,
+  snapshotQuery,
+} from "../services/versioning.js";
 
 export const queriesRouter = Router();
 queriesRouter.use(requireAuth);
@@ -19,6 +29,7 @@ interface QueryRow {
   chart_config_json: string;
   chart_python_code: string | null;
   chart_mode: string;
+  parameters_json: string;
   created_at: number;
   updated_at: number;
 }
@@ -32,7 +43,7 @@ interface ConnectionRow {
 const SELECT_COLS = `
   id, connection_id, folder_id, name, sql,
   chart_type, chart_renderer, chart_config_json, chart_python_code, chart_mode,
-  created_at, updated_at
+  parameters_json, created_at, updated_at
 `;
 
 function rowToQuery(row: QueryRow) {
@@ -47,6 +58,7 @@ function rowToQuery(row: QueryRow) {
     chart_config: safeJson(row.chart_config_json),
     chart_python_code: row.chart_python_code,
     chart_mode: row.chart_mode,
+    parameters: safeParseSpecs(row.parameters_json ?? "[]"),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -71,9 +83,10 @@ const chartFields = {
   chart_config: z.record(z.unknown()).optional(),
   chart_python_code: z.string().nullable().optional(),
   chart_mode: z.enum(["picker", "python"]).optional(),
+  parameters: parameterSpecArraySchema.optional(),
 };
 
-queriesRouter.post("/", (req, res) => {
+queriesRouter.post("/", async (req, res) => {
   const parsed = z
     .object({
       name: z.string().min(1),
@@ -91,8 +104,9 @@ queriesRouter.post("/", (req, res) => {
     .prepare(
       `INSERT INTO queries (
          user_id, connection_id, folder_id, name, sql,
-         chart_type, chart_renderer, chart_config_json, chart_python_code, chart_mode
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         chart_type, chart_renderer, chart_config_json, chart_python_code, chart_mode,
+         parameters_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       req.user!.sub,
@@ -105,10 +119,17 @@ queriesRouter.post("/", (req, res) => {
       JSON.stringify(parsed.data.chart_config ?? {}),
       parsed.data.chart_python_code ?? null,
       parsed.data.chart_mode ?? "picker",
+      JSON.stringify(parsed.data.parameters ?? []),
     );
   const row = db
     .prepare(`SELECT ${SELECT_COLS} FROM queries WHERE id = ?`)
     .get(info.lastInsertRowid) as QueryRow;
+  // First revision = the initial state — gives the user a "rollback to
+  // creation" pin without any special-casing in the UI.
+  await snapshotQuery(row.id, req.user!.sub, {
+    source: "save",
+    message: "initial save",
+  });
   res.json(rowToQuery(row));
 });
 
@@ -123,7 +144,7 @@ queriesRouter.delete("/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-queriesRouter.put("/:id", (req, res) => {
+queriesRouter.put("/:id", async (req, res) => {
   const parsed = z
     .object({
       name: z.string().optional(),
@@ -149,6 +170,7 @@ queriesRouter.put("/:id", (req, res) => {
   if (parsed.data.chart_config !== undefined) push("chart_config_json = ?", JSON.stringify(parsed.data.chart_config));
   if (parsed.data.chart_python_code !== undefined) push("chart_python_code = ?", parsed.data.chart_python_code);
   if (parsed.data.chart_mode !== undefined) push("chart_mode = ?", parsed.data.chart_mode);
+  if (parsed.data.parameters !== undefined) push("parameters_json = ?", JSON.stringify(parsed.data.parameters));
   if (fields.length === 0) { res.json({ ok: true }); return; }
   fields.push("updated_at = strftime('%s', 'now')");
   values.push(req.params.id, req.user!.sub);
@@ -156,7 +178,39 @@ queriesRouter.put("/:id", (req, res) => {
   const row = db
     .prepare(`SELECT ${SELECT_COLS} FROM queries WHERE id = ? AND user_id = ?`)
     .get(req.params.id, req.user!.sub) as QueryRow | undefined;
+  if (row) {
+    // Snapshot post-update so the timeline reflects what the user saved.
+    // De-dup happens in the versioning service, so chart-only saves
+    // (which fire on every Apply) still don't blow up the history.
+    await snapshotQuery(row.id, req.user!.sub, { source: "save" });
+  }
   res.json(row ? rowToQuery(row) : { ok: true });
+});
+
+queriesRouter.get("/:id/revisions", (req, res) => {
+  const queryId = Number(req.params.id);
+  const exists = db
+    .prepare("SELECT id FROM queries WHERE id = ? AND user_id = ?")
+    .get(queryId, req.user!.sub);
+  if (!exists) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ revisions: listQueryRevisions(queryId, req.user!.sub) });
+});
+
+queriesRouter.post("/:id/revisions/:revisionId/revert", async (req, res) => {
+  const queryId = Number(req.params.id);
+  const revisionId = Number(req.params.revisionId);
+  const rev = await revertQuery(queryId, revisionId, req.user!.sub);
+  if (!rev) {
+    res.status(404).json({ error: "revision not found" });
+    return;
+  }
+  const row = db
+    .prepare(`SELECT ${SELECT_COLS} FROM queries WHERE id = ? AND user_id = ?`)
+    .get(queryId, req.user!.sub) as QueryRow | undefined;
+  res.json({ revision: rev, query: row ? rowToQuery(row) : null });
 });
 
 queriesRouter.post("/validate", async (req, res) => {
@@ -172,12 +226,20 @@ queriesRouter.post("/validate", async (req, res) => {
  * Render a saved query into a chart spec. Runs the SQL against its
  * connection, then either evaluates the saved python code or renders
  * via the chart picker config. Used by dashboards.
+ *
+ * Optional `parameter_values` overrides the saved defaults for this
+ * single render — that's how dashboard filters drive widgets.
  */
 queriesRouter.post("/:id/render", async (req, res) => {
+  const overrides = parameterValuesSchema.optional().safeParse(req.body?.parameter_values ?? {});
+  if (!overrides.success) {
+    res.status(400).json({ error: overrides.error.message });
+    return;
+  }
   const row = db
     .prepare(
       `SELECT id, connection_id, sql, chart_type, chart_renderer, chart_config_json,
-              chart_python_code, chart_mode
+              chart_python_code, chart_mode, parameters_json
        FROM queries WHERE id = ? AND user_id = ?`,
     )
     .get(req.params.id, req.user!.sub) as
@@ -198,11 +260,15 @@ queriesRouter.post("/:id/render", async (req, res) => {
     res.status(404).json({ error: "connection not found" });
     return;
   }
+  const specs = safeParseSpecs(row.parameters_json ?? "[]");
+  const values = overrides.data ?? {};
   try {
     const sqlResult = await pythonEngine.executeSql({
       connection: { type: conn.type, ...decryptConnectionConfig(JSON.parse(conn.config_json)) },
       sql: row.sql,
       limit: 5000,
+      parameters: specs as unknown as Array<Record<string, unknown>>,
+      parameter_values: values,
     });
     if (!sqlResult.success) {
       res.json({ success: false, error: sqlResult.error });
@@ -213,7 +279,12 @@ queriesRouter.post("/:id/render", async (req, res) => {
       data[col] = sqlResult.rows.map((r) => r[i]);
     });
     if (row.chart_mode === "python" && row.chart_python_code) {
-      const py = await pythonEngine.executePython({ code: row.chart_python_code, data });
+      const py = await pythonEngine.executePython({
+        code: row.chart_python_code,
+        data,
+        parameters: specs as unknown as Array<Record<string, unknown>>,
+        parameter_values: values,
+      });
       res.json({
         success: py.success, spec: py.spec, error: py.error,
         row_count: sqlResult.row_count,
@@ -241,6 +312,8 @@ queriesRouter.post("/execute", async (req, res) => {
       connection_id: z.number(),
       sql: z.string(),
       limit: z.number().int().positive().max(50000).optional(),
+      parameters: parameterSpecArraySchema.optional(),
+      parameter_values: parameterValuesSchema.optional(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -260,6 +333,8 @@ queriesRouter.post("/execute", async (req, res) => {
       connection: { type: conn.type, ...config },
       sql: parsed.data.sql,
       limit: parsed.data.limit,
+      parameters: (parsed.data.parameters ?? []) as unknown as Array<Record<string, unknown>>,
+      parameter_values: parsed.data.parameter_values ?? {},
     });
     res.json(result);
   } catch (err) {

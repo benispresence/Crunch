@@ -70,12 +70,55 @@ export function decryptString(value: string): string {
  */
 const SENSITIVE_CONFIG_KEYS = new Set(["password", "passphrase", "secret"]);
 
+// Sentinel returned by maskConnectionConfig for a secret that is set.
+// The edit form sends it back unchanged when the user didn't retype the
+// secret, which is our cue to keep the stored value.
+export const SECRET_MASK = "••••••";
+
+/**
+ * Merge an incoming (edit-form) config with the stored, still-encrypted
+ * config: any sensitive field whose incoming value is the mask sentinel
+ * is replaced by the stored ciphertext so untouched secrets survive an
+ * edit. Fields the user actually retyped pass through as plaintext and
+ * get re-encrypted later by encryptConnectionConfig.
+ */
+export function restoreMaskedSecrets(
+  incoming: Record<string, unknown>,
+  stored: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...incoming };
+  for (const k of Object.keys(out)) {
+    if (SENSITIVE_CONFIG_KEYS.has(k) && out[k] === SECRET_MASK) {
+      out[k] = stored[k] ?? "";
+    }
+  }
+  if (out.options && typeof out.options === "object") {
+    const opt = out.options as Record<string, unknown>;
+    const storedOpt = (stored.options as Record<string, unknown>) ?? {};
+    const newOpt: Record<string, unknown> = { ...opt };
+    for (const k of Object.keys(newOpt)) {
+      if (SENSITIVE_CONFIG_KEYS.has(k) && newOpt[k] === SECRET_MASK) {
+        newOpt[k] = storedOpt[k] ?? "";
+      }
+    }
+    out.options = newOpt;
+  }
+  return out;
+}
+
 export function encryptConnectionConfig(
   config: Record<string, unknown>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...config };
   for (const k of Object.keys(out)) {
-    if (SENSITIVE_CONFIG_KEYS.has(k) && typeof out[k] === "string" && out[k]) {
+    // Skip values that are already ciphertext — on an edit, unchanged
+    // secrets are carried over still-encrypted and must not be wrapped twice.
+    if (
+      SENSITIVE_CONFIG_KEYS.has(k) &&
+      typeof out[k] === "string" &&
+      out[k] &&
+      !isEncrypted(out[k] as string)
+    ) {
       out[k] = encryptString(out[k] as string);
     }
   }
@@ -83,7 +126,12 @@ export function encryptConnectionConfig(
     const opt = out.options as Record<string, unknown>;
     const newOpt: Record<string, unknown> = { ...opt };
     for (const k of Object.keys(newOpt)) {
-      if (SENSITIVE_CONFIG_KEYS.has(k) && typeof newOpt[k] === "string" && newOpt[k]) {
+      if (
+        SENSITIVE_CONFIG_KEYS.has(k) &&
+        typeof newOpt[k] === "string" &&
+        newOpt[k] &&
+        !isEncrypted(newOpt[k] as string)
+      ) {
         newOpt[k] = encryptString(newOpt[k] as string);
       }
     }

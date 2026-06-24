@@ -38,6 +38,12 @@ interface QueryRow {
   sql: string;
   folder_id: number | null;
   connection_id: number | null;
+  chart_type: string;
+  chart_renderer: string;
+  chart_config_json: string;
+  chart_python_code: string | null;
+  chart_mode: string;
+  parameters_json: string;
 }
 interface VizRow {
   id: number;
@@ -55,11 +61,21 @@ interface DashRow {
   name: string;
   description: string | null;
   layout_json: string;
+  filters_json: string;
   folder_id: number | null;
 }
 interface ConnRow {
   id: number;
   name: string;
+}
+
+function safeJsonParse(s: string | null): unknown {
+  if (!s) return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
 function slug(s: string): string {
@@ -153,10 +169,15 @@ export async function exportToWorkspace(
   const connNameById = new Map<number, string>();
   for (const c of conns) connNameById.set(c.id, c.name);
 
-  // Queries
+  // Queries — the .meta.json sidecar carries everything except the SQL
+  // body so a diff on Save reflects what actually changed. Chart-only
+  // edits stay in .meta.json; Python chart code lives in <stem>.py.
   const queries = db
     .prepare(
-      "SELECT id, name, sql, folder_id, connection_id FROM queries WHERE user_id = ?",
+      `SELECT id, name, sql, folder_id, connection_id,
+              chart_type, chart_renderer, chart_config_json, chart_python_code,
+              chart_mode, parameters_json
+       FROM queries WHERE user_id = ?`,
     )
     .all(userId) as QueryRow[];
   for (const q of queries) {
@@ -166,16 +187,25 @@ export async function exportToWorkspace(
       ...buildFolderPath(q.folder_id, byFolderId),
     );
     const stem = slug(q.name);
-    const meta = {
+    const meta: Record<string, unknown> = {
       name: q.name,
       connection: q.connection_id != null ? connNameById.get(q.connection_id) ?? null : null,
       folder_path: buildFolderPath(q.folder_id, byFolderId).join("/") || null,
+      chart_type: q.chart_type,
+      chart_renderer: q.chart_renderer,
+      chart_mode: q.chart_mode,
+      chart_config: safeJsonParse(q.chart_config_json),
+      parameters: safeJsonParse(q.parameters_json) ?? [],
+      has_python: q.chart_python_code != null,
     };
     await writeFile(path.join(dir, `${stem}.sql`), q.sql);
     await writeFile(
       path.join(dir, `${stem}.meta.json`),
       `${JSON.stringify(meta, null, 2)}\n`,
     );
+    if (q.chart_python_code) {
+      await writeFile(path.join(dir, `${stem}.py`), q.chart_python_code);
+    }
   }
 
   // Visualizations
@@ -207,10 +237,14 @@ export async function exportToWorkspace(
     }
   }
 
-  // Dashboards
+  // Dashboards — the JSON captures filters, mappings, and per-widget
+  // source by name so a fresh clone can rehydrate cleanly. Widgets can
+  // target either a saved query or a legacy visualization; we serialise
+  // whichever the row points at.
   const dashes = db
     .prepare(
-      "SELECT id, name, description, layout_json, folder_id FROM dashboards WHERE user_id = ?",
+      `SELECT id, name, description, layout_json, filters_json, folder_id
+       FROM dashboards WHERE user_id = ?`,
     )
     .all(userId) as DashRow[];
   for (const d of dashes) {
@@ -221,15 +255,37 @@ export async function exportToWorkspace(
     );
     const widgets = db
       .prepare(
-        "SELECT w.id, w.position_x, w.position_y, w.width, w.height, w.title_override, v.name AS viz_name FROM dashboard_widgets w JOIN visualizations v ON v.id = w.visualization_id WHERE w.dashboard_id = ?",
+        `SELECT w.id, w.position_x, w.position_y, w.width, w.height,
+                w.title_override, w.parameter_mappings_json,
+                q.name AS query_name, v.name AS viz_name
+         FROM dashboard_widgets w
+         LEFT JOIN queries q ON q.id = w.query_id
+         LEFT JOIN visualizations v ON v.id = w.visualization_id
+         WHERE w.dashboard_id = ?
+         ORDER BY w.id`,
       )
-      .all(d.id);
+      .all(d.id) as Array<{
+        id: number; position_x: number; position_y: number;
+        width: number; height: number; title_override: string | null;
+        parameter_mappings_json: string;
+        query_name: string | null; viz_name: string | null;
+      }>;
     const body = {
       name: d.name,
       description: d.description,
       folder_path: buildFolderPath(d.folder_id, byFolderId).join("/") || null,
       layout: JSON.parse(d.layout_json),
-      widgets,
+      filters: safeJsonParse(d.filters_json) ?? [],
+      widgets: widgets.map((w) => ({
+        source: w.query_name ? "query" : "visualization",
+        source_name: w.query_name ?? w.viz_name,
+        position_x: w.position_x,
+        position_y: w.position_y,
+        width: w.width,
+        height: w.height,
+        title_override: w.title_override,
+        parameter_mappings: safeJsonParse(w.parameter_mappings_json) ?? {},
+      })),
     };
     const stem = slug(d.name);
     await writeFile(path.join(dir, `${stem}.json`), `${JSON.stringify(body, null, 2)}\n`);

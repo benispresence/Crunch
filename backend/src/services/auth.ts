@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
 import { decryptString, encryptString } from "./crypto.js";
+import { revokeAllApiKeysForUser } from "./authProviders.js";
 
 export interface UserRow {
   id: number;
@@ -54,6 +55,11 @@ export function updatePassword(userId: number, newPassword: string): void {
        token_version = token_version + 1
      WHERE id = ?`,
   ).run(stored, userId);
+  // Bumping token_version above revokes JWT sessions. API keys are a
+  // parallel credential that token_version doesn't touch, so revoke
+  // them here too — a password change should invalidate everything
+  // minted under the old credentials (F9).
+  revokeAllApiKeysForUser(userId);
 }
 
 export const DEFAULT_ADMIN_EMAIL = "admin@nicemeta.local";
@@ -130,7 +136,7 @@ export function signToken(user: UserRow): string {
       tv: user.token_version ?? 0,
     } satisfies JwtPayload,
     config.jwtSecret,
-    { expiresIn: "30d" },
+    { expiresIn: config.jwtTtl as jwt.SignOptions["expiresIn"] },
   );
 }
 

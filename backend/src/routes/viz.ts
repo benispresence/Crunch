@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
+import { parameterSpecArraySchema, parameterValuesSchema } from "../services/parameters.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 
 export const vizRouter = Router();
@@ -41,6 +42,8 @@ vizRouter.post("/python", async (req, res) => {
       data: z.record(z.array(z.unknown())).optional(),
       allowed_packages: z.array(z.string()).optional(),
       timeout_seconds: z.number().int().positive().max(120).optional(),
+      parameters: parameterSpecArraySchema.optional(),
+      parameter_values: parameterValuesSchema.optional(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -48,7 +51,13 @@ vizRouter.post("/python", async (req, res) => {
     return;
   }
   try {
-    res.json(await pythonEngine.executePython(parsed.data));
+    res.json(
+      await pythonEngine.executePython({
+        ...parsed.data,
+        parameters: (parsed.data.parameters ?? []) as unknown as Array<Record<string, unknown>>,
+        parameter_values: parsed.data.parameter_values ?? {},
+      }),
+    );
   } catch (err) {
     res.status(502).json({ error: (err as Error).message });
   }

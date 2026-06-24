@@ -11,7 +11,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
-import { chatTools, runTool } from "../services/chatTools.js";
+import { chatToolsForRequest, runTool } from "../services/chatTools.js";
 import { getAnthropicApiKey, getAnthropicModel } from "../services/settings.js";
 
 export const chatRouter = Router();
@@ -29,17 +29,45 @@ Behavior rules:
 Modifying the user's saved queries / charts:
 - NEVER mutate state silently in prose. If the user asks you to edit, create, or delete a saved query or its chart settings, you MUST call the corresponding \`propose_*\` tool. The UI renders a Cursor-style diff and lets the user Accept/Reject.
 - Discovery order: \`list_saved_queries\` (find ids) → call the relevant propose tool with a one-line \`rationale\`.
-- For editing existing query SQL/name: \`propose_query_edit\`.
+- For editing existing query SQL/name/connection: \`propose_query_edit\` (set \`new_connection_id\` to repoint a query at another data source without rewriting SQL).
+- For repointing many queries at once: \`propose_bulk_query_edit\` with a list of \`{query_id, new_connection_id}\` edits. The user gets one Accept/Reject card listing every change.
 - For changing chart_type / chart_config / python code on a saved query: \`propose_chart_change\`.
 - For creating a new saved query: \`propose_new_query\` (requires connection_id from \`list_connections\`).
 - For deleting a saved query: \`propose_delete_query\`.
-- These tools DO NOT execute the change — they only produce a proposal. After calling one, briefly summarize what you proposed and stop; do not duplicate the diff in prose.`;
+
+Modifying dashboards:
+- Discovery: \`list_dashboards\` → \`get_dashboard\` for the full state (filters, widgets, mappings).
+- Create a new dashboard: \`propose_new_dashboard\`. May seed initial widgets (each referencing an existing saved query) and filters.
+- Add a chart to an existing dashboard: \`propose_add_widget\`. If the dashboard has filters, pre-wire \`parameter_mappings\` (filter id → variable name on the query).
+- Remove a chart: \`propose_remove_widget\`.
+- Edit dashboard filters: \`propose_dashboard_filter_change\` — pass the full replacement filter array.
+- Edit per-widget filter wiring: \`propose_widget_mapping\`.
+
+Cross-surface navigation:
+- After creating or editing something the user will want to inspect, call \`propose_navigate\`. \`to=workspace\` (optionally with \`query_id\`) opens the SQL editor; \`to=dashboard\` (with \`dashboard_id\`) opens that dashboard.
+- The user can toggle auto-accept; when on, the navigation happens immediately. Either way, surface it as a proposal — never assume the user has switched pages.
+
+Data pipelines:
+- Pipelines ingest data into one of the user's connections — REST APIs, SQL replication, files, Kafka, or fully custom Python. Each pipeline has a Python script (typically using the dlt library) that we can auto-generate from a structured form.
+- Discovery: \`list_pipelines\` → \`get_pipeline\` for the full state (config + python_code + recent runs).
+- Create: \`propose_new_pipeline\`. Provide source_type + load_mode + destination_connection_id at minimum. Leave python_code unset to let the engine generate a dlt template that matches the form fields; set code_mode='custom' if you want to hand-author the script.
+- Edit: \`propose_pipeline_edit\`. Same field set, all optional. Editing the form fields with code_mode='template' regenerates the script automatically.
+- Run: \`propose_run_pipeline\` fires it once now. Schedule-based runs use the cron expression stored on the pipeline.
+- Load modes: replace (truncate + reingest), append (batch), merge (delta, needs primary_key), incremental (cursor_field), streaming (bounded micro-batch with stream_max_seconds/messages).
+- After a successful new_pipeline accept, prefer chaining \`propose_navigate\` with to='pipeline' so the user lands in the editor and can run/edit it.
+
+For \`propose_navigate\`: \`to='pipeline'\` (with \`pipeline_id\`) opens the pipeline detail view; \`to='pipelines'\` opens the list.
+
+All \`propose_*\` tools DO NOT execute the change — they only produce a proposal. After calling one, briefly summarize what you proposed and stop; do not duplicate the diff in prose.`;
 
 const workspaceContextSchema = z.object({
+  active_route: z.string().optional(),
   active_query_id: z.number().int().nullable().optional(),
   active_query_name: z.string().nullable().optional(),
   active_connection_id: z.number().int().nullable().optional(),
   active_connection_name: z.string().nullable().optional(),
+  active_dashboard_id: z.number().int().nullable().optional(),
+  active_dashboard_name: z.string().nullable().optional(),
   current_sql: z.string().optional(),
   current_chart_type: z.string().optional(),
   current_chart_mode: z.string().optional(),
@@ -64,6 +92,14 @@ const sendSchema = z.object({
  */
 function formatWorkspaceContext(ctx: z.infer<typeof workspaceContextSchema>): string {
   const lines: string[] = ["<workspace_context>"];
+  if (ctx.active_route) {
+    lines.push(`current_page: ${ctx.active_route}`);
+  }
+  if (ctx.active_dashboard_id != null) {
+    lines.push(
+      `active_dashboard: #${ctx.active_dashboard_id} "${ctx.active_dashboard_name ?? "?"}"`,
+    );
+  }
   if (ctx.active_query_id != null) {
     lines.push(
       `active_saved_query: #${ctx.active_query_id} "${ctx.active_query_name ?? "?"}"`,
@@ -102,7 +138,7 @@ function formatWorkspaceContext(ctx: z.infer<typeof workspaceContextSchema>): st
   }
   lines.push("</workspace_context>");
   lines.push(
-    "When the user says \"this query\", \"current chart\", \"add a limit\", etc., assume they mean the active_saved_query above. Use propose_query_edit / propose_chart_change with that query_id rather than asking which one.",
+    "When the user says \"this query\", \"current chart\", \"add a limit\", etc., assume they mean the active_saved_query above. Use propose_query_edit / propose_chart_change with that query_id rather than asking which one. When they say \"this dashboard\", target active_dashboard_id. If a task spans both surfaces (e.g. \"add a query and put it on the dashboard\"), chain the propose_* tools and finish with propose_navigate to take the user where they need to go.",
   );
   return lines.join("\n");
 }
@@ -223,7 +259,7 @@ chatRouter.post("/send", async (req, res) => {
         model,
         max_tokens: 4096,
         system: systemBlocks,
-        tools: chatTools,
+        tools: chatToolsForRequest(),
         messages: history,
         // Claude 4.x uses adaptive thinking with an effort knob. The older
         // `{ type: "enabled", budget_tokens }` shape returns 400 on Sonnet 4.6+.

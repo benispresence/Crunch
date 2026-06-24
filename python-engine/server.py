@@ -24,13 +24,35 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from crunch.connections.adapters import (  # noqa: E402
+    BigQueryAdapter,
+    ClickHouseAdapter,
+    DatabricksAdapter,
+    DuckDBAdapter,
     FileAdapter,
+    MariaDBAdapter,
+    MongoDBAdapter,
     MySQLAdapter,
     PostgreSQLAdapter,
+    RedshiftAdapter,
+    SnowflakeAdapter,
     SQLiteAdapter,
     SQLServerAdapter,
+    TrinoAdapter,
 )
 from crunch.connections.base import ConnectionAdapter, ConnectionInfo  # noqa: E402
+from crunch.connections.file_scanner import scan_folder  # noqa: E402
+from crunch.pipelines import (  # noqa: E402
+    PipelineContext,
+    execute_pipeline,
+    generate_template,
+)
+from crunch.query.template import (  # noqa: E402
+    ParameterSpec,
+    TemplateError,
+    coerce_values,
+    parse_variable_names,
+    render as render_template,
+)
 from crunch.query.validator import QueryValidator  # noqa: E402
 from crunch.visualization.code_executor import CodeExecutor  # noqa: E402
 from crunch.visualization.factory import ChartFactory  # noqa: E402
@@ -54,10 +76,26 @@ ADAPTER_REGISTRY: dict[str, type[ConnectionAdapter]] = {
     "postgres": PostgreSQLAdapter,
     "postgresql": PostgreSQLAdapter,
     "mysql": MySQLAdapter,
+    "mariadb": MariaDBAdapter,
     "sqlite": SQLiteAdapter,
     "sqlserver": SQLServerAdapter,
     "file": FileAdapter,
+    "duckdb": DuckDBAdapter,
+    "snowflake": SnowflakeAdapter,
+    "bigquery": BigQueryAdapter,
+    "redshift": RedshiftAdapter,
+    "databricks": DatabricksAdapter,
+    "clickhouse": ClickHouseAdapter,
+    "trino": TrinoAdapter,
+    "presto": TrinoAdapter,  # PrestoDB is wire-compatible enough for our use.
+    "mongodb": MongoDBAdapter,
+    "mongo": MongoDBAdapter,
 }
+
+# Connection types that bypass the SQL validator + Metabase-style
+# templating because their query language isn't SQL. The engine runs
+# the body straight through to the adapter.
+NON_SQL_TYPES = {"mongodb", "mongo"}
 
 # Cached adapters keyed by a stable signature of the connection config so
 # repeated queries reuse the same DuckDB / DB-API connection.
@@ -78,9 +116,15 @@ def _adapter_for(connection: dict[str, Any]) -> ConnectionAdapter:
     cached = _adapter_cache.get(cache_key)
     if cached is not None:
         return cached
+    # Canonicalise aliases so the rest of the engine sees one name.
+    canonical = {
+        "postgres": "postgresql",
+        "presto": "trino",
+        "mongo": "mongodb",
+    }.get(db_type, db_type)
     info = ConnectionInfo(
-        name=connection.get("name") or f"{db_type}_conn",
-        db_type="postgresql" if db_type == "postgres" else db_type,
+        name=connection.get("name") or f"{canonical}_conn",
+        db_type=canonical,
         host=connection.get("host") or "localhost",
         port=connection.get("port") or 0,
         database=connection.get("database") or "",
@@ -127,6 +171,13 @@ class ConnectionConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class ParameterSpecModel(BaseModel):
+    name: str
+    type: str = "text"
+    default: Any = None
+    required: bool = False
+
+
 class ExecuteSqlRequest(BaseModel):
     token: str
     connection: ConnectionConfig
@@ -135,6 +186,34 @@ class ExecuteSqlRequest(BaseModel):
     # Defence in depth: the engine refuses writes unless the backend
     # explicitly opts in. The backend currently never sets this true.
     allow_writes: bool = False
+    # Metabase-style template parameters. ``parameters`` declares
+    # types + defaults; ``parameter_values`` provides the per-run
+    # values. The engine substitutes {{name}} via SQL bind params.
+    parameters: list[ParameterSpecModel] = Field(default_factory=list)
+    parameter_values: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScanFolderRequest(BaseModel):
+    token: str
+    path: str
+    recursive: bool = True
+    max_files: int = 5000
+
+
+class ScannedFileModel(BaseModel):
+    uri: str
+    name: str
+    format: str
+    size_bytes: int
+    relative_path: str
+    sheet: str | None = None
+
+
+class ScanFolderResponse(BaseModel):
+    root: str
+    files: list[ScannedFileModel] = Field(default_factory=list)
+    skipped: int = 0
+    error: str | None = None
 
 
 class ExecuteSqlResponse(BaseModel):
@@ -144,6 +223,28 @@ class ExecuteSqlResponse(BaseModel):
     row_count: int = 0
     execution_time_ms: float = 0
     error: str | None = None
+
+
+class PipelineTemplateRequest(BaseModel):
+    token: str
+    spec: dict[str, Any]
+
+
+class PipelineExecuteRequest(BaseModel):
+    token: str
+    code: str
+    destination: ConnectionConfig
+    stream_max_seconds: int = 60
+    stream_max_messages: int = 10000
+    timeout_seconds: int = 1800
+
+
+class PipelineExecuteResponse(BaseModel):
+    success: bool
+    rows_loaded: int = 0
+    log: str = ""
+    error: str | None = None
+    duration_ms: float = 0.0
 
 
 class ValidateSqlRequest(BaseModel):
@@ -172,6 +273,10 @@ class ExecutePythonRequest(BaseModel):
     data: dict[str, list[Any]] = Field(default_factory=dict)
     allowed_packages: list[str] = Field(default_factory=list)
     timeout_seconds: int = 30
+    # Same parameter machinery as SQL. Validated values are exposed to
+    # user code as ``params`` so chart scripts can react to filters.
+    parameters: list[ParameterSpecModel] = Field(default_factory=list)
+    parameter_values: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutePythonResponse(BaseModel):
@@ -218,31 +323,88 @@ async def validate_sql(req: ValidateSqlRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/files/scan", response_model=ScanFolderResponse)
+async def scan(req: ScanFolderRequest) -> ScanFolderResponse:
+    """Walk a folder and return every supported data file underneath,
+    one entry per file (and one per sheet for Excel workbooks). The UI
+    uses this to populate a multi-select dialog so the user can pick
+    which files become tables on a File connection."""
+    _check_token(req.token)
+    result = scan_folder(
+        req.path,
+        recursive=req.recursive,
+        max_files=req.max_files,
+    )
+    return ScanFolderResponse(
+        root=result.root,
+        files=[
+            ScannedFileModel(
+                uri=f.uri, name=f.name, format=f.format,
+                size_bytes=f.size_bytes, relative_path=f.relative_path,
+                sheet=f.sheet,
+            )
+            for f in result.files
+        ],
+        skipped=result.skipped,
+        error=result.error,
+    )
+
+
 @app.post("/sql/execute", response_model=ExecuteSqlResponse)
 async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
     _check_token(req.token)
-    validation = query_validator.validate(req.sql)
-    if not validation.is_valid:
-        return ExecuteSqlResponse(
-            success=False,
-            error="; ".join(validation.errors) or "invalid sql",
-        )
-    # Reject anything that isn't a read by default. The validator already
-    # classifies the statement; we just refuse the non-read kinds here so
-    # a backend bug that forwards a DROP/UPDATE can't trash a user's DB.
-    if not req.allow_writes and not validation.is_read_only:
-        return ExecuteSqlResponse(
-            success=False,
-            error=(
-                f"engine refused {validation.query_type.value.upper()} statement: "
-                "only SELECT is allowed (set allow_writes to opt in)"
-            ),
-        )
+    conn_type = (req.connection.type or "").lower()
+    is_non_sql = conn_type in NON_SQL_TYPES
+
+    # Render the template first — drop optional clauses with unset
+    # variables and replace {{var}} with :var bind placeholders. The
+    # validator then sees the same shape the driver will, including
+    # the rewritten clauses, so e.g. "[[ AND x = {{x}} ]]"
+    # turns into a clean SELECT before classification. Non-SQL
+    # connections (MongoDB) carry JSON in req.sql, so we skip both
+    # templating and the SQL validator for them.
+    if is_non_sql:
+        rendered_sql = req.sql
+        binds: dict[str, Any] = {}
+    else:
+        try:
+            specs = [
+                ParameterSpec(
+                    name=p.name,
+                    type=p.type,
+                    default=p.default,
+                    required=p.required,
+                )
+                for p in req.parameters
+            ]
+            rendered_sql, binds = render_template(req.sql, specs, req.parameter_values)
+        except TemplateError as exc:
+            return ExecuteSqlResponse(success=False, error=str(exc))
+
+        validation = query_validator.validate(rendered_sql)
+        if not validation.is_valid:
+            return ExecuteSqlResponse(
+                success=False,
+                error="; ".join(validation.errors) or "invalid sql",
+            )
+        # Reject anything that isn't a read by default. The validator already
+        # classifies the statement; we just refuse the non-read kinds here so
+        # a backend bug that forwards a DROP/UPDATE can't trash a user's DB.
+        if not req.allow_writes and not validation.is_read_only:
+            return ExecuteSqlResponse(
+                success=False,
+                error=(
+                    f"engine refused {validation.query_type.value.upper()} statement: "
+                    "only SELECT is allowed (set allow_writes to opt in)"
+                ),
+            )
 
     started = time.perf_counter()
     try:
         adapter = _adapter_for(req.connection.model_dump())
-        result = await adapter.execute_query(req.sql, limit=req.limit)
+        result = await adapter.execute_query(
+            rendered_sql, parameters=binds, limit=req.limit,
+        )
     except Exception as exc:  # surface engine errors to backend
         return ExecuteSqlResponse(
             success=False,
@@ -362,11 +524,26 @@ async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
         import pandas as pd
 
         df = pd.DataFrame(req.data) if req.data else pd.DataFrame()
+        try:
+            specs = [
+                ParameterSpec(
+                    name=p.name,
+                    type=p.type,
+                    default=p.default,
+                    required=p.required,
+                )
+                for p in req.parameters
+            ]
+            params = coerce_values(specs, req.parameter_values)
+        except TemplateError as exc:
+            return ExecutePythonResponse(success=False, error=str(exc))
         # CodeExecutor.execute is sync; run in threadpool to keep the loop free.
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: CodeExecutor.execute(req.code, df, timeout=req.timeout_seconds),
+            lambda: CodeExecutor.execute(
+                req.code, df, timeout=req.timeout_seconds, params=params,
+            ),
         )
     except Exception as exc:
         return ExecutePythonResponse(success=False, error=f"{type(exc).__name__}: {exc}")
@@ -393,6 +570,70 @@ async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
         spec=spec,
         stdout=result.html or "",
         error=None,
+    )
+
+
+@app.post("/pipelines/template")
+async def pipeline_template(req: PipelineTemplateRequest) -> dict[str, str]:
+    """Generate a starter Python script from a structured spec.
+
+    The Express side calls this when the pipeline is in
+    ``code_mode='template'`` and any of the inputs that feed the
+    template change (source type, load mode, destination, ...).
+    """
+    _check_token(req.token)
+    code = generate_template(req.spec)
+    return {"code": code}
+
+
+@app.post("/pipelines/execute", response_model=PipelineExecuteResponse)
+async def pipeline_execute(req: PipelineExecuteRequest) -> PipelineExecuteResponse:
+    """Run a user-authored pipeline script in the sandbox. Returns
+    rows-loaded + captured stdout/stderr + duration."""
+    _check_token(req.token)
+    ctx = PipelineContext(
+        destination_type=(req.destination.type or "").lower(),
+        destination_config=req.destination.model_dump(),
+        stream_max_seconds=req.stream_max_seconds,
+        stream_max_messages=req.stream_max_messages,
+    )
+    # CPU-bound script; off-load to a thread so the asyncio loop stays
+    # responsive and the FastAPI worker can serve health checks.
+    # SIGALRM inside execute_pipeline only works from the main thread,
+    # so we also bound the asyncio await — a runaway script can no
+    # longer hold the engine's request indefinitely.  The orphaned
+    # worker thread will finish eventually (Python can't kill threads
+    # cooperatively), but the engine is freed to handle further calls.
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: execute_pipeline(
+                    req.code, ctx, timeout_seconds=req.timeout_seconds,
+                ),
+            ),
+            # Add a small grace beyond the in-process SIGALRM so we
+            # don't race with the script's own timeout report.
+            timeout=req.timeout_seconds + 30,
+        )
+    except asyncio.TimeoutError:
+        return PipelineExecuteResponse(
+            success=False,
+            rows_loaded=0,
+            log="",
+            error=(
+                f"pipeline exceeded {req.timeout_seconds + 30}s wall-clock "
+                "limit (engine-side abort)"
+            ),
+            duration_ms=(req.timeout_seconds + 30) * 1000,
+        )
+    return PipelineExecuteResponse(
+        success=result.success,
+        rows_loaded=result.rows_loaded,
+        log=result.log,
+        error=result.error,
+        duration_ms=result.duration_ms,
     )
 
 

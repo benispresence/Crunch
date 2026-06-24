@@ -3,6 +3,40 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAdmin, requireAuth } from "../middleware/auth.js";
 import { createUser, findUserByEmail, updatePassword } from "../services/auth.js";
+import {
+  createApiKey,
+  deleteProvider,
+  getEmailDomainAllowlist,
+  listAllApiKeys,
+  listProviders,
+  maskConfigForDisplay,
+  revokeApiKey,
+  setEmailDomainAllowlist,
+  upsertProvider,
+  type ProviderKind,
+} from "../services/authProviders.js";
+import {
+  deleteServer,
+  listServers,
+  refreshServer,
+  serverForDisplay,
+  upsertServer,
+} from "../services/mcpClient.js";
+import {
+  CAPABILITIES,
+  createGroup,
+  deleteGroup,
+  getUserGroupIds,
+  getUserPermissions,
+  listGroupsWithPermissions,
+  setUserGroups,
+  updateGroupPermissions,
+} from "../services/permissions.js";
+import {
+  getRunRetention,
+  getSchedulerStatus,
+  setSchedulerConcurrency,
+} from "../services/pipelines.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 import {
   KNOWN_MODELS,
@@ -306,5 +340,421 @@ adminRouter.put("/users/:id/role", (req, res) => {
     return;
   }
   db.prepare("UPDATE users SET role = ? WHERE id = ?").run(parsed.data.role, req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- Auth providers (OIDC / SAML / LDAP) ----------------------
+
+function providerForDisplay(row: ReturnType<typeof listProviders>[number]) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    name: row.name,
+    is_enabled: !!row.is_enabled,
+    default_role: row.default_role,
+    config: maskConfigForDisplay(row),
+    updated_at: row.updated_at,
+  };
+}
+
+adminRouter.get("/auth/providers", (_req, res) => {
+  res.json({ providers: listProviders().map(providerForDisplay) });
+});
+
+const providerUpsertSchema = z.object({
+  kind: z.enum(["oidc", "saml", "ldap"]),
+  name: z.string().min(1).max(80),
+  is_enabled: z.boolean().optional(),
+  default_role: z.enum(["admin", "editor", "viewer"]).default("viewer"),
+  config: z.record(z.unknown()),
+});
+
+adminRouter.post("/auth/providers", (req, res) => {
+  const parsed = providerUpsertSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const row = upsertProvider({
+      kind: parsed.data.kind as ProviderKind,
+      name: parsed.data.name,
+      is_enabled: parsed.data.is_enabled,
+      default_role: parsed.data.default_role,
+      config: parsed.data.config,
+    });
+    res.json(providerForDisplay(row));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+adminRouter.put("/auth/providers/:id", (req, res) => {
+  const parsed = providerUpsertSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const row = upsertProvider({
+      id: Number(req.params.id),
+      kind: parsed.data.kind as ProviderKind,
+      name: parsed.data.name,
+      is_enabled: parsed.data.is_enabled,
+      default_role: parsed.data.default_role,
+      config: parsed.data.config,
+    });
+    res.json(providerForDisplay(row));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+adminRouter.delete("/auth/providers/:id", (req, res) => {
+  const ok = deleteProvider(Number(req.params.id));
+  if (!ok) {
+    res.status(404).json({ error: "provider not found" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+// ---------- Email domain allowlist ----------------------------------
+
+adminRouter.get("/auth/allowlist", (_req, res) => {
+  res.json({ domains: getEmailDomainAllowlist() });
+});
+
+adminRouter.put("/auth/allowlist", (req, res) => {
+  const parsed = z
+    .object({ domains: z.array(z.string()) })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  setEmailDomainAllowlist(parsed.data.domains);
+  res.json({ domains: getEmailDomainAllowlist() });
+});
+
+// ---------- API keys -------------------------------------------------
+// Admin sees every user's keys; the plaintext is *only* returned once
+// at creation time. Storing a hash means a DB leak can't be replayed.
+
+adminRouter.get("/api-keys", (_req, res) => {
+  const rows = listAllApiKeys().map((r) => ({
+    id: r.id,
+    user_id: r.user_id,
+    user_email: r.email,
+    name: r.name,
+    prefix: r.prefix,
+    last_used_at: r.last_used_at,
+    expires_at: r.expires_at,
+    revoked_at: r.revoked_at,
+    created_at: r.created_at,
+  }));
+  res.json({ api_keys: rows });
+});
+
+adminRouter.post("/api-keys", (req, res) => {
+  const parsed = z
+    .object({
+      name: z.string().min(1).max(80),
+      user_id: z.number().int().optional(), // defaults to caller
+      expires_in_days: z.number().int().positive().max(3650).optional(),
+      // Optional scope narrowing — empty array (default) inherits
+      // the full set of the owner's permissions. Non-empty restricts
+      // the key to a subset; the bearer middleware enforces it.
+      scopes: z.array(z.string()).optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const userId = parsed.data.user_id ?? req.user!.sub;
+  const exists = db
+    .prepare("SELECT id FROM users WHERE id = ?")
+    .get(userId);
+  if (!exists) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  const expiresAt = parsed.data.expires_in_days
+    ? Math.floor(Date.now() / 1000) + parsed.data.expires_in_days * 86400
+    : null;
+  const { row, plaintext } = createApiKey({
+    user_id: userId,
+    name: parsed.data.name,
+    expires_at: expiresAt,
+    scopes: parsed.data.scopes,
+  });
+  res.json({
+    id: row.id,
+    user_id: row.user_id,
+    name: row.name,
+    prefix: row.prefix,
+    expires_at: row.expires_at,
+    created_at: row.created_at,
+    // The plaintext is shown to the user once — they must store it
+    // immediately. The DB only keeps the hash.
+    plaintext,
+  });
+});
+
+adminRouter.delete("/api-keys/:id", (req, res) => {
+  const ok = revokeApiKey(Number(req.params.id));
+  if (!ok) {
+    res.status(404).json({ error: "key not found or already revoked" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+// ---------- Pipeline scheduler --------------------------------------
+// The scheduler is process-local: one Express instance, one ticker.
+// The admin gets visibility into what's running, plus a knob for max
+// concurrent runs (e.g. throttle on a small box).
+
+adminRouter.get("/pipelines/scheduler", (_req, res) => {
+  const status = getSchedulerStatus();
+  // Pair with quick aggregate counts so the admin sees the load
+  // picture at a glance.
+  const counts = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM pipelines) AS total,
+         (SELECT COUNT(*) FROM pipelines WHERE schedule_enabled = 1 AND schedule IS NOT NULL AND schedule != '') AS scheduled,
+         (SELECT COUNT(*) FROM pipeline_runs WHERE status = 'success' AND started_at >= strftime('%s','now') - 86400) AS success_24h,
+         (SELECT COUNT(*) FROM pipeline_runs WHERE status = 'failed' AND started_at >= strftime('%s','now') - 86400) AS failed_24h`,
+    )
+    .get() as {
+      total: number; scheduled: number;
+      success_24h: number; failed_24h: number;
+    };
+  res.json({ ...status, ...counts, run_retention: getRunRetention() });
+});
+
+adminRouter.put("/pipelines/scheduler", (req, res) => {
+  const parsed = z
+    .object({
+      max_concurrent: z.number().int().min(1).max(16).optional(),
+      run_retention: z.number().int().min(1).max(10_000).optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  if (parsed.data.max_concurrent !== undefined) {
+    setSchedulerConcurrency(parsed.data.max_concurrent);
+  }
+  if (parsed.data.run_retention !== undefined) {
+    setSetting("pipeline_run_retention", String(parsed.data.run_retention));
+  }
+  res.json({
+    ...getSchedulerStatus(),
+    run_retention: getRunRetention(),
+  });
+});
+
+// ---------- MCP server (inbound): which tools to expose -------------
+// The MCP route reads ``mcp_exposed_tools`` from settings and only
+// lets clients call tools in that list. Admin curates the list here.
+
+adminRouter.get("/mcp/exposed-tools", async (_req, res) => {
+  // Import lazily to avoid a circular dep between admin.ts <-> chatTools
+  // <-> mcp.ts at module load.
+  const { listAllowedToolNames } = await import("../routes/mcp.js");
+  const { chatTools } = await import("../services/chatTools.js");
+  res.json({
+    exposed: listAllowedToolNames(),
+    available: chatTools.map((t) => ({
+      name: t.name,
+      description: t.description,
+    })),
+  });
+});
+
+adminRouter.put("/mcp/exposed-tools", async (req, res) => {
+  const parsed = z
+    .object({ exposed: z.array(z.string()) })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { setAllowedToolNames, listAllowedToolNames } = await import(
+    "../routes/mcp.js"
+  );
+  setAllowedToolNames(parsed.data.exposed);
+  res.json({ exposed: listAllowedToolNames() });
+});
+
+// ---------- MCP client (outbound): external servers -----------------
+// Crunch can connect to other MCP servers and surface their tools to
+// the chat agent. Admin manages the connection list here.
+
+adminRouter.get("/mcp/servers", (_req, res) => {
+  res.json({ servers: listServers().map(serverForDisplay) });
+});
+
+const mcpServerSchema = z.object({
+  name: z.string().min(1).max(80).regex(/^[a-zA-Z0-9_-]+$/),
+  url: z.string().url(),
+  transport: z.string().optional(),
+  auth_header_name: z.string().nullable().optional(),
+  auth_header_value: z.string().nullable().optional(),
+  enabled: z.boolean().optional(),
+  allowed_tools: z.array(z.string()).optional(),
+  // OAuth config (tokens are managed by the OAuth flow, never set here).
+  auth_mode: z.enum(["header", "oauth2"]).optional(),
+  oauth_issuer: z.string().nullable().optional(),
+  oauth_scope: z.string().nullable().optional(),
+  oauth_resource: z.string().nullable().optional(),
+});
+
+adminRouter.post("/mcp/servers", (req, res) => {
+  const parsed = mcpServerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const row = upsertServer(parsed.data);
+    res.json(serverForDisplay(row));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+adminRouter.put("/mcp/servers/:id", (req, res) => {
+  const parsed = mcpServerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const row = upsertServer({ ...parsed.data, id: Number(req.params.id) });
+    res.json(serverForDisplay(row));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+adminRouter.delete("/mcp/servers/:id", (req, res) => {
+  const ok = deleteServer(Number(req.params.id));
+  if (!ok) {
+    res.status(404).json({ error: "server not found" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+/** Force a handshake + tools/list against an external server. The
+ *  chat agent uses the cached result, so this is the admin's "make
+ *  the new server's tools show up now" button. */
+adminRouter.post("/mcp/servers/:id/refresh", async (req, res) => {
+  const r = await refreshServer(Number(req.params.id));
+  res.json(r);
+});
+
+// ---------- Permissions: capabilities + groups ----------------------
+// Capabilities are the static registry — name + description + category.
+// Groups bundle capabilities; users belong to groups. The UI surfaces
+// the registry so the admin can pick which capabilities each group
+// carries.
+
+adminRouter.get("/permissions/capabilities", (_req, res) => {
+  res.json({ capabilities: CAPABILITIES });
+});
+
+adminRouter.get("/permissions/groups", (_req, res) => {
+  res.json({ groups: listGroupsWithPermissions() });
+});
+
+adminRouter.post("/permissions/groups", (req, res) => {
+  const parsed = z
+    .object({
+      name: z.string().min(1).max(80),
+      description: z.string().nullable().optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const g = createGroup(parsed.data.name, parsed.data.description ?? null);
+    res.json(g);
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+adminRouter.put("/permissions/groups/:id", (req, res) => {
+  const parsed = z
+    .object({ permissions: z.array(z.string()) })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  updateGroupPermissions(Number(req.params.id), parsed.data.permissions);
+  res.json({ ok: true });
+});
+
+adminRouter.delete("/permissions/groups/:id", (req, res) => {
+  const r = deleteGroup(Number(req.params.id));
+  if (!r.ok) {
+    res.status(400).json({ error: r.reason ?? "delete failed" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+// Per-user view: which groups they're in + the resolved permission
+// set. The UI uses this for the user editor.
+adminRouter.get("/users/:id/groups", (req, res) => {
+  const uid = Number(req.params.id);
+  const exists = db.prepare("SELECT id FROM users WHERE id = ?").get(uid);
+  if (!exists) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  res.json({
+    group_ids: getUserGroupIds(uid),
+    effective_permissions: [...getUserPermissions(uid)],
+  });
+});
+
+adminRouter.put("/users/:id/groups", (req, res) => {
+  const parsed = z
+    .object({ group_ids: z.array(z.number().int()) })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const uid = Number(req.params.id);
+  // Don't let an admin demote themselves out of every admin-capable
+  // group — same shape as the existing "can't demote yourself" guard.
+  if (uid === req.user!.sub) {
+    const wouldHave = new Set<string>();
+    const sample = db
+      .prepare(
+        `SELECT permission FROM group_permissions
+         WHERE group_id IN (${parsed.data.group_ids.map(() => "?").join(",") || "NULL"})`,
+      )
+      .all(...parsed.data.group_ids) as Array<{ permission: string }>;
+    for (const s of sample) wouldHave.add(s.permission);
+    if (!wouldHave.has("admin.users")) {
+      res
+        .status(400)
+        .json({ error: "cannot remove your own admin.users capability" });
+      return;
+    }
+  }
+  setUserGroups(uid, parsed.data.group_ids);
   res.json({ ok: true });
 });

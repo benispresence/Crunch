@@ -59,6 +59,11 @@ services:
       ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-opus-4-7}"
       DATABASE_FILE: "/data/nicemeta.sqlite"
       CORS_ORIGIN: "http://localhost:${FRONTEND_PORT:-8080}"
+      # Public origin used to build OAuth/SAML callback URLs. Required by
+      # the SSO flows in production (they refuse to trust forwarded
+      # headers). Defaults to the SPA origin, which is correct because
+      # nginx serves the SPA and proxies /api on the same origin.
+      NICEMETA_PUBLIC_BASE_URL: "${NICEMETA_PUBLIC_BASE_URL:-http://localhost:${FRONTEND_PORT:-8080}}"
       NICEMETA_WORKSPACE_DIR: "/workspace"
     volumes:
       - crunch-data:/data

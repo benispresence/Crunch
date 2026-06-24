@@ -41,9 +41,26 @@ const title = computed(() => {
   const x = p.value;
   switch (x.kind) {
     case "query_edit": return `Edit query #${x.query_id}`;
+    case "bulk_query_edit": return `Bulk edit ${x.changes.length} quer${x.changes.length === 1 ? "y" : "ies"}`;
     case "chart_change": return `Edit chart on "${x.query_name}"`;
     case "new_query": return `New query: "${x.query.name}"`;
     case "delete_query": return `Delete query "${x.target.name}"`;
+    case "new_dashboard": return `New dashboard: "${x.dashboard.name}"`;
+    case "add_widget": return `Add chart to "${x.dashboard_name}"`;
+    case "remove_widget": return `Remove "${x.widget_name}" from "${x.dashboard_name}"`;
+    case "dashboard_filter_change": return `Edit filters on "${x.dashboard_name}"`;
+    case "widget_mapping": return `Rewire filters → "${x.widget_name}"`;
+    case "navigate":
+      if (x.to === "workspace") {
+        return x.query_id != null ? `Open query #${x.query_id} in workspace` : "Switch to workspace";
+      }
+      if (x.to === "pipeline") return `Open pipeline #${x.pipeline_id ?? "?"}`;
+      if (x.to === "pipelines") return "Switch to pipelines";
+      return `Open dashboard #${x.dashboard_id ?? "?"}`;
+    case "new_pipeline": return `New pipeline: "${x.pipeline.name}"`;
+    case "pipeline_edit": return `Edit pipeline "${x.pipeline_name}"`;
+    case "run_pipeline": return `Run pipeline "${x.pipeline_name}" now`;
+    case "delete_pipeline": return `Delete pipeline "${x.pipeline_name}"`;
   }
 });
 
@@ -59,6 +76,25 @@ const nameDiff = computed<{ before: string; after: string } | null>(() => {
     return { before: x.before.name, after: x.after.name };
   }
   return null;
+});
+
+// Connection retarget chip for query_edit — only renders when the
+// proposal actually moves the query between connections, so a
+// "rename only" edit stays visually clean.
+function fmtConn(c: { id: number | null; name: string | null } | undefined): string {
+  if (!c) return "—";
+  if (c.id == null) return "(unbound)";
+  return c.name ?? `#${c.id}`;
+}
+
+const connectionDiff = computed<{ before: string; after: string } | null>(() => {
+  const x = p.value;
+  if (x.kind !== "query_edit") return null;
+  const a = x.before.connection;
+  const b = x.after.connection;
+  if (!a || !b) return null;
+  if (a.id === b.id) return null;
+  return { before: fmtConn(a), after: fmtConn(b) };
 });
 
 const chartDelta = computed(() => {
@@ -91,13 +127,19 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 
     <p v-if="p.rationale" class="prop__rationale">{{ p.rationale }}</p>
 
-    <!-- query_edit: name + SQL diff -->
+    <!-- query_edit: name + connection + SQL diff -->
     <template v-if="p.kind === 'query_edit'">
       <div v-if="nameDiff" class="prop__namechange">
         <span class="prop__field">name</span>
         <code class="prop__name--del">{{ nameDiff.before }}</code>
         <span class="prop__arrow">→</span>
         <code class="prop__name--add">{{ nameDiff.after }}</code>
+      </div>
+      <div v-if="connectionDiff" class="prop__namechange">
+        <span class="prop__field">connection</span>
+        <code class="prop__name--del">{{ connectionDiff.before }}</code>
+        <span class="prop__arrow">→</span>
+        <code class="prop__name--add">{{ connectionDiff.after }}</code>
       </div>
       <div v-if="sqlDiff && sqlDiff.length > 0" class="prop__diff hljs">
         <div
@@ -110,6 +152,50 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
           <span class="prop__text" v-html="highlightCode(line.text || ' ', 'sql')" />
         </div>
       </div>
+      <p
+        v-if="!nameDiff && !connectionDiff && (!sqlDiff || sqlDiff.length === 0)"
+        class="prop__nochange"
+      >
+        No effective change.
+      </p>
+    </template>
+
+    <!-- bulk_query_edit: list of changes, one row per query.  -->
+    <template v-if="p.kind === 'bulk_query_edit'">
+      <ul class="prop__bulk">
+        <li v-for="c in p.changes" :key="c.query_id" class="prop__bulk-row">
+          <div class="prop__bulk-head">
+            <span class="prop__bulk-id">#{{ c.query_id }}</span>
+            <span class="prop__bulk-name">{{ c.query_name }}</span>
+            <div class="prop__bulk-tags">
+              <span v-if="c.has_connection_change" class="prop__bulk-tag prop__bulk-tag--conn">conn</span>
+              <span v-if="c.has_name_change" class="prop__bulk-tag">name</span>
+              <span v-if="c.has_sql_change" class="prop__bulk-tag">sql</span>
+            </div>
+          </div>
+          <div v-if="c.has_connection_change" class="prop__bulk-line">
+            <span class="prop__field">connection</span>
+            <code class="prop__name--del">{{ fmtConn(c.before.connection) }}</code>
+            <span class="prop__arrow">→</span>
+            <code class="prop__name--add">{{ fmtConn(c.after.connection) }}</code>
+          </div>
+          <div v-if="c.has_name_change" class="prop__bulk-line">
+            <span class="prop__field">name</span>
+            <code class="prop__name--del">{{ c.before.name }}</code>
+            <span class="prop__arrow">→</span>
+            <code class="prop__name--add">{{ c.after.name }}</code>
+          </div>
+          <!-- SQL diffs in bulk mode get a compact summary; click
+               through to the individual query if you want the full
+               diff (rare in repoint flows). -->
+          <div v-if="c.has_sql_change" class="prop__bulk-line">
+            <span class="prop__field">sql</span>
+            <span class="prop__bulk-sqlsummary">
+              {{ c.before.sql.length }} → {{ c.after.sql.length }} chars
+            </span>
+          </div>
+        </li>
+      </ul>
     </template>
 
     <!-- chart_change: field-by-field deltas -->
@@ -142,16 +228,155 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
       </div>
     </template>
 
+    <!-- new_dashboard -->
+    <template v-if="p.kind === 'new_dashboard'">
+      <div class="prop__newq">
+        <div class="prop__newq-row"><strong>name</strong> {{ p.dashboard.name }}</div>
+        <div v-if="p.dashboard.description" class="prop__newq-row">
+          <strong>description</strong> {{ p.dashboard.description }}
+        </div>
+        <div class="prop__newq-row">
+          <strong>filters</strong>
+          {{ p.dashboard.filters.length === 0 ? "none" : p.dashboard.filters.map((f) => `${f.name} (${f.type})`).join(", ") }}
+        </div>
+        <div class="prop__newq-row">
+          <strong>widgets</strong>
+          {{ p.dashboard.widgets.length }} chart(s)
+        </div>
+      </div>
+    </template>
+
+    <!-- add_widget -->
+    <template v-if="p.kind === 'add_widget'">
+      <div class="prop__newq">
+        <div class="prop__newq-row"><strong>dashboard</strong> {{ p.dashboard_name }}</div>
+        <div class="prop__newq-row"><strong>chart</strong> {{ p.widget.query_name }} (query #{{ p.widget.query_id }})</div>
+        <div class="prop__newq-row">
+          <strong>position</strong>
+          col {{ p.widget.position_x }} · row {{ p.widget.position_y }} · {{ p.widget.width }}×{{ p.widget.height }}
+        </div>
+        <div v-if="Object.keys(p.widget.parameter_mappings).length > 0" class="prop__newq-row">
+          <strong>mappings</strong>
+          <span v-for="(v, k) in p.widget.parameter_mappings" :key="k" class="prop__chip">
+            {{ k }} → {{ v }}
+          </span>
+        </div>
+      </div>
+    </template>
+
+    <!-- remove_widget -->
+    <template v-if="p.kind === 'remove_widget'">
+      <div class="prop__delete">
+        <p>Will remove chart <strong>"{{ p.widget_name }}"</strong> from <strong>{{ p.dashboard_name }}</strong>. The underlying saved query is left alone.</p>
+      </div>
+    </template>
+
+    <!-- dashboard_filter_change -->
+    <template v-if="p.kind === 'dashboard_filter_change'">
+      <div class="prop__chart">
+        <div class="prop__chart-field">
+          <div class="prop__chart-name">filters</div>
+          <pre class="prop__chart-side prop__chart-side--del">{{ JSON.stringify(p.before, null, 2) }}</pre>
+          <pre class="prop__chart-side prop__chart-side--add">{{ JSON.stringify(p.after, null, 2) }}</pre>
+        </div>
+      </div>
+    </template>
+
+    <!-- widget_mapping -->
+    <template v-if="p.kind === 'widget_mapping'">
+      <div class="prop__chart">
+        <div class="prop__chart-field">
+          <div class="prop__chart-name">mapping</div>
+          <pre class="prop__chart-side prop__chart-side--del">{{ JSON.stringify(p.before, null, 2) }}</pre>
+          <pre class="prop__chart-side prop__chart-side--add">{{ JSON.stringify(p.after, null, 2) }}</pre>
+        </div>
+      </div>
+    </template>
+
+    <!-- navigate -->
+    <template v-if="p.kind === 'navigate'">
+      <div class="prop__newq">
+        <div class="prop__newq-row">
+          <strong>destination</strong>
+          <span v-if="p.to === 'workspace'">{{ p.query_id != null ? `Workspace — open query #${p.query_id}` : "Workspace" }}</span>
+          <span v-else-if="p.to === 'dashboard'">Dashboard #{{ p.dashboard_id ?? "?" }}</span>
+          <span v-else-if="p.to === 'pipeline'">Pipeline #{{ p.pipeline_id ?? "?" }}</span>
+          <span v-else-if="p.to === 'pipelines'">Pipelines list</span>
+        </div>
+      </div>
+    </template>
+
+    <!-- new_pipeline: structured preview + a short snippet of the script -->
+    <template v-if="p.kind === 'new_pipeline'">
+      <div class="prop__newq">
+        <div class="prop__newq-row"><strong>name</strong> {{ p.pipeline.name }}</div>
+        <div class="prop__newq-row"><strong>source</strong> {{ p.pipeline.source_type }}</div>
+        <div class="prop__newq-row"><strong>load mode</strong> {{ p.pipeline.load_mode }}</div>
+        <div v-if="p.pipeline.destination_connection_id != null" class="prop__newq-row">
+          <strong>destination</strong> connection #{{ p.pipeline.destination_connection_id }}
+          <span v-if="p.pipeline.destination_dataset">/{{ p.pipeline.destination_dataset }}</span>
+        </div>
+        <div v-if="p.pipeline.schedule" class="prop__newq-row">
+          <strong>schedule</strong>
+          <code>{{ p.pipeline.schedule }}</code>
+          ({{ p.pipeline.schedule_enabled ? "enabled" : "paused" }})
+        </div>
+        <div v-if="p.pipeline.python_code" class="prop__newq-row">
+          <strong>script</strong>
+          <code>{{ p.pipeline.python_code.split("\n").length }} lines</code>
+        </div>
+      </div>
+    </template>
+
+    <template v-if="p.kind === 'pipeline_edit'">
+      <div class="prop__chart">
+        <div
+          v-for="(value, key) in (p.after as Record<string, unknown>)"
+          :key="key"
+          class="prop__chart-field"
+        >
+          <div class="prop__chart-name">{{ key }}</div>
+          <pre class="prop__chart-side prop__chart-side--del">{{ JSON.stringify((p.before as Record<string, unknown>)[key] ?? null, null, 2) }}</pre>
+          <pre class="prop__chart-side prop__chart-side--add">{{ JSON.stringify(value, null, 2) }}</pre>
+        </div>
+      </div>
+    </template>
+
+    <template v-if="p.kind === 'run_pipeline'">
+      <div class="prop__newq">
+        <div class="prop__newq-row">
+          Triggers an immediate run of <strong>"{{ p.pipeline_name }}"</strong> (#{{ p.pipeline_id }}).
+          The user will see the run appear in the history tab when it finishes.
+        </div>
+      </div>
+    </template>
+
+    <template v-if="p.kind === 'delete_pipeline'">
+      <div class="prop__delete">
+        <p>Will delete pipeline <strong>"{{ p.pipeline_name }}"</strong> (#{{ p.pipeline_id }}) and all its run history.</p>
+      </div>
+    </template>
+
     <p v-if="record.error" class="prop__err">⚠ {{ record.error }}</p>
 
     <footer v-if="record.status === 'pending'" class="prop__actions">
-      <button class="btn btn-sm prop__reject" @click="reject">Reject</button>
+      <button class="btn btn-sm prop__reject" @click="reject">
+        {{ p.kind === "navigate" ? "Stay here" : "Reject" }}
+      </button>
       <button
         class="btn btn-primary btn-sm"
-        :class="{ 'prop__danger': p.kind === 'delete_query' }"
+        :class="{ 'prop__danger': p.kind === 'delete_query' || p.kind === 'remove_widget' || p.kind === 'delete_pipeline' }"
         @click="accept"
       >
-        {{ p.kind === "delete_query" ? "Confirm delete" : "Accept" }}
+        {{
+          p.kind === "delete_query" || p.kind === "remove_widget" || p.kind === "delete_pipeline"
+            ? "Confirm"
+            : p.kind === "navigate"
+              ? "Open"
+              : p.kind === "run_pipeline"
+                ? "Run now"
+                : "Accept"
+        }}
       </button>
     </footer>
     <footer v-else-if="record.status === 'accepted' || record.status === 'auto-accepted'" class="prop__done">
@@ -273,6 +498,59 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 .prop__chart-side--del { background: rgba(224, 122, 95, 0.1); color: #e89b85; }
 .prop__chart-side--add { background: rgba(127, 176, 105, 0.1); color: #a4d18a; }
 .prop__nochange { font-size: 12px; color: var(--fg-subtle); margin: 0; }
+
+.prop__bulk {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.prop__bulk-row {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+.prop__bulk-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.prop__bulk-id {
+  font-family: var(--font-mono);
+  color: var(--fg-subtle);
+  font-size: 11px;
+}
+.prop__bulk-name { color: var(--fg); flex: 1; }
+.prop__bulk-tags { display: flex; gap: 4px; }
+.prop__bulk-tag {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--fg-subtle);
+  border: 1px solid var(--border);
+}
+.prop__bulk-tag--conn {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+.prop__bulk-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.prop__bulk-sqlsummary { color: var(--fg-subtle); font-style: italic; }
 .prop__newq { display: grid; gap: 4px; }
 .prop__newq-row { font-size: 12px; color: var(--fg-muted); }
 .prop__newq-row strong {
@@ -296,6 +574,17 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
   overflow: auto;
 }
 .prop__delete { font-size: 12px; color: var(--fg-muted); }
+.prop__chip {
+  display: inline-block;
+  margin: 0 4px 2px 0;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+}
 .prop__err {
   margin: 0;
   font-size: 11px;

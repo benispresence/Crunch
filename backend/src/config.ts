@@ -33,12 +33,26 @@ export const config = {
   port: Number(process.env.PORT ?? 3691),
   isDev,
   jwtSecret,
+  // Access-token lifetime. Long-lived tokens are a bigger blast radius
+  // if one leaks; operators who want tighter sessions can shorten this
+  // (e.g. "12h", "7d"). Revocation is still immediate via token_version.
+  jwtTtl: process.env.JWT_TTL ?? "30d",
   pythonEngineUrl: process.env.PYTHON_ENGINE_URL ?? "http://127.0.0.1:8765",
   pythonEngineToken: engineToken,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
   anthropicModel: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7",
   databaseFile: process.env.DATABASE_FILE ?? "./nicemeta.sqlite",
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
+  // Browser-facing origin of the deployment, used to build OAuth redirect
+  // URIs that must match exactly across registration + authorize + token.
+  // Prefer the explicit pin (shared with OIDC/SAML); otherwise fall back to
+  // the frontend origin (CORS_ORIGIN) — http://localhost:8080 in the docker
+  // stack, http://localhost:5173 in native dev.
+  publicBaseUrl: (
+    process.env.NICEMETA_PUBLIC_BASE_URL ??
+    process.env.CORS_ORIGIN ??
+    "http://localhost:5173"
+  ).replace(/\/+$/, ""),
   // Local working tree mirrored to git for queries / dashboards / viz.
   // Default to the existing repo-root nicemeta-workspace directory.
   workspaceDir:
@@ -47,6 +61,12 @@ export const config = {
   // Symmetric key for at-rest secret encryption (connection passwords,
   // anthropic api key). Optional in dev; required in prod (see below).
   dataKey: process.env.DATA_KEY ?? "",
+  // Optional containment for File connections. When set, the engine
+  // refuses local paths outside this directory. Cloud URIs
+  // (s3://, gs://, https://) are unaffected. Strongly recommended
+  // for multi-tenant deployments — otherwise a user can point at
+  // /etc/passwd or /home/*/.ssh and have it parsed as CSV.
+  fileSourceRoot: process.env.NICEMETA_FILE_SOURCE_ROOT ?? "",
 };
 
 if (!isDev && !config.dataKey) {

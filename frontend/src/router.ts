@@ -6,6 +6,8 @@ const AppShell = () => import("@/views/AppShell.vue");
 const Workspace = () => import("@/views/WorkspaceView.vue");
 const Dashboards = () => import("@/views/DashboardsView.vue");
 const DashboardDetail = () => import("@/views/DashboardDetailView.vue");
+const Pipelines = () => import("@/views/PipelinesView.vue");
+const PipelineDetail = () => import("@/views/PipelineDetailView.vue");
 const Admin = () => import("@/views/AdminView.vue");
 
 export const router = createRouter({
@@ -21,6 +23,8 @@ export const router = createRouter({
         { path: "workspace", name: "workspace", component: Workspace },
         { path: "dashboards", name: "dashboards", component: Dashboards },
         { path: "dashboards/:id", name: "dashboard-detail", component: DashboardDetail },
+        { path: "pipelines", name: "pipelines", component: Pipelines },
+        { path: "pipelines/:id", name: "pipeline-detail", component: PipelineDetail },
         { path: "admin", name: "admin", component: Admin, meta: { adminOnly: true } },
       ],
     },

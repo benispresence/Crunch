@@ -104,6 +104,7 @@ frontend/dist/
 backend/*.sqlite
 backend/.env
 .vite/
+*.tsbuildinfo
 
 # NiceMeta runtime / agent state
 .claude/

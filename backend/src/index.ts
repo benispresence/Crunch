@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
@@ -12,10 +13,15 @@ import { connectionsRouter } from "./routes/connections.js";
 import { dashboardsRouter } from "./routes/dashboards.js";
 import { foldersRouter } from "./routes/folders.js";
 import { gitRouter } from "./routes/git.js";
+import { mcpRouter } from "./routes/mcp.js";
+import { mcpClientOAuthRouter } from "./routes/mcpClientOAuth.js";
+import { pipelinesRouter } from "./routes/pipelines.js";
 import { queriesRouter } from "./routes/queries.js";
 import { visualizationsRouter } from "./routes/visualizations.js";
 import { vizRouter } from "./routes/viz.js";
 import { seedDefaultAdmin } from "./services/auth.js";
+import { seedPermissions } from "./services/permissions.js";
+import { startScheduler } from "./services/pipelines.js";
 import { pythonEngine } from "./services/pythonEngine.js";
 
 const app = express();
@@ -34,6 +40,10 @@ app.set("trust proxy", 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
+// urlencoded body parser is needed for SAML's HTTP-POST binding (the
+// IdP returns a form-encoded SAMLResponse to the ACS endpoint).
+app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+app.use(cookieParser());
 
 // One-line request log so "did the request reach the backend?" is a
 // trivial tail away. Skip /api/health to keep the log readable.
@@ -59,14 +69,21 @@ app.use("/api/queries", queriesRouter);
 app.use("/api/viz", vizRouter);
 app.use("/api/visualizations", visualizationsRouter);
 app.use("/api/dashboards", dashboardsRouter);
+app.use("/api/pipelines", pipelinesRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/chat", chatRouter);
 app.use("/api/git", gitRouter);
+app.use("/api/mcp", mcpRouter);
+app.use("/api/mcp-client", mcpClientOAuthRouter);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
   res.status(500).json({ error: err.message });
 });
+
+// Seed the capability registry + default groups before any user
+// activity. Idempotent on every restart.
+seedPermissions();
 
 const seed = seedDefaultAdmin();
 if (seed.created && seed.password) {
@@ -96,4 +113,8 @@ if (seed.created && seed.password) {
 
 app.listen(config.port, () => {
   console.log(`crunch backend listening on :${config.port}`);
+  // Pipeline cron-tick starts with the server so any due schedules
+  // fire on the first 30s boundary after startup. Idempotent across
+  // restarts.
+  startScheduler();
 });

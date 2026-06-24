@@ -87,10 +87,29 @@ Bring it down with `docker compose -f docker/docker-compose.yml down`; add
 ### First-launch admin
 
 On the first start the backend generates a random 18-character admin
-password. **You'll see it right on the login screen** — a highlighted
-"First launch — default admin" panel shows the email + password with a
-Copy button and a "Use these credentials" autofill link. No need to dig
-through logs.
+password for `admin@nicemeta.local`.
+
+**Where to find it depends on how you're running:**
+
+- **Docker / any production deploy** (`NODE_ENV=production`): the password
+  is **not** exposed over HTTP — read it from the 0600-mode file in the
+  data volume (or the logs):
+
+  ```bash
+  docker compose -f docker/docker-compose.yml exec backend \
+    cat /data/FIRST_RUN_ADMIN_PASSWORD
+  # or
+  docker compose -f docker/docker-compose.yml logs backend | grep -A6 "Default admin"
+  ```
+
+- **Native dev** (`NODE_ENV` unset): for convenience the login screen
+  shows it for you — a highlighted "First launch — default admin" panel
+  with the email + password, a Copy button, and a "Use these credentials"
+  autofill link. It's also written to `backend/FIRST_RUN_ADMIN_PASSWORD`.
+
+> Not showing the seeded password over HTTP in production is deliberate
+> (a hardening from the v1.1 security audit): otherwise any unauthenticated
+> visitor could read it during the first-run window.
 
 After signing in, a modal asks you to set your own password. You can:
 
@@ -98,18 +117,8 @@ After signing in, a modal asks you to set your own password. You can:
 - **Keep default** — accept the random one as-is. It stays valid until
   you change it later from the same modal in the top bar.
 
-Either choice clears the password from the public `/auth/config` endpoint
-so subsequent visitors don't see it.
-
-If you ever lose the password, it's also written to a 0600-mode file
-inside the data volume:
-
-```bash
-docker compose -f docker/docker-compose.yml exec backend \
-  cat /data/FIRST_RUN_ADMIN_PASSWORD
-# or
-docker compose -f docker/docker-compose.yml logs backend | grep -A6 "Default admin"
-```
+Either choice clears the seeded password so it's no longer returned by
+the `/auth/config` endpoint (in dev) and the first-run file is wiped.
 
 ---
 
@@ -282,6 +291,48 @@ containers.
 
 ---
 
+## Data sources
+
+Connections are managed in the sidebar. Drivers for the heavier
+warehouses are lazy-loaded — Crunch boots fine without them and tells
+you the exact `pip install` to run the first time you connect.
+
+| Category     | Type                          | Driver                              | Install                          |
+| ------------ | ----------------------------- | ----------------------------------- | -------------------------------- |
+| OLTP         | PostgreSQL                    | `asyncpg`                           | included                         |
+|              | MySQL                         | `aiomysql`                          | included                         |
+|              | MariaDB (MySQL-compatible)    | `aiomysql`                          | included                         |
+|              | SQLite                        | `aiosqlite`                         | included                         |
+|              | SQL Server                    | `pyodbc`                            | included                         |
+| Warehouses   | Snowflake                     | `snowflake-sqlalchemy`              | `pip install -e .[snowflake]`    |
+|              | BigQuery                      | `sqlalchemy-bigquery`               | `pip install -e .[bigquery]`     |
+|              | Amazon Redshift               | `sqlalchemy-redshift`               | `pip install -e .[redshift]`     |
+|              | Databricks                    | `databricks-sql-connector`          | `pip install -e .[databricks]`   |
+|              | ClickHouse                    | `clickhouse-sqlalchemy`             | `pip install -e .[clickhouse]`   |
+|              | Trino / Presto                | `sqlalchemy-trino`                  | `pip install -e .[trino]`        |
+| Files        | CSV, TSV (incl. `.csv.gz`)    | DuckDB                              | included                         |
+|              | Parquet                       | DuckDB                              | included                         |
+|              | JSON / NDJSON                 | DuckDB                              | included                         |
+|              | Arrow / Feather               | `pyarrow`                           | `pip install -e .[cloud-files]`  |
+|              | Excel (`.xlsx`, `.xls`)       | `openpyxl`                          | included                         |
+|              | S3 / GCS / Azure / HTTPS URIs | DuckDB `httpfs`                     | included                         |
+| Embedded     | DuckDB (`.duckdb` files)      | DuckDB                              | included                         |
+| Document     | MongoDB                       | `pymongo`                           | `pip install -e .[mongo]`        |
+
+Install everything in one shot with `pip install -e .[all-sources]`.
+**MongoDB note:** Mongo queries are JSON pipelines, not SQL — the
+editor still works, but you write a body like
+`{"collection":"orders","pipeline":[{"$match":{"status":"paid"}}]}`.
+
+**File format detection.** When you pick the **File** connection
+type, formats are inferred from each file's extension (CSV, Parquet,
+JSON, Arrow, Excel — including compressed `.csv.gz`) so there's no
+manual selector. Hit **Browse folder…** to walk a directory
+recursively: the dialog lists every supported file with a format
+chip + size, expands Excel workbooks into one row per sheet (each
+becomes its own table), and offers select-all / select-none / pick
+by format. Excel sheets become tables named `<workbook>_<sheet>`.
+
 ## Workspace UX
 
 - **Three collapsible stacked panes** in the centre — SQL/Python editor
@@ -306,6 +357,134 @@ containers.
   proposals do the mirror image (collapse the editor, overlay on the
   chart). Multiple proposals in one turn queue up — you click through
   them one at a time.
+
+## Filters and variables
+
+Crunch supports Metabase-compatible filter syntax in SQL and Python charts:
+
+```sql
+SELECT *
+FROM orders
+WHERE 1 = 1
+  [[ AND created_at >= {{since}} ]]
+  [[ AND status   =  {{status}} ]]
+```
+
+- **`{{name}}`** — variable reference. Values flow through your driver as
+  SQL bind parameters, so they can't be injected.
+- **`[[ … {{name}} … ]]`** — optional clause. The bracketed chunk vanishes
+  when `name` is left blank; supply a value and it's substituted as a bind.
+
+Every `{{var}}` you type is auto-detected and shown in the **Variables**
+strip above the editor, where you set its type (`text`, `number`, `date`,
+`boolean`), a default, and whether it's required. Python charts get the
+same values exposed as a `params` dict — handy for dynamic titles,
+thresholds, etc.
+
+On a dashboard, click **Edit layout → Edit filters** to add filter chips
+to the top bar. The gear icon on each chart opens a small dialog that
+maps each filter to a variable in that chart's underlying query. One
+filter can drive many charts at once.
+
+## Data pipelines
+
+Pipelines move data into your destinations on a schedule. Each
+pipeline is a Python script (auto-generated from a form, fully
+custom, or anywhere in between) that runs in the python engine's
+sandbox. The default template uses [dlt](https://dlthub.com) so the
+load semantics are declarative across postgres / snowflake /
+bigquery / redshift / duckdb / databricks / clickhouse / mssql.
+
+**Five load modes**:
+
+| Mode          | What it does                                        | Needs            |
+| ------------- | --------------------------------------------------- | ---------------- |
+| `replace`     | Truncate the destination table, then re-ingest.     | —                |
+| `append`      | Add rows on each run.                               | —                |
+| `merge`       | Upsert by key — classic delta.                      | `primary_key`    |
+| `incremental` | Only new rows since the last cursor value.          | `cursor_field`   |
+| `streaming`   | Bounded consumer (Kafka, etc.) — stop after N sec/msg. | source-dependent |
+
+**Sources**: REST API, SQL replication, files (any of the formats the
+File connection reads), Kafka, or fully custom. Pick one in the form
+and the engine generates a starter script you can edit; flip
+**code mode → custom** when you want to freeze your edits.
+
+**Scheduling**: 5-field cron expression per pipeline. A 30-second
+ticker inside the Express backend launches due pipelines against the
+python engine. Admin → Pipelines surfaces the scheduler's last tick,
+in-flight count, and 24h success/failure tallies, plus a knob for
+max concurrent runs.
+
+**Run history**: each invocation persists status, row counts, and
+captured stdout/stderr to `pipeline_runs`. The detail view shows the
+log of the most recent run inline so a failed cron can be debugged
+without SSH.
+
+**Agent integration**: `propose_new_pipeline`, `propose_pipeline_edit`,
+`propose_run_pipeline`, `propose_delete_pipeline`, and a `to=pipeline`
+mode on `propose_navigate`. Same accept/reject UX as queries and
+dashboards.
+
+## Authentication
+
+Crunch ships with email + password out of the box. **Admin →
+Authentication** adds the options most teams ask for next:
+
+- **OIDC / OAuth2** — paste a discovery URL + client id/secret. Covers
+  Google Workspace, Microsoft 365, Okta, Auth0, Authentik, Keycloak,
+  GitHub, and anything else that speaks the standard. Sign-in buttons
+  appear on the login screen the moment the provider is enabled.
+- **SAML 2.0** — for enterprise IdPs (Azure AD, OneLogin, ADFS).
+  Configure the entry point, SP issuer, and the IdP signing cert; the
+  admin dialog shows the exact ACS URL to register with the IdP.
+- **LDAP / Active Directory** — bind-then-search pattern with optional
+  StartTLS. Renders a "Sign in via directory" form on the login page.
+- **API keys** — long-lived bearer tokens (`crunch_pk_…`) for
+  embedding queries from scripts or CI. The plaintext is shown once
+  at creation; the DB stores only a hash.
+- **Email domain allowlist** — single setting that gates self-
+  registration *and* every SSO method, so a leaked OIDC link can't
+  enroll outsiders.
+
+Provider secrets (OIDC client secret, LDAP bind password, SAML SP
+private key) are encrypted at rest with the same key used for
+connection passwords. The login page reads the enabled providers via
+`/api/auth/config` and renders one button per OIDC/SAML provider plus
+an optional LDAP form.
+
+## Version history
+
+Every save of a query or a dashboard creates a snapshot you can revert
+to from the **History** button in the editor / dashboard header. The
+timeline is monotonic — reverting stamps a new "revert" revision on
+top instead of rewriting history, so an accidental revert is itself
+undoable. Identical back-to-back saves are deduped so the timeline
+isn't noisy.
+
+If the workspace is git-initialized (Admin → Git), each snapshot also
+runs `git add -A && git commit`, mirroring the same history to disk.
+The commit SHA shows up next to the in-app revision so you can `git
+diff` between two points or push the lot to a remote. When git isn't
+initialized, snapshots still work and live entirely in SQLite.
+
+## Agent on dashboards
+
+The assistant can build and edit dashboards too, using the same
+Accept/Reject proposal flow as queries:
+
+- `propose_new_dashboard` — create a board with optional initial
+  widgets + filters in one shot.
+- `propose_add_widget` / `propose_remove_widget` — wire saved queries
+  onto an existing board.
+- `propose_dashboard_filter_change` — edit the filter bar.
+- `propose_widget_mapping` — connect filters to per-chart variables.
+- `propose_navigate` — jump the user between workspace and a specific
+  dashboard, e.g. after creating a query and adding it to a board.
+
+With auto-accept on in the chat panel, the assistant can chain
+"create a query → add it to a dashboard → take me there" into a
+single hands-off flow.
 
 ## Tools the assistant has
 

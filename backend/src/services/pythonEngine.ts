@@ -67,8 +67,13 @@ export const pythonEngine = {
   validateSql: (sql: string) =>
     call<{ valid: boolean; error?: string }>({ path: "/sql/validate", body: { sql } }),
 
-  executeSql: (params: { connection: Record<string, unknown>; sql: string; limit?: number }) =>
-    call<SqlResult>({ path: "/sql/execute", body: params }),
+  executeSql: (params: {
+    connection: Record<string, unknown>;
+    sql: string;
+    limit?: number;
+    parameters?: Array<Record<string, unknown>>;
+    parameter_values?: Record<string, unknown>;
+  }) => call<SqlResult>({ path: "/sql/execute", body: params }),
 
   renderChart: (params: {
     chart_type: string;
@@ -82,6 +87,8 @@ export const pythonEngine = {
     data?: Record<string, unknown[]>;
     allowed_packages?: string[];
     timeout_seconds?: number;
+    parameters?: Array<Record<string, unknown>>;
+    parameter_values?: Record<string, unknown>;
   }) => call<PythonResult>({ path: "/python/execute", body: params }),
 
   installPackage: (name: string, versionSpec?: string) =>
@@ -97,6 +104,39 @@ export const pythonEngine = {
     }),
 
   listChartTypes: () => callGet<{ chart_types: ChartTypeMeta[] }>("/viz/chart-types"),
+
+  scanFolder: (params: { path: string; recursive?: boolean; max_files?: number }) =>
+    call<{
+      root: string;
+      files: Array<{
+        uri: string;
+        name: string;
+        format: string;
+        size_bytes: number;
+        relative_path: string;
+        sheet: string | null;
+      }>;
+      skipped: number;
+      error?: string;
+    }>({ path: "/files/scan", body: params }),
+
+  generatePipelineTemplate: (spec: Record<string, unknown>) =>
+    call<{ code: string }>({ path: "/pipelines/template", body: { spec } }),
+
+  runPipeline: (params: {
+    code: string;
+    destination: Record<string, unknown>;
+    stream_max_seconds?: number;
+    stream_max_messages?: number;
+    timeout_seconds?: number;
+  }) =>
+    call<{
+      success: boolean;
+      rows_loaded: number;
+      log: string;
+      error?: string;
+      duration_ms: number;
+    }>({ path: "/pipelines/execute", body: params }),
 
   health: async () => {
     const { statusCode, body } = await request(`${config.pythonEngineUrl}/health`);

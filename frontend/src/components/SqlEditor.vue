@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import * as monaco from "monaco-editor";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useTheme } from "@/composables/theme";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import ParametersPanel from "./ParametersPanel.vue";
 import ProposalCard from "./ProposalCard.vue";
+import RevisionHistoryDialog from "./RevisionHistoryDialog.vue";
 
 const props = defineProps<{ collapsed?: boolean }>();
 const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
@@ -19,6 +21,22 @@ const showSaveAs = ref(false);
 const saveAsName = ref("");
 const saving = ref(false);
 const saveError = ref("");
+const showHistory = ref(false);
+
+async function onReverted() {
+  // Reload the saved query list and the active query so the editor
+  // reflects the reverted state. The backend has already stamped the
+  // revert as a new revision; we just pull the new shape.
+  await ws.loadSavedQueries();
+  const id = ws.activeQueryId;
+  if (id != null) {
+    const fresh = ws.savedQueries.find((q) => q.id === id);
+    if (fresh) {
+      ws.invalidateCache(id);
+      await ws.openQuery(fresh);
+    }
+  }
+}
 
 // "sql" = edit the query; "python" = customize the chart in Python.
 // Mirrors `ws.chartMode` ("picker" vs "python") so the chart panel and
@@ -46,6 +64,44 @@ const activeQuery = computed(() =>
 // One title for the whole query+chart unit. SqlEditor sits on top of
 // ChartPanel so showing the name once here serves both panes.
 const headerName = computed(() => activeQuery.value?.name ?? "Untitled query");
+
+// Inline title editing: click the name to rename a saved query in place.
+// The edit commits on blur or Enter and reverts on Escape. Only saved
+// queries can be renamed — there's nothing to persist for a scratch query.
+const editingTitle = ref(false);
+const titleDraft = ref("");
+const titleSaving = ref(false);
+const titleInput = ref<HTMLInputElement | null>(null);
+
+function startEditTitle() {
+  if (!activeQuery.value || titleSaving.value) return;
+  titleDraft.value = activeQuery.value.name;
+  editingTitle.value = true;
+  nextTick(() => {
+    titleInput.value?.focus();
+    titleInput.value?.select();
+  });
+}
+
+async function commitTitle() {
+  if (!editingTitle.value) return; // guard against blur firing after Escape
+  const next = titleDraft.value.trim();
+  const current = activeQuery.value?.name ?? "";
+  editingTitle.value = false;
+  if (!next || next === current) return;
+  titleSaving.value = true;
+  try {
+    await ws.renameActiveQuery(next);
+  } catch {
+    // Rename failed — the computed headerName falls back to the stored name.
+  } finally {
+    titleSaving.value = false;
+  }
+}
+
+function cancelEditTitle() {
+  editingTitle.value = false;
+}
 const hasUnsavedChanges = computed(() => {
   const q = activeQuery.value;
   if (!q) return false;
@@ -54,7 +110,8 @@ const hasUnsavedChanges = computed(() => {
     q.chart_type !== ws.chartType ||
     q.chart_mode !== ws.chartMode ||
     (q.chart_python_code ?? "") !== (ws.pythonCode ?? "") ||
-    JSON.stringify(q.chart_config ?? {}) !== JSON.stringify(ws.chartConfig ?? {})
+    JSON.stringify(q.chart_config ?? {}) !== JSON.stringify(ws.chartConfig ?? {}) ||
+    JSON.stringify(q.parameters ?? []) !== JSON.stringify(ws.parameters ?? [])
   );
 });
 
@@ -354,7 +411,17 @@ const activeQueryProposal = computed(() => {
   const a = chat.activeProposal;
   if (!a) return null;
   const k = a.record.proposal.kind;
+  // Surface single-query proposals in the overlay. The bulk variant
+  // also touches the active query when it's in the changes list —
+  // we float the card here so the user sees the connection retarget
+  // without context-switching to the chat panel.
   if (k === "query_edit" || k === "new_query" || k === "delete_query") return a;
+  if (k === "bulk_query_edit") {
+    const inBatch = a.record.proposal.changes.some(
+      (c) => c.query_id === ws.activeQueryId,
+    );
+    return inBatch ? a : null;
+  }
   return null;
 });
 </script>
@@ -394,7 +461,22 @@ const activeQueryProposal = computed(() => {
       </div>
 
       <div class="editor__title">
-        <span class="editor__name" :title="headerName">{{ headerName }}</span>
+        <input
+          v-if="editingTitle"
+          ref="titleInput"
+          v-model="titleDraft"
+          class="editor__name-input"
+          @blur="commitTitle"
+          @keyup.enter="commitTitle"
+          @keyup.escape="cancelEditTitle"
+        />
+        <span
+          v-else
+          class="editor__name"
+          :class="{ 'editor__name--editable': !!activeQuery }"
+          :title="activeQuery ? `${headerName} — click to rename` : headerName"
+          @click="startEditTitle"
+        >{{ headerName }}</span>
         <span
           v-if="hasUnsavedChanges"
           class="editor__dirty"
@@ -411,6 +493,14 @@ const activeQueryProposal = computed(() => {
           @click="resetFromPicker"
         >
           Sync from picker
+        </button>
+        <button
+          v-if="activeQuery"
+          class="btn btn-ghost btn-sm"
+          title="Show this query's revision history"
+          @click="showHistory = true"
+        >
+          History
         </button>
         <button
           v-if="tab === 'sql'"
@@ -448,6 +538,8 @@ const activeQueryProposal = computed(() => {
       <code>df</code> = last query result · assign <code>fig</code> · use Plotly express or graph_objects
     </div>
 
+    <ParametersPanel v-if="!props.collapsed" />
+
     <div v-show="!props.collapsed && tab === 'sql'" ref="sqlHost" class="editor__host" />
     <div v-show="!props.collapsed && tab === 'python'" ref="pyHost" class="editor__host" />
 
@@ -480,6 +572,15 @@ const activeQueryProposal = computed(() => {
         :turn-id="activeQueryProposal.turnId"
       />
     </div>
+
+    <RevisionHistoryDialog
+      v-if="showHistory && activeQuery"
+      kind="query"
+      :target-id="activeQuery.id"
+      :title="activeQuery.name"
+      @close="showHistory = false"
+      @reverted="onReverted"
+    />
   </div>
 </template>
 
@@ -571,6 +672,31 @@ const activeQueryProposal = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 360px;
+}
+.editor__name--editable {
+  cursor: text;
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  margin: -2px -4px;
+}
+.editor__name--editable:hover {
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.editor__name-input {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  max-width: 360px;
+  font-family: inherit;
+  outline: none;
+}
+.editor__name-input:focus {
+  box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 .editor__dirty {
   color: var(--accent);

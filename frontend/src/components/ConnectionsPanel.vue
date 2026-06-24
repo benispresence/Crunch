@@ -1,25 +1,141 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { api } from "@/api/client";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { useWorkspaceStore, type Connection } from "@/stores/workspace";
+import FolderScanDialog from "./FolderScanDialog.vue";
 import FolderTree from "./FolderTree.vue";
 
-type ConnectionType = "postgres" | "mysql" | "sqlite" | "sqlserver" | "file";
+type ConnectionType =
+  | "postgres"
+  | "mysql"
+  | "mariadb"
+  | "sqlite"
+  | "sqlserver"
+  | "file"
+  | "duckdb"
+  | "snowflake"
+  | "bigquery"
+  | "redshift"
+  | "databricks"
+  | "clickhouse"
+  | "trino"
+  | "mongodb";
 
 const TYPE_LABELS: Record<ConnectionType, string> = {
   postgres: "PostgreSQL",
   mysql: "MySQL",
+  mariadb: "MariaDB",
   sqlite: "SQLite",
   sqlserver: "SQL Server",
-  file: "File (CSV/Excel)",
+  file: "Files (CSV / Parquet / JSON / Excel / Arrow / cloud URIs)",
+  duckdb: "DuckDB (native)",
+  snowflake: "Snowflake",
+  bigquery: "BigQuery",
+  redshift: "Amazon Redshift",
+  databricks: "Databricks",
+  clickhouse: "ClickHouse",
+  trino: "Trino / Presto",
+  mongodb: "MongoDB",
 };
 
+// Default port hint per type. 0 = no port field shown.
 const DEFAULT_PORTS: Record<ConnectionType, number> = {
   postgres: 5432,
   mysql: 3306,
+  mariadb: 3306,
   sqlserver: 1433,
   sqlite: 0,
   file: 0,
+  duckdb: 0,
+  snowflake: 0,
+  bigquery: 0,
+  redshift: 5439,
+  databricks: 0,
+  clickhouse: 8123,
+  trino: 8080,
+  mongodb: 27017,
+};
+
+// Connection types that don't ask for host/port/user/password (file
+// paths, URIs, or bespoke auth that we handle via the extras box).
+const FILE_LIKE: ConnectionType[] = ["sqlite", "file", "duckdb"];
+const HAS_HOST_PORT: ConnectionType[] = [
+  "postgres", "mysql", "mariadb", "sqlserver", "redshift",
+  "clickhouse", "trino", "mongodb",
+];
+
+interface Extras {
+  // Tag → human-facing label, placeholder, secret flag.
+  // Built per-type below and rendered into the form.
+  key: string;
+  label: string;
+  placeholder?: string;
+  secret?: boolean;
+  hint?: string;
+}
+
+const EXTRAS_BY_TYPE: Partial<Record<ConnectionType, Extras[]>> = {
+  snowflake: [
+    { key: "account", label: "Account", placeholder: "ab12345.us-east-1" },
+    { key: "user", label: "User", placeholder: "username" },
+    { key: "password", label: "Password", placeholder: "••••••••", secret: true },
+    { key: "warehouse", label: "Warehouse", placeholder: "COMPUTE_WH" },
+    { key: "database", label: "Database", placeholder: "ANALYTICS" },
+    { key: "schema", label: "Schema", placeholder: "PUBLIC" },
+    { key: "role", label: "Role (optional)", placeholder: "ANALYST" },
+  ],
+  bigquery: [
+    { key: "database", label: "Project id", placeholder: "my-gcp-project" },
+    { key: "dataset", label: "Default dataset (optional)", placeholder: "analytics" },
+    {
+      key: "credentials_path",
+      label: "Service account JSON path",
+      placeholder: "/etc/gcp/service-account.json",
+      hint: "Leave blank to use Application Default Credentials.",
+    },
+    { key: "location", label: "Location (optional)", placeholder: "EU" },
+  ],
+  databricks: [
+    { key: "host", label: "Server hostname", placeholder: "adb-xxx.azuredatabricks.net" },
+    { key: "http_path", label: "HTTP path", placeholder: "/sql/1.0/warehouses/abc123" },
+    { key: "access_token", label: "Personal access token", placeholder: "dapi…", secret: true },
+    { key: "database", label: "Default catalog (optional)", placeholder: "main" },
+    { key: "schema", label: "Default schema (optional)", placeholder: "default" },
+  ],
+  trino: [
+    { key: "http_scheme", label: "Scheme", placeholder: "http or https" },
+  ],
+  clickhouse: [
+    { key: "protocol", label: "Protocol", placeholder: "http (default) or native" },
+    { key: "secure", label: "TLS (true/false)", placeholder: "false" },
+  ],
+  file: [
+    {
+      key: "files",
+      label: "Files / URIs (one per line, optional)",
+      placeholder:
+        "s3://bucket/data.parquet\nhttps://example.com/data.csv\n/local/path/file.json",
+      hint:
+        "Leave blank to scan the folder. Cloud URIs use DuckDB httpfs — set credentials below.",
+    },
+    { key: "s3_region", label: "S3 region (optional)", placeholder: "us-east-1" },
+    { key: "s3_access_key_id", label: "S3 access key id (optional)", placeholder: "AKIA…" },
+    { key: "s3_secret_access_key", label: "S3 secret (optional)", placeholder: "••••••", secret: true },
+    {
+      key: "azure_storage_connection_string",
+      label: "Azure connection string (optional)",
+      placeholder: "DefaultEndpointsProtocol=…",
+      secret: true,
+    },
+  ],
+  mongodb: [
+    {
+      key: "uri",
+      label: "Connection URI (optional)",
+      placeholder: "mongodb+srv://user:pass@cluster.mongodb.net/db",
+      hint: "If set, overrides host/port/user/password above.",
+    },
+  ],
 };
 
 function blankDraft() {
@@ -31,42 +147,126 @@ function blankDraft() {
     database: "",
     user: "",
     password: "",
+    extras: {} as Record<string, string>,
   };
+}
+
+// Rebuild a form draft from an existing connection so it can be edited.
+// Reverses the config-shaping done in submit(): secrets come back as the
+// "••••••" mask and are left untouched unless the user retypes them.
+function draftFromConnection(c: Connection) {
+  const cfg = (c.config ?? {}) as Record<string, unknown>;
+  const options = (cfg.options ?? {}) as Record<string, unknown>;
+  const type = c.type as ConnectionType;
+  const d = blankDraft();
+  d.name = c.name;
+  d.type = type;
+  d.port = typeof cfg.port === "number" ? cfg.port : DEFAULT_PORTS[type] ?? 0;
+  d.host = typeof cfg.host === "string" ? cfg.host : "localhost";
+  d.user = typeof cfg.user === "string" ? cfg.user : "";
+  d.password = typeof cfg.password === "string" ? cfg.password : "";
+  d.database = typeof cfg.database === "string" ? cfg.database : "";
+  d.extras = {};
+  for (const f of EXTRAS_BY_TYPE[type] ?? []) {
+    if (f.key === "database") {
+      d.extras[f.key] = typeof cfg.database === "string" ? cfg.database : "";
+    } else if (f.key === "host") {
+      d.extras[f.key] = typeof cfg.host === "string" ? cfg.host : "";
+    } else if (f.key === "files") {
+      d.extras[f.key] = Array.isArray(options.files) ? (options.files as string[]).join("\n") : "";
+    } else if (f.key === "secure") {
+      d.extras[f.key] = options.secure == null ? "" : String(options.secure);
+    } else {
+      d.extras[f.key] = options[f.key] != null ? String(options[f.key]) : "";
+    }
+  }
+  return d;
 }
 
 const ws = useWorkspaceStore();
 const adding = ref(false);
+const editingId = ref<number | null>(null);
 const submitting = ref(false);
 const error = ref("");
 const draft = ref(blankDraft());
+const showFolderScan = ref(false);
+// Set while populating the form from an existing connection so the
+// type-change watcher (which clears extras/port) doesn't wipe the
+// values we're loading.
+let loadingDraft = false;
 
-const isFileLike = computed(() => draft.value.type === "sqlite" || draft.value.type === "file");
+function onFolderPicked(uris: string[]) {
+  if (uris.length === 0) return;
+  // Append to whatever the user already pasted; dedup so re-running a
+  // scan doesn't double-list files.
+  const existing = (draft.value.extras.files ?? "")
+    .split(/\r?\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const merged = Array.from(new Set([...existing, ...uris]));
+  draft.value.extras.files = merged.join("\n");
+}
+
+const isFileLike = computed(() => FILE_LIKE.includes(draft.value.type));
+const hasHostPort = computed(() => HAS_HOST_PORT.includes(draft.value.type));
+const extrasFields = computed<Extras[]>(() => EXTRAS_BY_TYPE[draft.value.type] ?? []);
+
 const databasePlaceholder = computed(() => {
-  if (draft.value.type === "sqlite") return "/path/to/database.db";
-  if (draft.value.type === "file") return "/path/to/folder";
-  return "Database name";
+  switch (draft.value.type) {
+    case "sqlite": return "/path/to/database.db";
+    case "file": return "/path/to/folder or s3://bucket/prefix/";
+    case "duckdb": return "/path/to/file.duckdb (or :memory:)";
+    case "mongodb": return "database name";
+    case "bigquery": return "GCP project id";
+    default: return "Database name";
+  }
 });
 const databaseLabel = computed(() => {
-  if (draft.value.type === "sqlite") return "Database file";
-  if (draft.value.type === "file") return "Folder path";
-  return "Database";
+  switch (draft.value.type) {
+    case "sqlite": return "Database file";
+    case "file": return "Folder or root URI";
+    case "duckdb": return "Database file";
+    default: return "Database";
+  }
+});
+
+// Some types have their own "database" via extras (BigQuery: project,
+// Databricks: catalog, Snowflake: database). For those we hide the
+// generic field to avoid two inputs for the same thing.
+const showGenericDatabase = computed(() => {
+  return !["snowflake", "bigquery", "databricks"].includes(draft.value.type);
 });
 
 watch(
   () => draft.value.type,
   (t) => {
+    if (loadingDraft) return;
     draft.value.port = DEFAULT_PORTS[t];
+    draft.value.extras = {};
   },
 );
 
 function openForm() {
   draft.value = blankDraft();
+  editingId.value = null;
   error.value = "";
   adding.value = true;
 }
 
+async function openEditForm(c: Connection) {
+  loadingDraft = true;
+  draft.value = draftFromConnection(c);
+  editingId.value = c.id;
+  error.value = "";
+  adding.value = true;
+  // Let the type-change watcher run (and skip) before re-arming it.
+  await nextTick();
+  loadingDraft = false;
+}
+
 function closeForm() {
   adding.value = false;
+  editingId.value = null;
   error.value = "";
 }
 
@@ -78,18 +278,47 @@ async function add() {
   submitting.value = true;
   error.value = "";
   try {
-    const config: Record<string, unknown> = { database: draft.value.database };
-    if (!isFileLike.value) {
+    const config: Record<string, unknown> = {};
+    if (showGenericDatabase.value) config.database = draft.value.database;
+    if (hasHostPort.value) {
       config.host = draft.value.host;
       config.port = Number(draft.value.port);
       config.user = draft.value.user;
       config.password = draft.value.password;
     }
-    await api.post("/connections", {
+    // Map extras into the config. Two keys get special treatment:
+    //  - "database" promotes the extra into the top-level field used
+    //    by warehouse adapters that label their database differently
+    //    (project, catalog, ...).
+    //  - "files" is a newline-separated list — split into an array so
+    //    the FileAdapter sees ``options.files``.
+    const options: Record<string, unknown> = {};
+    for (const f of extrasFields.value) {
+      const v = (draft.value.extras[f.key] ?? "").trim();
+      if (!v) continue;
+      if (f.key === "database") {
+        config.database = v;
+      } else if (f.key === "host") {
+        config.host = v;
+      } else if (f.key === "files") {
+        options.files = v.split(/\r?\n+/).map((s) => s.trim()).filter(Boolean);
+      } else if (f.key === "secure") {
+        options.secure = v.toLowerCase() === "true";
+      } else {
+        options[f.key] = v;
+      }
+    }
+    if (Object.keys(options).length > 0) config.options = options;
+    const payload = {
       name: draft.value.name.trim(),
       type: draft.value.type,
       config,
-    });
+    };
+    if (editingId.value != null) {
+      await api.put(`/connections/${editingId.value}`, payload);
+    } else {
+      await api.post("/connections", payload);
+    }
     closeForm();
     await ws.loadConnections();
   } catch (e) {
@@ -145,18 +374,37 @@ async function remove(id: number) {
         <label class="conn-form__field">
           <span>Type</span>
           <select v-model="draft.type">
-            <option v-for="(label, value) in TYPE_LABELS" :key="value" :value="value">
-              {{ label }}
-            </option>
+            <optgroup label="OLTP">
+              <option value="postgres">PostgreSQL</option>
+              <option value="mysql">MySQL</option>
+              <option value="mariadb">MariaDB</option>
+              <option value="sqlite">SQLite</option>
+              <option value="sqlserver">SQL Server</option>
+            </optgroup>
+            <optgroup label="Warehouses">
+              <option value="snowflake">Snowflake</option>
+              <option value="bigquery">BigQuery</option>
+              <option value="redshift">Amazon Redshift</option>
+              <option value="databricks">Databricks</option>
+              <option value="clickhouse">ClickHouse</option>
+              <option value="trino">Trino / Presto</option>
+            </optgroup>
+            <optgroup label="Files & embedded">
+              <option value="file">Files (CSV / Parquet / JSON / Excel / Arrow)</option>
+              <option value="duckdb">DuckDB (native)</option>
+            </optgroup>
+            <optgroup label="Document">
+              <option value="mongodb">MongoDB</option>
+            </optgroup>
           </select>
         </label>
 
-        <label class="conn-form__field">
+        <label v-if="showGenericDatabase" class="conn-form__field">
           <span>{{ databaseLabel }}</span>
           <input v-model="draft.database" :placeholder="databasePlaceholder" />
         </label>
 
-        <template v-if="!isFileLike">
+        <template v-if="hasHostPort">
           <div class="conn-form__row">
             <label class="conn-form__field">
               <span>Host</span>
@@ -164,7 +412,7 @@ async function remove(id: number) {
             </label>
             <label class="conn-form__field conn-form__field--port">
               <span>Port</span>
-              <input v-model.number="draft.port" type="number" placeholder="5432" />
+              <input v-model.number="draft.port" type="number" :placeholder="String(DEFAULT_PORTS[draft.type])" />
             </label>
           </div>
 
@@ -184,12 +432,63 @@ async function remove(id: number) {
           </label>
         </template>
 
+        <!-- Type-specific extras (warehouse account/dataset, S3 creds, etc.) -->
+        <template v-for="f in extrasFields" :key="f.key">
+          <label class="conn-form__field">
+            <span class="conn-form__field-head">
+              {{ f.label }}
+              <button
+                v-if="f.key === 'files'"
+                type="button"
+                class="btn btn-ghost btn-sm conn-form__browse"
+                title="Walk a folder and pick which files to include"
+                @click="showFolderScan = true"
+              >
+                Browse folder…
+              </button>
+            </span>
+            <textarea
+              v-if="f.key === 'files'"
+              v-model="draft.extras[f.key]"
+              :placeholder="f.placeholder"
+              rows="3"
+              class="conn-form__textarea"
+            />
+            <input
+              v-else
+              v-model="draft.extras[f.key]"
+              :type="f.secret ? 'password' : 'text'"
+              :placeholder="f.placeholder ?? ''"
+              :autocomplete="f.secret ? 'new-password' : 'off'"
+            />
+            <small v-if="f.hint" class="conn-form__hint">{{ f.hint }}</small>
+          </label>
+        </template>
+
+        <p v-if="draft.type === 'file'" class="conn-form__hint">
+          File format is detected from the extension automatically — drop in CSVs, Parquet,
+          JSON, Arrow, or Excel files in any mix. Excel sheets get one table each.
+        </p>
+
+        <p v-if="draft.type === 'mongodb'" class="conn-form__hint">
+          MongoDB queries are JSON, not SQL. Example:
+          <code>{"collection": "users", "find": {"status": "active"}, "limit": 100}</code>
+        </p>
+
         <p v-if="error" class="conn-form__error">{{ error }}</p>
+
+        <p v-if="editingId != null" class="conn-form__hint">
+          Leave a password or secret field showing <code>••••••</code> to keep the stored value.
+        </p>
 
         <div class="conn-form__actions">
           <button type="button" class="btn btn-ghost btn-sm" @click="closeForm">Cancel</button>
           <button type="submit" class="btn btn-primary btn-sm" :disabled="submitting">
-            {{ submitting ? "Adding..." : "Add connection" }}
+            {{ submitting
+              ? "Saving..."
+              : editingId != null
+                ? "Save changes"
+                : "Add connection" }}
           </button>
         </div>
       </form>
@@ -206,19 +505,41 @@ async function remove(id: number) {
             <span class="sidebar__type">{{ c.type }}</span>
             <span class="sidebar__name" :title="c.name">{{ c.name }}</span>
           </div>
-          <button
-            class="btn btn-ghost btn-icon sidebar__delete"
-            @click.stop="remove(c.id)"
-            title="Delete"
-          >
-            ×
-          </button>
+          <div class="sidebar__item-actions">
+            <button
+              class="btn btn-ghost btn-icon sidebar__edit"
+              @click.stop="openEditForm(c)"
+              title="Edit connection"
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                <path
+                  d="M11.5 2.5a1.4 1.4 0 0 1 2 2L6 12l-3 1 1-3 7.5-7.5Z"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+            <button
+              class="btn btn-ghost btn-icon sidebar__delete"
+              @click.stop="remove(c.id)"
+              title="Delete"
+            >
+              ×
+            </button>
+          </div>
         </li>
         <li v-if="ws.connections.length === 0 && !adding" class="sidebar__empty">
           No connections yet. Click <strong>+ New</strong> to add one.
         </li>
       </ul>
     </div>
+
+    <FolderScanDialog
+      v-if="showFolderScan"
+      @close="showFolderScan = false"
+      @select="onFolderPicked"
+    />
   </aside>
 </template>
 
@@ -270,13 +591,33 @@ async function remove(id: number) {
   color: var(--fg-muted);
   min-width: 0;
 }
+.conn-form__field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.conn-form__browse {
+  font-size: 11px;
+  padding: 2px 8px;
+  text-transform: none;
+  letter-spacing: 0;
+}
 .conn-form__field input,
-.conn-form__field select {
+.conn-form__field select,
+.conn-form__field textarea {
   font-size: 13px;
   padding: 6px 8px;
   width: 100%;
   box-sizing: border-box;
   min-width: 0;
+  font-family: inherit;
+}
+.conn-form__textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+  min-height: 64px;
 }
 .conn-form__row {
   display: grid;
@@ -284,6 +625,18 @@ async function remove(id: number) {
   gap: 8px;
 }
 .conn-form__field--port input { text-align: right; }
+.conn-form__hint {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  line-height: 1.4;
+}
+.conn-form__hint code {
+  font-family: var(--font-mono);
+  background: var(--bg-elev);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10.5px;
+}
 .conn-form__error {
   color: var(--error);
   font-size: 12px;
@@ -345,13 +698,24 @@ async function remove(id: number) {
   text-overflow: ellipsis;
   min-width: 0;
 }
+.sidebar__item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.sidebar__edit,
 .sidebar__delete {
   opacity: 0;
   transition: opacity 120ms;
   flex-shrink: 0;
 }
+.sidebar__item:hover .sidebar__edit,
 .sidebar__item:hover .sidebar__delete,
+.sidebar__item--active .sidebar__edit,
 .sidebar__item--active .sidebar__delete { opacity: 1; }
+.sidebar__edit { color: var(--fg-subtle); }
+.sidebar__edit:hover { color: var(--accent); }
 .sidebar__empty {
   color: var(--fg-subtle);
   font-size: 12px;
