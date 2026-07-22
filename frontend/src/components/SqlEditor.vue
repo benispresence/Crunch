@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useTheme } from "@/composables/theme";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import CookieLoader from "./CookieLoader.vue";
 import ParametersPanel from "./ParametersPanel.vue";
 import ProposalCard from "./ProposalCard.vue";
 import RevisionHistoryDialog from "./RevisionHistoryDialog.vue";
@@ -512,8 +513,11 @@ const activeQueryProposal = computed(() => {
           {{ saving ? "Saving..." : activeQuery ? "Save" : "Save as..." }}
         </button>
         <button class="btn btn-primary btn-sm" :disabled="running" @click="run">
-          <svg width="10" height="10" viewBox="0 0 10 10"><polygon points="2,1 9,5 2,9" fill="currentColor" /></svg>
-          {{ running ? "Running..." : "Run" }}
+          <CookieLoader v-if="running" label="" size="sm" />
+          <template v-else>
+            <svg width="10" height="10" viewBox="0 0 10 10"><polygon points="2,1 9,5 2,9" fill="currentColor" /></svg>
+          </template>
+          {{ running ? "Crunching…" : "Run" }}
         </button>
       </div>
     </div>

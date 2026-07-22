@@ -2,6 +2,7 @@
 import Plotly from "plotly.js-dist-min";
 import { onMounted, ref, watch } from "vue";
 import { api } from "@/api/client";
+import CookieLoader from "./CookieLoader.vue";
 
 /**
  * Gantt-style timeline of recent pipeline runs across every pipeline
@@ -159,15 +160,18 @@ watch(lookback, load);
           </select>
         </label>
         <button class="btn btn-sm" :disabled="loading" @click="load">
-          {{ loading ? "Loading…" : "Refresh" }}
+          {{ loading ? "Crunching…" : "Refresh" }}
         </button>
       </div>
     </header>
     <p v-if="error" class="tl__error">{{ error }}</p>
-    <div v-if="runs.length === 0 && !loading && !error" class="tl__empty">
+    <div v-if="loading && runs.length === 0" class="tl__loading">
+      <CookieLoader label="Crunching timeline…" size="md" />
+    </div>
+    <div v-else-if="runs.length === 0 && !error" class="tl__empty">
       No pipeline runs in the selected window.
     </div>
-    <div ref="host" class="tl__plot"></div>
+    <div v-show="!loading || runs.length > 0" ref="host" class="tl__plot"></div>
   </div>
 </template>
 
@@ -224,6 +228,12 @@ watch(lookback, load);
   text-align: center;
   font-size: 13px;
   color: var(--fg-subtle);
+}
+.tl__loading {
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .tl__plot {
   min-height: 240px;

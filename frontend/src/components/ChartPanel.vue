@@ -4,6 +4,7 @@ import { onClickOutside } from "@vueuse/core";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import CookieLoader from "./CookieLoader.vue";
 import ProposalCard from "./ProposalCard.vue";
 
 const props = defineProps<{ collapsed?: boolean }>();
@@ -136,6 +137,17 @@ const activeSpec = computed(() => {
 });
 
 const hasActiveSpec = computed(() => !!activeSpec.value);
+
+const isChartBusy = computed(
+  () => ws.running || ws.chartRendering || ws.pythonRunning,
+);
+
+const busyLabel = computed(() => {
+  if (ws.running) return "Crunching query…";
+  if (ws.pythonRunning) return "Crunching Python chart…";
+  if (ws.chartRendering) return "Crunching chart…";
+  return "Crunching…";
+});
 
 function autofillRequiredFields(typeId: string) {
   const def = ws.chartTypes.find((c) => c.id === typeId);
@@ -485,8 +497,15 @@ const emptyMessage = computed(() => {
       </div>
 
       <div class="chart__host-wrap">
-        <div ref="chartHost" class="chart__host"></div>
-        <div v-if="!hasActiveSpec" class="chart__empty">
+        <div
+          ref="chartHost"
+          class="chart__host"
+          :class="{ 'chart__host--dim': isChartBusy && hasActiveSpec }"
+        ></div>
+        <div v-if="isChartBusy" class="chart__loading">
+          <CookieLoader :label="busyLabel" size="lg" />
+        </div>
+        <div v-else-if="!hasActiveSpec" class="chart__empty">
           <div class="chart__empty-icon">
             <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
               <rect x="6" y="20" width="5" height="10" rx="1" fill="currentColor" opacity="0.4" />
@@ -889,6 +908,20 @@ const emptyMessage = computed(() => {
 .chart__host {
   position: absolute;
   inset: 0;
+  transition: opacity 160ms ease;
+}
+.chart__host--dim {
+  opacity: 0.25;
+  pointer-events: none;
+}
+.chart__loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
 }
 .chart__empty {
   position: absolute;

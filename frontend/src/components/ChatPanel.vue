@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useChatStore } from "@/stores/chat";
 import ChatMessage from "./ChatMessage.vue";
+import CookieLoader from "./CookieLoader.vue";
 
 const chat = useChatStore();
 const input = ref("");
@@ -150,6 +151,12 @@ function resize() {
       </div>
 
       <ChatMessage v-for="turn in chat.turns" :key="turn.id" :turn="turn" />
+      <div
+        v-if="chat.sending && chat.turns.length > 0 && chat.turns[chat.turns.length - 1]?.role === 'user'"
+        class="chat__crunch"
+      >
+        <CookieLoader label="Crunching…" size="sm" />
+      </div>
     </div>
 
     <footer class="chat__compose">
@@ -185,7 +192,10 @@ function resize() {
         </button>
       </div>
       <div class="chat__hint">
-        <span v-if="chat.sending">Streaming… click ▪ to stop</span>
+        <span v-if="chat.sending" class="chat__hint-crunch">
+          <CookieLoader label="" size="sm" />
+          Streaming… click ▪ to stop
+        </span>
         <span v-else>Enter to send · Shift+Enter for newline</span>
       </div>
     </footer>
@@ -421,5 +431,15 @@ function resize() {
   text-align: center;
   font-size: 11px;
   color: var(--fg-subtle);
+}
+.chat__hint-crunch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat__crunch {
+  padding: 8px 14px 12px;
+  display: flex;
+  justify-content: flex-start;
 }
 </style>

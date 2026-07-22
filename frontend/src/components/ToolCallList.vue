@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { guessLanguage, highlightCode } from "@/composables/markdown";
 import type { ChatTurn, ToolCall } from "@/stores/chat";
+import CookieLoader from "./CookieLoader.vue";
 
 const props = defineProps<{ turn: ChatTurn }>();
 
@@ -153,7 +154,9 @@ function escapeHtml(s: string): string {
             </div>
             <div class="tool__section">
               <div class="tool__label">Result</div>
-              <div v-if="call.result === undefined" class="tool__empty">(running...)</div>
+              <div v-if="call.result === undefined" class="tool__empty tool__empty--run">
+                <CookieLoader label="Crunching…" size="sm" />
+              </div>
               <div
                 v-for="(f, j) in renderPayload(call.result)"
                 :key="`out-${call.id}-${j}`"
@@ -197,7 +200,9 @@ function escapeHtml(s: string): string {
           </div>
           <div class="tool__section">
             <div class="tool__label">Result</div>
-            <div v-if="call.result === undefined" class="tool__empty">(running...)</div>
+            <div v-if="call.result === undefined" class="tool__empty tool__empty--run">
+              <CookieLoader label="Crunching…" size="sm" />
+            </div>
             <div
               v-for="(f, j) in renderPayload(call.result)"
               :key="`out-${call.id}-${j}`"
@@ -375,6 +380,11 @@ function escapeHtml(s: string): string {
   font-size: 11px;
   color: var(--fg-subtle);
   font-style: italic;
+}
+.tool__empty--run {
+  font-style: normal;
+  display: flex;
+  padding: 4px 0;
 }
 .tool__code {
   margin: 0;

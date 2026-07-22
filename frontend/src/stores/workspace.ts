@@ -152,6 +152,7 @@ export const useWorkspaceStore = defineStore("workspace", {
     result: null as SqlResult | null,
     chart: null as ChartSpec | null,
     chartError: "" as string,
+    chartRendering: false,
     running: false,
     pendingProposal: null as { sql: string } | null,
     // Per-query result+chart cache. Cleared when the query's SQL or chart
@@ -254,6 +255,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.result.columns.forEach((col, i) => {
         data[col] = this.result!.rows.map((r) => r[i]);
       });
+      this.chartRendering = true;
       try {
         const r = await api.post<{
           success: boolean;
@@ -277,6 +279,8 @@ export const useWorkspaceStore = defineStore("workspace", {
         }
       } catch (e) {
         this.chartError = (e as Error).message;
+      } finally {
+        this.chartRendering = false;
       }
     },
     async runPython() {

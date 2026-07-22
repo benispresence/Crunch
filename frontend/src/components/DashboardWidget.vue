@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { api } from "@/api/client";
 import { useDashboardsStore, type DashboardWidget } from "@/stores/dashboards";
 import { useVisualizationsStore } from "@/stores/visualizations";
+import CookieLoader from "./CookieLoader.vue";
 
 const props = defineProps<{
   widget: DashboardWidget;
@@ -131,7 +132,9 @@ const hasUnmappedFilters = computed(() => {
       </div>
     </div>
     <div ref="host" class="widget__chart">
-      <div v-if="loading" class="widget__state">Loading…</div>
+      <div v-if="loading" class="widget__state widget__state--loading">
+        <CookieLoader label="Crunching…" size="md" />
+      </div>
       <div v-else-if="error" class="widget__state widget__state--error">{{ error }}</div>
     </div>
     <div
