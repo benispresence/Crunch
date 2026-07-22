@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useTheme } from "@/composables/theme";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { absoluteUrl, copyText, queryPath } from "@/utils/links";
 import CookieLoader from "./CookieLoader.vue";
 import ParametersPanel from "./ParametersPanel.vue";
 import ProposalCard from "./ProposalCard.vue";
@@ -65,6 +66,15 @@ const activeQuery = computed(() =>
 // One title for the whole query+chart unit. SqlEditor sits on top of
 // ChartPanel so showing the name once here serves both panes.
 const headerName = computed(() => activeQuery.value?.name ?? "Untitled query");
+
+const linkToast = ref("");
+async function copyQueryLink() {
+  const q = activeQuery.value;
+  if (!q) return;
+  const ok = await copyText(absoluteUrl(queryPath(q.id, q.name)));
+  linkToast.value = ok ? "Link copied" : "Copy failed";
+  setTimeout(() => (linkToast.value = ""), 1500);
+}
 
 // Inline title editing: click the name to rename a saved query in place.
 // The edit commits on blur or Enter and reverts on Escape. Only saved
@@ -487,6 +497,15 @@ const activeQueryProposal = computed(() => {
       </div>
 
       <div class="editor__actions">
+        <span v-if="linkToast" class="editor__link-toast">{{ linkToast }}</span>
+        <button
+          v-if="activeQuery"
+          class="btn btn-ghost btn-sm"
+          title="Copy shareable link — opens this query and its visualization"
+          @click="copyQueryLink"
+        >
+          Copy link
+        </button>
         <button
           v-if="tab === 'python' && !props.collapsed"
           class="btn btn-ghost btn-sm"
@@ -709,7 +728,8 @@ const activeQueryProposal = computed(() => {
   margin-left: -4px;
 }
 .editor__hint { color: var(--fg-subtle); font-size: 11px; }
-.editor__actions { display: flex; gap: 6px; flex-shrink: 0; }
+.editor__actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.editor__link-toast { font-size: 11px; color: var(--accent); }
 .editor__host { flex: 1; min-height: 0; }
 .editor__pyhint {
   padding: 4px 12px;

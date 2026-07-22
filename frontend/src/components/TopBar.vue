@@ -17,6 +17,17 @@ const router = useRouter();
 const route = useRoute();
 const { theme, toggle: toggleTheme } = useTheme();
 
+// Workspace deep links use name "workspace-query" — treat both as Workspace.
+const onWorkspace = computed(
+  () => route.name === "workspace" || route.name === "workspace-query",
+);
+const onDashboards = computed(
+  () => route.name === "dashboards" || route.name === "dashboard-detail",
+);
+const onPipelines = computed(
+  () => route.name === "pipelines" || route.name === "pipeline-detail",
+);
+
 function logout() {
   auth.logout();
   router.push({ name: "login" });
@@ -111,18 +122,41 @@ async function submitChangePassword() {
         <span class="topbar__name">Crunch</span>
       </RouterLink>
       <nav class="topbar__nav">
-        <RouterLink to="/workspace" class="topbar__link">Workspace</RouterLink>
-        <RouterLink to="/dashboards" class="topbar__link">Dashboards</RouterLink>
-        <RouterLink to="/pipelines" class="topbar__link">Pipelines</RouterLink>
-        <RouterLink v-if="auth.user?.role === 'admin'" to="/admin" class="topbar__link">
+        <RouterLink
+          to="/workspace"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': onWorkspace }"
+        >
+          Workspace
+        </RouterLink>
+        <RouterLink
+          to="/dashboards"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': onDashboards }"
+        >
+          Dashboards
+        </RouterLink>
+        <RouterLink
+          to="/pipelines"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': onPipelines }"
+        >
+          Pipelines
+        </RouterLink>
+        <RouterLink
+          v-if="auth.user?.role === 'admin'"
+          to="/admin"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': route.name === 'admin' }"
+        >
           Admin
         </RouterLink>
       </nav>
     </div>
 
     <div class="topbar__right">
+      <!-- Always visible on every page / deep-link URL -->
       <button
-        v-if="route.name === 'workspace'"
         class="btn btn-ghost btn-icon"
         :class="{ 'topbar__toggle--on': vizFullView }"
         :title="vizFullView ? 'Show all panels' : 'Full visualization — hide sidebar, chat, editor & results'"
@@ -144,9 +178,10 @@ async function submitChangePassword() {
         </svg>
       </button>
       <button
-        v-if="route.name === 'workspace'"
         class="btn btn-ghost btn-sm"
+        :class="{ 'topbar__toggle--on': chatOpen }"
         :title="chatOpen ? 'Hide chat' : 'Show chat'"
+        :aria-pressed="!!chatOpen"
         @click="emit('update:chatOpen', !chatOpen)"
       >
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
@@ -277,7 +312,13 @@ async function submitChangePassword() {
   transition: background 120ms, color 120ms;
 }
 .topbar__link:hover { background: var(--bg-hover); color: var(--fg); }
-.topbar__link.router-link-active {
+/* Prefer our section-level active class so /workspace/q/… still highlights Workspace. */
+.topbar__link.router-link-active:not(.topbar__link--active) {
+  background: transparent;
+  color: var(--fg-muted);
+}
+.topbar__link--active,
+.topbar__link.router-link-active.topbar__link--active {
   background: var(--accent-subtle);
   color: var(--accent);
 }

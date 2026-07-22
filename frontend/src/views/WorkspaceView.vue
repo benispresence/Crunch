@@ -2,12 +2,12 @@
 import { Pane, Splitpanes } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { computed, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
-import ChatPanel from "@/components/ChatPanel.vue";
+import { useRoute, useRouter } from "vue-router";
 import ChartPanel from "@/components/ChartPanel.vue";
 import ConnectionsPanel from "@/components/ConnectionsPanel.vue";
 import ResultsTable from "@/components/ResultsTable.vue";
 import SqlEditor from "@/components/SqlEditor.vue";
+import { queryPath } from "@/utils/links";
 import { useAuthStore } from "@/stores/auth";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -19,9 +19,15 @@ const props = defineProps<{
 }>();
 
 const auth = useAuthStore();
+const route = useRoute();
 const router = useRouter();
 const ws = useWorkspaceStore();
 const chat = useChatStore();
+
+/** When true, URL → store sync is in progress (avoid push loops). */
+let syncingFromRoute = false;
+/** Last query id we opened from the route (or pushed into it). */
+let lastRoutedQueryId: number | null = null;
 
 const compact = ref(window.innerWidth < 1100);
 window.addEventListener("resize", () => {
@@ -49,15 +55,12 @@ const resultsFlex = computed(() =>
   resultsCollapsed.value ? "0 0 auto" : "1 1 0%",
 );
 
-// Horizontal Splitpanes sizes: recompute so the center column always fills
-// whatever sidebar/chat leave open (100% when both are hidden).
+// Horizontal Splitpanes sizes. Chat lives in AppShell now, so only the
+// collections sidebar competes with the center stack for width.
 const sidebarSize = computed(() => (compact.value ? 22 : 18));
-const chatSize = computed(() => 22);
 const centerSize = computed(() => {
-  let size = 100;
-  if (props.sidebarOpen !== false) size -= sidebarSize.value;
-  if (props.chatOpen !== false) size -= chatSize.value;
-  return Math.max(size, 30);
+  if (props.sidebarOpen === false) return 100;
+  return Math.max(100 - sidebarSize.value, 30);
 });
 
 // Bumped whenever the workspace chrome/stack changes so ChartPanel refits Plotly.
@@ -145,9 +148,80 @@ watch(
   },
 );
 
+function routeQueryId(): number | null {
+  const raw = route.params.queryId;
+  if (raw == null || raw === "") return null;
+  const id = Number(Array.isArray(raw) ? raw[0] : raw);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/**
+ * Deep link: /workspace/q/:queryId[/:slug] opens that saved query and runs
+ * its visualization (openQuery = load + execute + chart).
+ */
+async function openQueryFromRoute() {
+  const id = routeQueryId();
+  if (id == null) return;
+  if (ws.savedQueries.length === 0) return;
+  const q = ws.savedQueries.find((x) => x.id === id);
+  if (!q) {
+    console.warn(`Deep link: query #${id} not found`);
+    return;
+  }
+  // Already showing this query with results/chart — just normalize the URL.
+  if (ws.activeQueryId === id && lastRoutedQueryId === id) {
+    ensureQueryUrl(q.id, q.name);
+    return;
+  }
+  syncingFromRoute = true;
+  lastRoutedQueryId = id;
+  try {
+    await ws.openQuery(q);
+    ensureQueryUrl(q.id, q.name);
+  } catch (err) {
+    console.warn(err);
+  } finally {
+    syncingFromRoute = false;
+  }
+}
+
+function ensureQueryUrl(id: number, name: string) {
+  const target = queryPath(id, name);
+  if (route.fullPath !== target && route.path !== target) {
+    // Prefer replace so browsing queries doesn't flood history.
+    void router.replace(target);
+  }
+}
+
+// Keep the address bar in sync when the user opens a query from the sidebar.
+watch(
+  () => ws.activeQueryId,
+  (id) => {
+    if (syncingFromRoute) return;
+    if (id == null) {
+      lastRoutedQueryId = null;
+      if (route.name === "workspace-query") {
+        void router.replace({ name: "workspace" });
+      }
+      return;
+    }
+    if (id === lastRoutedQueryId && route.name === "workspace-query") return;
+    const q = ws.savedQueries.find((x) => x.id === id);
+    lastRoutedQueryId = id;
+    void router.replace(queryPath(id, q?.name));
+  },
+);
+
+watch(
+  () => [route.params.queryId, ws.savedQueries.length] as const,
+  () => {
+    void openQueryFromRoute();
+  },
+);
+
 onMounted(async () => {
   if (!auth.token) {
-    await router.push({ name: "login" });
+    await router.push({ name: "login", query: { redirect: route.fullPath } });
     return;
   }
   try {
@@ -160,6 +234,7 @@ onMounted(async () => {
       ws.loadChartTypes(),
       chat.loadConversations(),
     ]);
+    await openQueryFromRoute();
   } catch (err) {
     console.warn(err);
   }
@@ -214,15 +289,6 @@ onMounted(async () => {
           />
         </section>
       </div>
-    </Pane>
-
-    <Pane
-      v-if="props.chatOpen !== false"
-      :size="chatSize"
-      :min-size="18"
-      :max-size="45"
-    >
-      <ChatPanel />
     </Pane>
   </Splitpanes>
 </template>

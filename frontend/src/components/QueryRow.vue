@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useRouter } from "vue-router";
+import { absoluteUrl, copyText, queryPath } from "@/utils/links";
 import type { SavedQuery } from "@/stores/workspace";
 import { useWorkspaceStore } from "@/stores/workspace";
 
 const props = defineProps<{ query: SavedQuery; depth: number }>();
 const ws = useWorkspaceStore();
+const router = useRouter();
 
 const connectionName = computed(() => {
   if (props.query.connection_id == null) return null;
@@ -29,9 +32,18 @@ const chartGlyph = computed(() => {
 });
 
 const moveOpen = ref(false);
+const linkToast = ref("");
 
 async function open() {
-  await ws.openQuery(props.query);
+  // Navigate so the address bar is shareable. WorkspaceView's route watcher
+  // opens the query and runs its visualization.
+  const path = queryPath(props.query.id, props.query.name);
+  if (router.currentRoute.value.path === path || router.currentRoute.value.fullPath.startsWith(path)) {
+    // Already on this deep link (e.g. re-click) — force open/run.
+    await ws.openQuery(props.query);
+    return;
+  }
+  await router.push(path);
 }
 async function remove() {
   if (!confirm(`Delete "${props.query.name}"?`)) return;
@@ -40,6 +52,12 @@ async function remove() {
 async function moveTo(folderId: number | null) {
   moveOpen.value = false;
   await ws.moveQueryToFolder(props.query.id, folderId);
+}
+async function copyLink() {
+  const url = absoluteUrl(queryPath(props.query.id, props.query.name));
+  const ok = await copyText(url);
+  linkToast.value = ok ? "Link copied" : "Copy failed";
+  setTimeout(() => (linkToast.value = ""), 1500);
 }
 </script>
 
@@ -64,6 +82,12 @@ async function moveTo(folderId: number | null) {
       {{ chartGlyph }}
     </span>
     <span class="qrow__name" :title="query.name">{{ query.name }}</span>
+    <span v-if="linkToast" class="qrow__toast">{{ linkToast }}</span>
+    <button
+      class="qrow__act"
+      title="Copy link to this query"
+      @click.stop="copyLink"
+    >↗</button>
     <button
       class="qrow__act"
       title="Move to collection"
@@ -122,6 +146,11 @@ async function moveTo(folderId: number | null) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.qrow__toast {
+  font-size: 10px;
+  color: var(--accent);
+  flex-shrink: 0;
 }
 .qrow__act {
   width: 18px;

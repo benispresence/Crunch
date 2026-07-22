@@ -99,10 +99,19 @@ async function consumeToken(token: string) {
       email: claims.email ?? "",
       role: claims.role ?? "viewer",
     });
-    await router.push({ name: "workspace" });
+    await goAfterLogin();
   } catch (e) {
     error.value = (e as Error).message;
   }
+}
+
+async function goAfterLogin() {
+  const redirect = typeof route.query.redirect === "string" ? route.query.redirect : null;
+  if (redirect && redirect.startsWith("/") && !redirect.startsWith("//")) {
+    await router.push(redirect);
+    return;
+  }
+  await router.push({ name: "workspace" });
 }
 
 function autofillBootstrap() {
@@ -130,7 +139,7 @@ async function submit() {
       { email: email.value, password: password.value },
     );
     auth.setSession(res.token, res.user);
-    await router.push({ name: "workspace" });
+    await goAfterLogin();
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -157,7 +166,7 @@ async function submitLdap() {
       { username: email.value, password: password.value },
     );
     auth.setSession(res.token, res.user);
-    await router.push({ name: "workspace" });
+    await goAfterLogin();
   } catch (e) {
     error.value = (e as Error).message;
   } finally {

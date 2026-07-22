@@ -207,8 +207,9 @@ function resize() {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   background: var(--bg);
-  border-left: 1px solid var(--border);
+  /* Border comes from AppShell.shell__chat when mounted globally. */
 }
 .chat__head {
   display: flex;

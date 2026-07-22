@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import { RouterView } from "vue-router";
+import ChatPanel from "@/components/ChatPanel.vue";
 import TopBar from "@/components/TopBar.vue";
 
 const sidebarOpen = ref(true);
@@ -37,14 +38,20 @@ watch(vizFullView, (full) => {
       v-model:viz-full-view="vizFullView"
     />
     <div class="shell__body">
-      <RouterView v-slot="{ Component }">
-        <component
-          :is="Component"
-          v-model:sidebarOpen="sidebarOpen"
-          v-model:chatOpen="chatOpen"
-          v-model:vizFullView="vizFullView"
-        />
-      </RouterView>
+      <div class="shell__main">
+        <RouterView v-slot="{ Component }">
+          <component
+            :is="Component"
+            v-model:sidebarOpen="sidebarOpen"
+            v-model:chatOpen="chatOpen"
+            v-model:vizFullView="vizFullView"
+          />
+        </RouterView>
+      </div>
+      <!-- Chat is shell-level so the headbar toggle works on every page/URL. -->
+      <aside v-if="chatOpen" class="shell__chat">
+        <ChatPanel />
+      </aside>
     </div>
   </div>
 </template>
@@ -59,5 +66,38 @@ watch(vizFullView, (full) => {
 .shell__body {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+.shell__main {
+  flex: 1 1 0%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.shell__main > * {
+  flex: 1 1 0%;
+  min-height: 0;
+  min-width: 0;
+}
+.shell__chat {
+  flex: 0 0 22%;
+  min-width: 260px;
+  max-width: 480px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+}
+.shell__chat > * {
+  flex: 1 1 0%;
+  min-height: 0;
+}
+@media (max-width: 1100px) {
+  .shell__chat {
+    flex-basis: 28%;
+    min-width: 220px;
+  }
 }
 </style>
