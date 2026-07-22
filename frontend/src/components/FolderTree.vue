@@ -7,12 +7,48 @@ import QueryRow from "./QueryRow.vue";
 
 const ws = useWorkspaceStore();
 
-const expanded = ref<Set<number>>(new Set());
 // Pseudo-IDs for the "All" and "Uncategorized" groups. We use negative numbers
 // so they never collide with a real folder id.
 const ALL_GROUP = -1;
 const UNCATEGORIZED_GROUP = -2;
-const groupExpanded = ref<Set<number>>(new Set([ALL_GROUP]));
+
+// Persist open/closed state so reopening Crunch restores the tree as you left it.
+// Default (no saved state): everything collapsed — "All queries", folders, etc.
+const EXPAND_STATE_KEY = "nm_collections_expand";
+
+function loadExpandState(): { folders: number[]; groups: number[] } | null {
+  try {
+    const raw = localStorage.getItem(EXPAND_STATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { folders?: unknown; groups?: unknown };
+    if (!Array.isArray(parsed.folders) || !Array.isArray(parsed.groups)) return null;
+    return {
+      folders: parsed.folders.filter((n): n is number => typeof n === "number"),
+      groups: parsed.groups.filter((n): n is number => typeof n === "number"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveExpandState(folders: Set<number>, groups: Set<number>) {
+  try {
+    localStorage.setItem(
+      EXPAND_STATE_KEY,
+      JSON.stringify({ folders: [...folders], groups: [...groups] }),
+    );
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+const savedExpand = loadExpandState();
+const expanded = ref<Set<number>>(new Set(savedExpand?.folders ?? []));
+const groupExpanded = ref<Set<number>>(new Set(savedExpand?.groups ?? []));
+
+function persistExpand() {
+  saveExpandState(expanded.value, groupExpanded.value);
+}
 
 interface FolderNode extends Folder {
   children: FolderNode[];
@@ -40,6 +76,7 @@ function toggleFolder(id: number) {
   if (next.has(id)) next.delete(id);
   else next.add(id);
   expanded.value = next;
+  persistExpand();
 }
 
 function toggleGroup(id: number) {
@@ -47,6 +84,7 @@ function toggleGroup(id: number) {
   if (next.has(id)) next.delete(id);
   else next.add(id);
   groupExpanded.value = next;
+  persistExpand();
 }
 
 function select(id: number | null) {
@@ -58,7 +96,12 @@ const renaming = ref<{ id: number; name: string } | null>(null);
 
 function startAdd(parent: number | null) {
   adding.value = { parent, name: "" };
-  if (parent != null) expanded.value.add(parent);
+  if (parent != null) {
+    const next = new Set(expanded.value);
+    next.add(parent);
+    expanded.value = next;
+    persistExpand();
+  }
 }
 
 async function commitAdd() {
