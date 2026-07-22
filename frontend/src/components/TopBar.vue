@@ -5,10 +5,11 @@ import { api } from "@/api/client";
 import { useTheme } from "@/composables/theme";
 import { useAuthStore } from "@/stores/auth";
 
-defineProps<{ sidebarOpen?: boolean; chatOpen?: boolean }>();
+defineProps<{ sidebarOpen?: boolean; chatOpen?: boolean; vizFullView?: boolean }>();
 const emit = defineEmits<{
   (e: "update:sidebarOpen", v: boolean): void;
   (e: "update:chatOpen", v: boolean): void;
+  (e: "update:vizFullView", v: boolean): void;
 }>();
 
 const auth = useAuthStore();
@@ -120,6 +121,28 @@ async function submitChangePassword() {
     </div>
 
     <div class="topbar__right">
+      <button
+        v-if="route.name === 'workspace'"
+        class="btn btn-ghost btn-icon"
+        :class="{ 'topbar__toggle--on': vizFullView }"
+        :title="vizFullView ? 'Show all panels' : 'Full visualization — hide sidebar, chat, editor & results'"
+        :aria-pressed="!!vizFullView"
+        @click="emit('update:vizFullView', !vizFullView)"
+      >
+        <!-- Maximize → full chart; stacked panes → restore all panels -->
+        <svg v-if="!vizFullView" width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path
+            d="M2.5 5.5V3.5a1 1 0 0 1 1-1h2M10.5 2.5h2a1 1 0 0 1 1 1v2M13.5 10.5v2a1 1 0 0 1-1 1h-2M5.5 13.5h-2a1 1 0 0 1-1-1v-2"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <svg v-else width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" stroke="currentColor" />
+          <path d="M2.5 6h11M2.5 10.5h11" stroke="currentColor" />
+        </svg>
+      </button>
       <button
         v-if="route.name === 'workspace'"
         class="btn btn-ghost btn-sm"
@@ -292,6 +315,10 @@ async function submitChangePassword() {
 .topbar__user {
   color: var(--fg-subtle);
   font-size: 12px;
+}
+.topbar__toggle--on {
+  background: var(--accent-subtle);
+  color: var(--accent);
 }
 .pw-overlay {
   position: fixed;

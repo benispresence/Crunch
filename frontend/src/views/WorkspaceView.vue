@@ -12,7 +12,11 @@ import { useAuthStore } from "@/stores/auth";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
 
-const props = defineProps<{ sidebarOpen?: boolean; chatOpen?: boolean }>();
+const props = defineProps<{
+  sidebarOpen?: boolean;
+  chatOpen?: boolean;
+  vizFullView?: boolean;
+}>();
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -37,6 +41,33 @@ const resultsFlex = computed(() => (resultsCollapsed.value ? "0 0 auto" : "1 1 0
 // Agent-driven pane focus: when a proposal becomes active, auto-collapse
 // panes that aren't relevant to the change. Restored on resolve.
 const savedPaneState = ref<{ editor: boolean; chart: boolean; results: boolean } | null>(null);
+
+// Top-bar "full visualization" mode: collapse editor + results, keep chart open.
+// Sidebar/chat are toggled in AppShell. Separate from agent-driven pane focus.
+const preFullViewState = ref<{ editor: boolean; chart: boolean; results: boolean } | null>(null);
+
+watch(
+  () => props.vizFullView,
+  (full) => {
+    if (full) {
+      if (preFullViewState.value == null) {
+        preFullViewState.value = {
+          editor: editorCollapsed.value,
+          chart: chartCollapsed.value,
+          results: resultsCollapsed.value,
+        };
+      }
+      editorCollapsed.value = true;
+      chartCollapsed.value = false;
+      resultsCollapsed.value = true;
+    } else if (preFullViewState.value != null) {
+      editorCollapsed.value = preFullViewState.value.editor;
+      chartCollapsed.value = preFullViewState.value.chart;
+      resultsCollapsed.value = preFullViewState.value.results;
+      preFullViewState.value = null;
+    }
+  },
+);
 
 watch(
   () => chat.activeProposal,
