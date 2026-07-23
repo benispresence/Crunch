@@ -208,8 +208,12 @@ function resize() {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   background: var(--bg);
   /* Border comes from AppShell.shell__chat when mounted globally. */
+  container-type: inline-size;
+  container-name: chat;
 }
 .chat__head {
   display: flex;
@@ -338,7 +342,9 @@ function resize() {
 .chat__scroll {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   scroll-behavior: smooth;
+  min-width: 0;
 }
 
 .chat__empty {

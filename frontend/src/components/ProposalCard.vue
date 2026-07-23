@@ -436,6 +436,8 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
   margin: 10px 0;
   min-width: 0;
   max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
 }
 .prop--accepted, .prop--auto-accepted { border-color: rgba(127, 176, 105, 0.45); }
@@ -551,7 +553,7 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
   align-items: start;
   min-width: 0;
 }
-@media (min-width: 420px) {
+@container chat (min-width: 400px) {
   .prop__chart-field {
     grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr);
     gap: 6px;

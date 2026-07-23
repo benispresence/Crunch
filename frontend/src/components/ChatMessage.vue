@@ -149,7 +149,8 @@ watch(
   padding: 12px 12px;
   min-width: 0;
 }
-@media (min-width: 420px) {
+/* Prefer container queries so formatting follows chat panel width, not viewport. */
+@container chat (min-width: 380px) {
   .msg {
     grid-template-columns: 44px minmax(0, 1fr);
     gap: 12px;
@@ -170,7 +171,7 @@ watch(
   color: var(--fg-muted);
   flex-shrink: 0;
 }
-@media (min-width: 420px) {
+@container chat (min-width: 380px) {
   .msg__avatar {
     width: 44px;
     height: 44px;
@@ -200,7 +201,7 @@ watch(
   word-wrap: break-word;
   overflow-wrap: anywhere;
 }
-@media (min-width: 420px) {
+@container chat (min-width: 380px) {
   .msg__prose { font-size: 14px; }
 }
 /* Streaming: soft caret after the last bit of text */
