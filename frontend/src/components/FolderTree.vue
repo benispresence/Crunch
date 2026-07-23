@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useQueryLabels } from "@/composables/queryLabels";
 import { useWorkspaceStore } from "@/stores/workspace";
 import type { Folder, SavedQuery } from "@/stores/workspace";
 import FolderRow from "./FolderRow.vue";
 import QueryRow from "./QueryRow.vue";
 
 const ws = useWorkspaceStore();
+const { showQueryLabels, toggleQueryLabels } = useQueryLabels();
 
 // Pseudo-IDs for the "All" and "Uncategorized" groups. We use negative numbers
 // so they never collide with a real folder id.
@@ -146,6 +148,15 @@ const allCount = computed(() => ws.savedQueries.length);
     <div class="ftree__heading">
       <span class="ftree__heading-title">Collections</span>
       <button
+        class="btn btn-ghost btn-sm ftree__labels-btn"
+        :class="{ 'ftree__labels-btn--on': showQueryLabels }"
+        :title="showQueryLabels ? 'Hide connection & chart labels' : 'Show connection & chart labels'"
+        :aria-pressed="showQueryLabels"
+        @click="toggleQueryLabels"
+      >
+        Labels
+      </button>
+      <button
         class="btn btn-ghost btn-sm"
         title="Start a new empty query"
         @click="ws.newQuery()"
@@ -248,7 +259,17 @@ const allCount = computed(() => ws.savedQueries.length);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.ftree__heading-title { font-weight: 600; flex: 1; }
+.ftree__heading-title { font-weight: 600; flex: 1; min-width: 0; }
+.ftree__labels-btn {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+.ftree__labels-btn--on {
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
 .ftree__row {
   display: flex;
   align-items: center;
