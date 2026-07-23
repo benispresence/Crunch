@@ -82,9 +82,9 @@ watch(vizFullView, (full) => {
   min-width: 0;
 }
 .shell__chat {
-  flex: 0 0 22%;
+  flex: 0 0 clamp(280px, 26vw, 520px);
   min-width: 260px;
-  max-width: 480px;
+  max-width: min(560px, 42vw);
   min-height: 0;
   display: flex;
   flex-direction: column;

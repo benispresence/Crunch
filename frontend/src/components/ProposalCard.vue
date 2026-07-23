@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import {
+  proposalKindLabel,
+  useEntityLabels,
+} from "@/composables/entityLabels";
 import { highlightCode } from "@/composables/markdown";
 import { useChatStore } from "@/stores/chat";
 import type { ProposalRecord } from "@/stores/chat";
 
 const props = defineProps<{ record: ProposalRecord; turnId: string }>();
 const chat = useChatStore();
+const labels = useEntityLabels();
 
 type DiffLine = { type: "common" | "add" | "remove"; text: string };
 
@@ -37,30 +42,51 @@ function diffLines(before: string, after: string): DiffLine[] {
 
 const p = computed(() => props.record.proposal);
 
+const kindLabel = computed(() => proposalKindLabel(p.value.kind));
+
+const statusLabel = computed(() => {
+  switch (props.record.status) {
+    case "pending": return "Needs review";
+    case "accepted": return "Applied";
+    case "auto-accepted": return "Auto-applied";
+    case "rejected": return "Rejected";
+    case "error": return "Failed";
+    default: return props.record.status;
+  }
+});
+
 const title = computed(() => {
   const x = p.value;
   switch (x.kind) {
-    case "query_edit": return `Edit query #${x.query_id}`;
-    case "bulk_query_edit": return `Bulk edit ${x.changes.length} quer${x.changes.length === 1 ? "y" : "ies"}`;
-    case "chart_change": return `Edit chart on "${x.query_name}"`;
-    case "new_query": return `New query: "${x.query.name}"`;
-    case "delete_query": return `Delete query "${x.target.name}"`;
-    case "new_dashboard": return `New dashboard: "${x.dashboard.name}"`;
-    case "add_widget": return `Add chart to "${x.dashboard_name}"`;
-    case "remove_widget": return `Remove "${x.widget_name}" from "${x.dashboard_name}"`;
-    case "dashboard_filter_change": return `Edit filters on "${x.dashboard_name}"`;
-    case "widget_mapping": return `Rewire filters → "${x.widget_name}"`;
+    case "query_edit": {
+      const name = x.before?.name || labels.queryName(x.query_id) || `Query #${x.query_id}`;
+      return `Edit “${name}”`;
+    }
+    case "bulk_query_edit":
+      return `Bulk edit ${x.changes.length} quer${x.changes.length === 1 ? "y" : "ies"}`;
+    case "chart_change": {
+      const name = x.query_name || labels.queryName(x.query_id) || "chart";
+      return `Update chart on “${name}”`;
+    }
+    case "new_query": return `Create “${x.query.name}”`;
+    case "delete_query": return `Delete “${x.target.name}”`;
+    case "new_dashboard": return `Create dashboard “${x.dashboard.name}”`;
+    case "add_widget": return `Add chart to “${x.dashboard_name}”`;
+    case "remove_widget": return `Remove “${x.widget_name}” from “${x.dashboard_name}”`;
+    case "dashboard_filter_change": return `Edit filters on “${x.dashboard_name}”`;
+    case "widget_mapping": return `Rewire filters → “${x.widget_name}”`;
     case "navigate":
       if (x.to === "workspace") {
-        return x.query_id != null ? `Open query #${x.query_id} in workspace` : "Switch to workspace";
+        if (x.query_id != null) return `Open “${labels.queryLabel(x.query_id)}”`;
+        return "Switch to workspace";
       }
-      if (x.to === "pipeline") return `Open pipeline #${x.pipeline_id ?? "?"}`;
-      if (x.to === "pipelines") return "Switch to pipelines";
-      return `Open dashboard #${x.dashboard_id ?? "?"}`;
-    case "new_pipeline": return `New pipeline: "${x.pipeline.name}"`;
-    case "pipeline_edit": return `Edit pipeline "${x.pipeline_name}"`;
-    case "run_pipeline": return `Run pipeline "${x.pipeline_name}" now`;
-    case "delete_pipeline": return `Delete pipeline "${x.pipeline_name}"`;
+      if (x.to === "pipeline") return `Open “${labels.pipelineLabel(x.pipeline_id)}”`;
+      if (x.to === "pipelines") return "Open pipelines";
+      return `Open “${labels.dashboardLabel(x.dashboard_id)}”`;
+    case "new_pipeline": return `Create pipeline “${x.pipeline.name}”`;
+    case "pipeline_edit": return `Edit “${x.pipeline_name}”`;
+    case "run_pipeline": return `Run “${x.pipeline_name}” now`;
+    case "delete_pipeline": return `Delete “${x.pipeline_name}”`;
   }
 });
 
@@ -120,10 +146,10 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 <template>
   <div class="prop" :class="`prop--${record.status}`">
     <header class="prop__head">
-      <span class="prop__kind">{{ p.kind }}</span>
-      <span class="prop__title">{{ title }}</span>
-      <span class="prop__status">{{ record.status }}</span>
+      <span class="prop__kind">{{ kindLabel }}</span>
+      <span class="prop__status" :class="`prop__status--${record.status}`">{{ statusLabel }}</span>
     </header>
+    <h4 class="prop__title">{{ title }}</h4>
 
     <p v-if="p.rationale" class="prop__rationale">{{ p.rationale }}</p>
 
@@ -165,12 +191,11 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
       <ul class="prop__bulk">
         <li v-for="c in p.changes" :key="c.query_id" class="prop__bulk-row">
           <div class="prop__bulk-head">
-            <span class="prop__bulk-id">#{{ c.query_id }}</span>
-            <span class="prop__bulk-name">{{ c.query_name }}</span>
+            <span class="prop__bulk-name">{{ c.query_name || labels.queryLabel(c.query_id) }}</span>
             <div class="prop__bulk-tags">
-              <span v-if="c.has_connection_change" class="prop__bulk-tag prop__bulk-tag--conn">conn</span>
+              <span v-if="c.has_connection_change" class="prop__bulk-tag prop__bulk-tag--conn">connection</span>
               <span v-if="c.has_name_change" class="prop__bulk-tag">name</span>
-              <span v-if="c.has_sql_change" class="prop__bulk-tag">sql</span>
+              <span v-if="c.has_sql_change" class="prop__bulk-tag">SQL</span>
             </div>
           </div>
           <div v-if="c.has_connection_change" class="prop__bulk-line">
@@ -213,9 +238,15 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
     <!-- new_query: preview -->
     <template v-if="p.kind === 'new_query'">
       <div class="prop__newq">
-        <div class="prop__newq-row"><strong>name</strong> {{ p.query.name }}</div>
-        <div class="prop__newq-row"><strong>connection</strong> #{{ p.query.connection_id }}</div>
-        <div class="prop__newq-row"><strong>chart</strong> {{ p.query.chart_mode }} · {{ p.query.chart_type }}</div>
+        <div class="prop__newq-row"><span class="prop__field">Name</span> {{ p.query.name }}</div>
+        <div class="prop__newq-row">
+          <span class="prop__field">Connection</span>
+          {{ labels.connectionLabel(p.query.connection_id) }}
+        </div>
+        <div class="prop__newq-row">
+          <span class="prop__field">Chart</span>
+          {{ p.query.chart_mode === "python" ? "Python" : (p.query.chart_type || "—") }}
+        </div>
         <pre class="prop__newq-sql hljs"><code v-html="highlightCode(p.query.sql, 'sql')" /></pre>
       </div>
     </template>
@@ -223,7 +254,7 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
     <!-- delete_query -->
     <template v-if="p.kind === 'delete_query'">
       <div class="prop__delete">
-        <p>Will delete query <strong>"{{ p.target.name }}"</strong> (#{{ p.query_id }}).</p>
+        <p>Will permanently delete <strong>“{{ p.target.name }}”</strong>.</p>
         <pre class="prop__delete-sql hljs"><code v-html="highlightCode(p.target.sql, 'sql')" /></pre>
       </div>
     </template>
@@ -249,14 +280,17 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
     <!-- add_widget -->
     <template v-if="p.kind === 'add_widget'">
       <div class="prop__newq">
-        <div class="prop__newq-row"><strong>dashboard</strong> {{ p.dashboard_name }}</div>
-        <div class="prop__newq-row"><strong>chart</strong> {{ p.widget.query_name }} (query #{{ p.widget.query_id }})</div>
+        <div class="prop__newq-row"><span class="prop__field">Dashboard</span> {{ p.dashboard_name }}</div>
         <div class="prop__newq-row">
-          <strong>position</strong>
+          <span class="prop__field">Chart</span>
+          {{ p.widget.query_name || labels.queryLabel(p.widget.query_id) }}
+        </div>
+        <div class="prop__newq-row">
+          <span class="prop__field">Layout</span>
           col {{ p.widget.position_x }} · row {{ p.widget.position_y }} · {{ p.widget.width }}×{{ p.widget.height }}
         </div>
         <div v-if="Object.keys(p.widget.parameter_mappings).length > 0" class="prop__newq-row">
-          <strong>mappings</strong>
+          <span class="prop__field">Mappings</span>
           <span v-for="(v, k) in p.widget.parameter_mappings" :key="k" class="prop__chip">
             {{ k }} → {{ v }}
           </span>
@@ -297,11 +331,13 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
     <template v-if="p.kind === 'navigate'">
       <div class="prop__newq">
         <div class="prop__newq-row">
-          <strong>destination</strong>
-          <span v-if="p.to === 'workspace'">{{ p.query_id != null ? `Workspace — open query #${p.query_id}` : "Workspace" }}</span>
-          <span v-else-if="p.to === 'dashboard'">Dashboard #{{ p.dashboard_id ?? "?" }}</span>
-          <span v-else-if="p.to === 'pipeline'">Pipeline #{{ p.pipeline_id ?? "?" }}</span>
-          <span v-else-if="p.to === 'pipelines'">Pipelines list</span>
+          <span class="prop__field">Go to</span>
+          <span v-if="p.to === 'workspace'">
+            {{ p.query_id != null ? `Workspace · ${labels.queryLabel(p.query_id)}` : "Workspace" }}
+          </span>
+          <span v-else-if="p.to === 'dashboard'">{{ labels.dashboardLabel(p.dashboard_id) }}</span>
+          <span v-else-if="p.to === 'pipeline'">{{ labels.pipelineLabel(p.pipeline_id) }}</span>
+          <span v-else-if="p.to === 'pipelines'">Pipelines</span>
         </div>
       </div>
     </template>
@@ -309,21 +345,22 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
     <!-- new_pipeline: structured preview + a short snippet of the script -->
     <template v-if="p.kind === 'new_pipeline'">
       <div class="prop__newq">
-        <div class="prop__newq-row"><strong>name</strong> {{ p.pipeline.name }}</div>
-        <div class="prop__newq-row"><strong>source</strong> {{ p.pipeline.source_type }}</div>
-        <div class="prop__newq-row"><strong>load mode</strong> {{ p.pipeline.load_mode }}</div>
+        <div class="prop__newq-row"><span class="prop__field">Name</span> {{ p.pipeline.name }}</div>
+        <div class="prop__newq-row"><span class="prop__field">Source</span> {{ p.pipeline.source_type }}</div>
+        <div class="prop__newq-row"><span class="prop__field">Load mode</span> {{ p.pipeline.load_mode }}</div>
         <div v-if="p.pipeline.destination_connection_id != null" class="prop__newq-row">
-          <strong>destination</strong> connection #{{ p.pipeline.destination_connection_id }}
-          <span v-if="p.pipeline.destination_dataset">/{{ p.pipeline.destination_dataset }}</span>
+          <span class="prop__field">Destination</span>
+          {{ labels.connectionLabel(p.pipeline.destination_connection_id) }}
+          <span v-if="p.pipeline.destination_dataset"> / {{ p.pipeline.destination_dataset }}</span>
         </div>
         <div v-if="p.pipeline.schedule" class="prop__newq-row">
-          <strong>schedule</strong>
+          <span class="prop__field">Schedule</span>
           <code>{{ p.pipeline.schedule }}</code>
           ({{ p.pipeline.schedule_enabled ? "enabled" : "paused" }})
         </div>
         <div v-if="p.pipeline.python_code" class="prop__newq-row">
-          <strong>script</strong>
-          <code>{{ p.pipeline.python_code.split("\n").length }} lines</code>
+          <span class="prop__field">Script</span>
+          {{ p.pipeline.python_code.split("\n").length }} lines
         </div>
       </div>
     </template>
@@ -345,15 +382,15 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
     <template v-if="p.kind === 'run_pipeline'">
       <div class="prop__newq">
         <div class="prop__newq-row">
-          Triggers an immediate run of <strong>"{{ p.pipeline_name }}"</strong> (#{{ p.pipeline_id }}).
-          The user will see the run appear in the history tab when it finishes.
+          Starts an immediate run of <strong>“{{ p.pipeline_name }}”</strong>.
+          Progress shows up in the pipeline history when it finishes.
         </div>
       </div>
     </template>
 
     <template v-if="p.kind === 'delete_pipeline'">
       <div class="prop__delete">
-        <p>Will delete pipeline <strong>"{{ p.pipeline_name }}"</strong> (#{{ p.pipeline_id }}) and all its run history.</p>
+        <p>Will delete pipeline <strong>“{{ p.pipeline_name }}”</strong> and all of its run history.</p>
       </div>
     </template>
 
@@ -393,52 +430,82 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
   border: 1px solid var(--accent-border);
   border-radius: var(--radius);
   background: var(--bg-elev);
-  padding: 10px 12px;
+  padding: 12px 12px 10px;
   display: grid;
   gap: 8px;
-  margin: 8px 0;
+  margin: 10px 0;
+  min-width: 0;
+  max-width: 100%;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
 }
-.prop--accepted, .prop--auto-accepted { border-color: rgba(127, 176, 105, 0.4); }
-.prop--rejected { border-color: var(--border); opacity: 0.7; }
+.prop--accepted, .prop--auto-accepted { border-color: rgba(127, 176, 105, 0.45); }
+.prop--rejected { border-color: var(--border); opacity: 0.72; }
 .prop--error { border-color: rgba(224, 122, 95, 0.45); }
 .prop__head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   font-size: 12px;
+  min-width: 0;
 }
 .prop__kind {
-  font-family: var(--font-mono);
   font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   background: var(--accent-subtle);
   color: var(--accent);
-  padding: 1px 6px;
+  padding: 2px 8px;
   border-radius: 999px;
+  flex-shrink: 0;
 }
-.prop__title { flex: 1; font-weight: 600; color: var(--fg); }
+.prop__title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--fg);
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
 .prop__status {
   font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--fg-subtle);
+  flex-shrink: 0;
 }
+.prop__status--pending { color: var(--accent); }
+.prop__status--accepted,
+.prop__status--auto-accepted { color: var(--success); }
+.prop__status--rejected { color: var(--fg-subtle); }
+.prop__status--error { color: var(--error); }
 .prop__rationale {
   margin: 0;
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
   color: var(--fg-muted);
-  font-style: italic;
 }
 .prop__namechange {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
   font-size: 11px;
   font-family: var(--font-mono);
+  min-width: 0;
 }
 .prop__field {
   font-size: 10px;
+  font-weight: 600;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--fg-subtle);
+  min-width: 4.5rem;
+  flex-shrink: 0;
 }
 .prop__arrow { color: var(--fg-subtle); }
 .prop__name--del {
@@ -446,54 +513,69 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
   color: var(--error);
   padding: 1px 5px;
   border-radius: 3px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .prop__name--add {
   background: rgba(127, 176, 105, 0.14);
   color: var(--success);
   padding: 1px 5px;
   border-radius: 3px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .prop__diff {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   background: var(--code-bg);
   border: 1px solid var(--code-border);
   border-radius: var(--radius-sm);
   padding: 6px 0;
-  max-height: 320px;
+  max-height: min(320px, 40vh);
   overflow: auto;
+  min-width: 0;
 }
-.prop__line { display: grid; grid-template-columns: 18px 1fr; padding: 0 8px; }
+.prop__line { display: grid; grid-template-columns: 18px minmax(0, 1fr); padding: 0 8px; }
 .prop__marker { color: var(--fg-subtle); user-select: none; }
-.prop__text { white-space: pre; }
+.prop__text { white-space: pre; min-width: 0; overflow-x: auto; }
 .prop__line--add { background: rgba(127, 176, 105, 0.12); }
 .prop__line--add .prop__marker { color: var(--success); }
 .prop__line--remove { background: rgba(224, 122, 95, 0.12); }
 .prop__line--remove .prop__marker { color: var(--error); }
 .prop__line .prop__text :deep(span) { background: transparent; }
-.prop__chart { display: grid; gap: 6px; }
+.prop__chart { display: grid; gap: 8px; min-width: 0; }
 .prop__chart-field {
   display: grid;
-  grid-template-columns: 110px 1fr 1fr;
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
   align-items: start;
+  min-width: 0;
+}
+@media (min-width: 420px) {
+  .prop__chart-field {
+    grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px;
+  }
 }
 .prop__chart-name {
-  font-family: var(--font-mono);
   font-size: 11px;
+  font-weight: 600;
   color: var(--fg-muted);
-  padding-top: 4px;
+  padding-top: 2px;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .prop__chart-side {
   margin: 0;
-  padding: 4px 8px;
+  padding: 6px 8px;
   font-family: var(--font-mono);
   font-size: 11px;
   border-radius: 4px;
   white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 100px;
+  word-break: break-word;
+  max-height: 120px;
   overflow: auto;
+  min-width: 0;
 }
 .prop__chart-side--del { background: rgba(224, 122, 95, 0.1); color: #e89b85; }
 .prop__chart-side--add { background: rgba(127, 176, 105, 0.1); color: #a4d18a; }
@@ -516,17 +598,20 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 }
 .prop__bulk-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   font-size: 12px;
+  min-width: 0;
 }
-.prop__bulk-id {
-  font-family: var(--font-mono);
-  color: var(--fg-subtle);
-  font-size: 11px;
+.prop__bulk-name {
+  color: var(--fg);
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
-.prop__bulk-name { color: var(--fg); flex: 1; }
-.prop__bulk-tags { display: flex; gap: 4px; }
+.prop__bulk-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .prop__bulk-tag {
   font-size: 10px;
   font-family: var(--font-mono);
@@ -551,15 +636,19 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
   font-family: var(--font-mono);
 }
 .prop__bulk-sqlsummary { color: var(--fg-subtle); font-style: italic; }
-.prop__newq { display: grid; gap: 4px; }
-.prop__newq-row { font-size: 12px; color: var(--fg-muted); }
-.prop__newq-row strong {
-  display: inline-block;
-  width: 100px;
-  font-size: 10px;
-  text-transform: uppercase;
-  color: var(--fg-subtle);
-  font-weight: 600;
+.prop__newq { display: grid; gap: 6px; min-width: 0; }
+.prop__newq-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  font-size: 12.5px;
+  color: var(--fg);
+  line-height: 1.4;
+  min-width: 0;
+}
+.prop__newq-row .prop__field {
+  min-width: 5.5rem;
 }
 .prop__newq-sql, .prop__delete-sql {
   margin: 4px 0 0;
@@ -570,8 +659,10 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
   font-family: var(--font-mono);
   font-size: 11.5px;
   white-space: pre-wrap;
-  max-height: 200px;
+  word-break: break-word;
+  max-height: min(220px, 35vh);
   overflow: auto;
+  min-width: 0;
 }
 .prop__delete { font-size: 12px; color: var(--fg-muted); }
 .prop__chip {
@@ -592,8 +683,13 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 }
 .prop__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   justify-content: flex-end;
+  margin-top: 2px;
+}
+.prop__actions .btn {
+  min-width: 5.5rem;
 }
 .prop__reject { color: var(--fg-muted); }
 .prop__danger { background: var(--error); border-color: var(--error); color: #fff; }

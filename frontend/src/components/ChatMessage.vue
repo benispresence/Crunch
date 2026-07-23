@@ -4,6 +4,7 @@ import { RouterLink } from "vue-router";
 import { bindCopyButtons, renderMarkdown } from "@/composables/markdown";
 import type { ChatTurn } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import CookieLoader from "./CookieLoader.vue";
 import ProposalCard from "./ProposalCard.vue";
 import ThinkingBlock from "./ThinkingBlock.vue";
 import ToolCallList from "./ToolCallList.vue";
@@ -103,11 +104,12 @@ watch(
         v-if="turn.text"
         ref="bodyEl"
         class="msg__prose"
+        :class="{ 'msg__prose--streaming': turn.status === 'streaming' }"
         v-html="html"
       />
 
       <div v-else-if="turn.role === 'assistant' && turn.status === 'streaming'" class="msg__cursor">
-        <span /><span /><span />
+        <CookieLoader label="Thinking…" size="sm" />
       </div>
 
       <div v-if="turn.status === 'stopped'" class="msg__stopped">
@@ -142,40 +144,80 @@ watch(
 <style scoped>
 .msg {
   display: grid;
-  grid-template-columns: 56px 1fr;
-  gap: 12px;
-  padding: 14px 16px;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px 12px;
+  min-width: 0;
+}
+@media (min-width: 420px) {
+  .msg {
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 12px;
+    padding: 14px 14px;
+  }
 }
 .msg--user { background: var(--bg-elev); }
 .msg__avatar {
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
   font-weight: 700;
-  font-size: 22px;
+  font-size: 16px;
   font-family: var(--font-serif);
   background: var(--bg-elev-2);
   color: var(--fg-muted);
+  flex-shrink: 0;
+}
+@media (min-width: 420px) {
+  .msg__avatar {
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+  }
 }
 .msg--assistant .msg__avatar {
   background: transparent;
   padding: 0;
 }
 .msg__avatar-img {
-  width: 56px;
-  height: 56px;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
   display: block;
 }
-.msg__body { min-width: 0; }
+.msg__body {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
 
 .msg__prose {
-  font-size: 14px;
+  font-size: 13.5px;
   line-height: 1.65;
   color: var(--fg);
   word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+@media (min-width: 420px) {
+  .msg__prose { font-size: 14px; }
+}
+/* Streaming: soft caret after the last bit of text */
+.msg--assistant .msg__prose:not(:empty)::after {
+  content: "";
+}
+.msg__prose--streaming:not(:empty)::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--accent);
+  animation: streamCaret 1s steps(1) infinite;
+  font-weight: 400;
+}
+@keyframes streamCaret {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
 }
 .msg__prose :deep(p) { margin: 0 0 10px; }
 .msg__prose :deep(p:last-child) { margin-bottom: 0; }
@@ -272,22 +314,8 @@ watch(
 }
 
 .msg__cursor {
-  display: inline-flex;
-  gap: 3px;
-  padding: 6px 0;
-}
-.msg__cursor span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--fg-subtle);
-  animation: dot 1.2s ease-in-out infinite;
-}
-.msg__cursor span:nth-child(2) { animation-delay: 0.2s; }
-.msg__cursor span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes dot {
-  0%, 100% { opacity: 0.2; transform: translateY(0); }
-  50% { opacity: 1; transform: translateY(-2px); }
+  display: flex;
+  padding: 4px 0 2px;
 }
 .msg__queue {
   margin: 4px 0;

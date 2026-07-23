@@ -213,12 +213,15 @@ function resize() {
 }
 .chat__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  gap: 6px 8px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
   flex-shrink: 0;
+  min-width: 0;
 }
 .chat__title {
   display: flex;
@@ -227,6 +230,8 @@ function resize() {
   font-family: var(--font-serif);
   font-size: 14px;
   font-weight: 500;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .chat__dot {
   width: 7px;
@@ -235,7 +240,19 @@ function resize() {
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent);
 }
-.chat__head-actions { display: flex; gap: 4px; align-items: center; }
+.chat__head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat__head-actions .btn {
+  font-size: 11px;
+  padding: 3px 7px;
+}
 .chat__toggle--on { color: var(--accent); }
 .chat__auto--on { color: var(--error); }
 .chat__auto-dot {
@@ -251,7 +268,8 @@ function resize() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 200px;
+  min-width: 0;
+  max-width: min(220px, 40vw);
 }
 .chat__count {
   font-size: 10px;
@@ -324,30 +342,39 @@ function resize() {
 }
 
 .chat__empty {
-  padding: 48px 24px;
+  padding: clamp(24px, 8vh, 48px) clamp(14px, 4vw, 24px);
   text-align: center;
   color: var(--fg-muted);
+  max-width: 420px;
+  margin: 0 auto;
 }
 .chat__empty-logo {
-  width: 120px;
-  height: 120px;
+  width: clamp(64px, 22vw, 100px);
+  height: clamp(64px, 22vw, 100px);
   object-fit: contain;
   display: block;
-  margin: 0 auto 20px;
+  margin: 0 auto 16px;
+  opacity: 0.95;
 }
 .chat__empty-title {
   font-family: var(--font-serif);
-  font-size: 22px;
+  font-size: clamp(18px, 4.2vw, 22px);
   font-weight: 500;
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   color: var(--fg);
   letter-spacing: -0.01em;
+  line-height: 1.25;
 }
-.chat__empty-sub { font-size: 13px; margin: 0 0 24px; }
+.chat__empty-sub {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
 .chat__suggestions {
   display: grid;
   gap: 8px;
-  max-width: 320px;
+  width: 100%;
+  max-width: 340px;
   margin: 0 auto;
 }
 .chat__suggestion {
