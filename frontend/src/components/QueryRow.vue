@@ -24,7 +24,6 @@ const chartLabel = computed(() => {
   if (props.query.chart_mode === "python") return "Python";
   const t = props.query.chart_type;
   if (!t) return null;
-  // Human-readable chart type
   return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 });
 
@@ -32,8 +31,6 @@ const moveOpen = ref(false);
 const linkToast = ref("");
 
 async function open() {
-  // Navigate so the address bar is shareable. WorkspaceView's route watcher
-  // opens the query and runs its visualization.
   const path = queryPath(props.query.id, props.query.name);
   if (router.currentRoute.value.path === path || router.currentRoute.value.fullPath.startsWith(path)) {
     await ws.openQuery(props.query);
@@ -59,41 +56,38 @@ async function copyLink() {
 
 <template>
   <div
-    :class="{
-      'qrow--active': ws.activeQueryId === query.id,
-      'qrow--meta': showQueryLabels,
-    }"
+    :class="{ 'qrow--active': ws.activeQueryId === query.id }"
     class="qrow"
     :style="{ paddingLeft: `${8 + depth * 12 + 14}px` }"
     :title="query.name"
     @click="open"
   >
-    <div class="qrow__main">
-      <div class="qrow__top">
-        <span class="qrow__name">{{ query.name }}</span>
-        <span v-if="linkToast" class="qrow__toast">{{ linkToast }}</span>
-        <div class="qrow__acts" @click.stop>
-          <button class="qrow__act" title="Copy link to this query" @click="copyLink">↗</button>
-          <button class="qrow__act" title="Move to collection" @click="moveOpen = !moveOpen">⇄</button>
-          <button class="qrow__act" title="Delete" @click="remove">×</button>
-        </div>
-      </div>
-      <div v-if="showQueryLabels" class="qrow__meta">
-        <span
-          v-if="connectionType"
-          class="qrow__tag qrow__tag--conn"
-          :title="connectionName ? `${connectionName} (${connectionType})` : connectionType"
-        >
-          {{ connectionType }}
-        </span>
-        <span
-          v-if="chartLabel"
-          class="qrow__tag qrow__tag--chart"
-          :title="query.chart_mode === 'python' ? 'Custom Python chart' : `Chart: ${query.chart_type}`"
-        >
-          {{ chartLabel }}
-        </span>
-      </div>
+    <!-- Name takes remaining width; ellipsis when the row is tight.
+         Dragging the sidebar wider gives the name more room before labels. -->
+    <span class="qrow__name">{{ query.name }}</span>
+
+    <template v-if="showQueryLabels">
+      <span
+        v-if="connectionType"
+        class="qrow__tag qrow__tag--conn"
+        :title="connectionName ? `${connectionName} (${connectionType})` : connectionType"
+      >
+        {{ connectionType }}
+      </span>
+      <span
+        v-if="chartLabel"
+        class="qrow__tag qrow__tag--chart"
+        :title="query.chart_mode === 'python' ? 'Custom Python chart' : `Chart: ${query.chart_type}`"
+      >
+        {{ chartLabel }}
+      </span>
+    </template>
+
+    <span v-if="linkToast" class="qrow__toast">{{ linkToast }}</span>
+    <div class="qrow__acts" @click.stop>
+      <button class="qrow__act" title="Copy link to this query" @click="copyLink">↗</button>
+      <button class="qrow__act" title="Move to collection" @click="moveOpen = !moveOpen">⇄</button>
+      <button class="qrow__act" title="Delete" @click="remove">×</button>
     </div>
   </div>
   <div v-if="moveOpen" class="qrow__menu" :style="{ marginLeft: `${8 + depth * 12 + 14}px` }">
@@ -112,73 +106,50 @@ async function copyLink() {
 <style scoped>
 .qrow {
   display: flex;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 5px 6px 5px 8px;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px 4px 8px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 12px;
   color: var(--fg);
   min-width: 0;
+  height: 26px;
+  box-sizing: border-box;
 }
 .qrow:hover { background: var(--bg-hover); }
 .qrow--active {
   background: var(--accent-subtle);
   box-shadow: inset 0 0 0 1px var(--accent-border);
 }
-.qrow--meta {
-  padding-top: 5px;
-  padding-bottom: 6px;
-}
-.qrow__main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.qrow__top {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
 .qrow__name {
-  flex: 1;
+  /* Grow into free width as the sidebar is dragged wider; ellipsis first. */
+  flex: 1 1 0;
   min-width: 0;
   font-size: 12.5px;
   font-weight: 500;
-  line-height: 1.3;
+  line-height: 1.2;
   color: var(--fg);
-  /* Allow up to 2 lines so names stay readable in a narrow sidebar */
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  white-space: nowrap;
   overflow: hidden;
-  word-break: break-word;
+  text-overflow: ellipsis;
 }
 .qrow--active .qrow__name {
   color: var(--accent);
 }
-.qrow__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
 .qrow__tag {
+  flex: 0 0 auto;
   font-size: 9.5px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   padding: 1px 5px;
   border-radius: 3px;
   background: var(--bg);
   color: var(--fg-subtle);
   font-family: var(--font-mono);
-  line-height: 1.4;
-  max-width: 100%;
+  line-height: 1.35;
   white-space: nowrap;
+  max-width: 7.5em;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -189,6 +160,7 @@ async function copyLink() {
   letter-spacing: 0.01em;
   font-family: var(--font-sans);
   font-weight: 500;
+  max-width: 8.5em;
 }
 .qrow__toast {
   font-size: 10px;
@@ -198,9 +170,9 @@ async function copyLink() {
 .qrow__acts {
   display: flex;
   align-items: center;
-  gap: 1px;
-  flex-shrink: 0;
-  margin-left: 2px;
+  gap: 0;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 .qrow__act {
   width: 18px;
