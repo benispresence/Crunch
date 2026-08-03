@@ -4,31 +4,122 @@
  */
 
 import { db } from "../../db/index.js";
+import { folderPaths } from "./folders.js";
 import { safeParse, type ToolHandler, type ToolModule } from "./types.js";
 
-const list_saved_queries: ToolHandler = (ctx) => {
+/**
+ * Summary listing — deliberately without `sql` and `chart_python_code`.
+ *
+ * A workspace with a few dozen chart-heavy queries produced a payload well
+ * past the tool-result cap, so the tail of the list was cut off and the model
+ * simply couldn't see the last queries. Bodies now come from
+ * `get_saved_queries` for the handful the model actually needs, and the
+ * filters below keep the list short in the first place.
+ */
+const list_saved_queries: ToolHandler = (ctx, input) => {
+  const where: string[] = ["q.user_id = ?"];
+  const args: unknown[] = [ctx.userId];
+  if (input.folder_id !== undefined) {
+    if (input.folder_id === null) {
+      where.push("q.folder_id IS NULL");
+    } else {
+      where.push("q.folder_id = ?");
+      args.push(input.folder_id);
+    }
+  }
+  if (input.connection_id != null) {
+    where.push("q.connection_id = ?");
+    args.push(input.connection_id);
+  }
+  if (input.name_contains) {
+    where.push("LOWER(q.name) LIKE ?");
+    args.push(`%${String(input.name_contains).toLowerCase()}%`);
+  }
+  const limit = Math.min(Number(input.limit ?? 200), 500);
+
+  const paths = folderPaths(ctx.userId);
   const rows = db
     .prepare(
-      `SELECT id, name, connection_id, folder_id, sql,
-              chart_type, chart_mode, chart_config_json, chart_python_code
-       FROM queries WHERE user_id = ? ORDER BY updated_at DESC`,
+      `SELECT q.id, q.name, q.connection_id, q.folder_id,
+              q.chart_type, q.chart_mode, q.chart_config_json,
+              LENGTH(q.sql) AS sql_length,
+              q.chart_python_code IS NOT NULL AND q.chart_python_code != '' AS has_python,
+              c.name AS connection_name
+       FROM queries q
+       LEFT JOIN connections c ON c.id = q.connection_id AND c.user_id = q.user_id
+       WHERE ${where.join(" AND ")}
+       ORDER BY q.updated_at DESC
+       LIMIT ?`,
     )
-    .all(ctx.userId) as Array<{
+    .all(...args, limit) as Array<{
+      id: number; name: string; connection_id: number | null; folder_id: number | null;
+      chart_type: string; chart_mode: string; chart_config_json: string;
+      sql_length: number; has_python: number; connection_name: string | null;
+    }>;
+
+  return {
+    count: rows.length,
+    note:
+      "SQL and chart python are omitted here — call get_saved_queries with the ids you need.",
+    queries: rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      connection_id: r.connection_id,
+      connection_name: r.connection_name,
+      folder_id: r.folder_id,
+      folder_path: r.folder_id == null ? null : (paths.get(r.folder_id) ?? null),
+      chart_type: r.chart_type,
+      chart_mode: r.chart_mode,
+      chart_config: safeParse(r.chart_config_json),
+      sql_length: r.sql_length,
+      has_python: !!r.has_python,
+    })),
+  };
+};
+
+/** Full bodies for a specific set of ids — the companion to the lean list. */
+const get_saved_queries: ToolHandler = (ctx, input) => {
+  const ids = (input.query_ids as number[] | undefined) ?? [];
+  if (ids.length === 0) return { error: "query_ids is empty", success: false };
+  if (ids.length > 25) {
+    return {
+      error: "capped at 25 queries per call — fetch in batches",
+      success: false,
+    };
+  }
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT q.id, q.name, q.connection_id, q.folder_id, q.sql,
+              q.chart_type, q.chart_mode, q.chart_config_json, q.chart_python_code,
+              c.name AS connection_name
+       FROM queries q
+       LEFT JOIN connections c ON c.id = q.connection_id AND c.user_id = q.user_id
+       WHERE q.user_id = ? AND q.id IN (${placeholders})`,
+    )
+    .all(ctx.userId, ...ids) as Array<{
       id: number; name: string; connection_id: number | null; folder_id: number | null;
       sql: string; chart_type: string; chart_mode: string;
       chart_config_json: string; chart_python_code: string | null;
+      connection_name: string | null;
     }>;
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    connection_id: r.connection_id,
-    folder_id: r.folder_id,
-    sql: r.sql,
-    chart_type: r.chart_type,
-    chart_mode: r.chart_mode,
-    chart_config: safeParse(r.chart_config_json),
-    chart_python_code: r.chart_python_code,
-  }));
+  const found = new Set(rows.map((r) => r.id));
+  const missing = ids.filter((id) => !found.has(id));
+  return {
+    queries: rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      connection_id: r.connection_id,
+      connection_name: r.connection_name,
+      folder_id: r.folder_id,
+      sql: r.sql,
+      chart_type: r.chart_type,
+      chart_mode: r.chart_mode,
+      chart_config: safeParse(r.chart_config_json),
+      chart_python_code: r.chart_python_code,
+    })),
+    ...(missing.length > 0 ? { not_found: missing } : {}),
+  };
 };
 
 interface ConnectionRow {
@@ -317,8 +408,36 @@ export const queryTools: ToolModule = {
     {
       name: "list_saved_queries",
       description:
-        "List the user's saved queries (id, name, connection, chart settings). Call this before any propose_* tool so you can target the right query by id.",
-      input_schema: { type: "object", properties: {}, required: [] },
+        "List the user's saved queries as summaries — id, name, folder, connection (id AND name), "
+        + "chart settings. SQL and chart python are NOT included; fetch those with get_saved_queries. "
+        + "Filter by folder_id / connection_id / name_contains to keep the result small, which also "
+        + "keeps it from being truncated on large workspaces.",
+      input_schema: {
+        type: "object",
+        properties: {
+          folder_id: {
+            type: "number",
+            description: "Only queries in this folder. Pass null for root-level queries.",
+          },
+          connection_id: { type: "number", description: "Only queries on this connection." },
+          name_contains: { type: "string", description: "Case-insensitive substring of the name." },
+          limit: { type: "number", description: "Max rows (default 200, cap 500)." },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "get_saved_queries",
+      description:
+        "Fetch the full SQL and chart python for specific saved queries by id (max 25 per call). "
+        + "Use after list_saved_queries when you need to read or duplicate a query's body.",
+      input_schema: {
+        type: "object",
+        properties: {
+          query_ids: { type: "array", items: { type: "number" } },
+        },
+        required: ["query_ids"],
+      },
     },
     {
       name: "propose_query_edit",
@@ -430,7 +549,7 @@ export const queryTools: ToolModule = {
     },
   ],
   handlers: {
-    list_saved_queries, propose_query_edit, propose_bulk_query_edit,
+    list_saved_queries, get_saved_queries, propose_query_edit, propose_bulk_query_edit,
     propose_chart_change, propose_new_query, propose_delete_query,
   },
 };

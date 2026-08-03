@@ -42,12 +42,20 @@ Writing chart code (theme-aware charts):
 
 Modifying the user's saved queries / charts:
 - NEVER mutate state silently in prose. If the user asks you to edit, create, or delete a saved query or its chart settings, you MUST call the corresponding \`propose_*\` tool. The UI renders a Cursor-style diff and lets the user Accept/Reject.
-- Discovery order: \`list_saved_queries\` (find ids) → call the relevant propose tool with a one-line \`rationale\`.
+- Discovery order: \`list_saved_queries\` (find ids) → \`get_saved_queries\` if you need the actual SQL or chart python → call the relevant propose tool with a one-line \`rationale\`.
+- \`list_saved_queries\` returns summaries only, and takes \`folder_id\` / \`connection_id\` / \`name_contains\` filters — use them rather than listing everything. If a result comes back with a \`_truncated\` field, it was too big: narrow the filters and call again instead of guessing at what you didn't see.
+- To duplicate queries onto a different connection, read the originals with \`get_saved_queries\`, then create copies with the new \`connection_id\`. To repoint the existing ones in place instead, use \`propose_bulk_query_edit\`.
 - For editing existing query SQL/name/connection: \`propose_query_edit\` (set \`new_connection_id\` to repoint a query at another data source without rewriting SQL).
 - For repointing many queries at once: \`propose_bulk_query_edit\` with a list of \`{query_id, new_connection_id}\` edits. The user gets one Accept/Reject card listing every change.
 - For changing chart_type / chart_config / python code on a saved query: \`propose_chart_change\`.
 - For creating a new saved query: \`propose_new_query\` (requires connection_id from \`list_connections\`).
 - For deleting a saved query: \`propose_delete_query\`.
+
+Folders (collections):
+- \`list_folders\` gives every folder's id, nesting \`path\`, and query count. Call it before anything folder-related.
+- \`propose_new_folder\` creates a folder AND, optionally, the queries that go in it — pass them in \`queries\`. Accepting creates the folder first, then each query inside it. **You never need the folder id in advance**, so never ask the user to create a folder in the UI and report its id back.
+- Nest a folder by passing \`parent_id\` (e.g. an "August" subfolder under the existing "Whoop" folder).
+- \`propose_move_queries\` moves existing queries into a folder; \`folder_id: null\` moves them to the root.
 
 Modifying dashboards:
 - Discovery: \`list_dashboards\` → \`get_dashboard\` for the full state (filters, widgets, mappings).
@@ -155,6 +163,59 @@ function formatWorkspaceContext(ctx: z.infer<typeof workspaceContextSchema>): st
     "When the user says \"this query\", \"current chart\", \"add a limit\", etc., assume they mean the active_saved_query above. Use propose_query_edit / propose_chart_change with that query_id rather than asking which one. When they say \"this dashboard\", target active_dashboard_id. If a task spans both surfaces (e.g. \"add a query and put it on the dashboard\"), chain the propose_* tools and finish with propose_navigate to take the user where they need to go.",
   );
   return lines.join("\n");
+}
+
+const TOOL_RESULT_LIMIT = 60_000;
+
+/**
+ * Serialise a tool result, keeping it under the size cap **and valid JSON**.
+ *
+ * This used to be a flat `.slice(0, 60_000)`, which cut the payload
+ * mid-object. The model received unparseable text ending partway through a
+ * record and — worse — had no way to tell that anything was missing, so it
+ * would reason confidently about a list whose tail it never saw. Now an
+ * oversized array is trimmed record by record and labelled with what was
+ * dropped, so the model knows to narrow its filters and ask again.
+ */
+function clampToolResult(result: unknown): string {
+  const full = JSON.stringify(result) ?? "null";
+  if (full.length <= TOOL_RESULT_LIMIT) return full;
+
+  // Find the longest array in the payload; that's what blew the budget.
+  const holder = result as Record<string, unknown> | unknown[];
+  const key = Array.isArray(holder)
+    ? null
+    : Object.keys(holder ?? {}).find((k) => Array.isArray((holder as Record<string, unknown>)[k]));
+  const items: unknown[] | null = Array.isArray(holder)
+    ? holder
+    : key
+      ? ((holder as Record<string, unknown>)[key] as unknown[])
+      : null;
+
+  if (items && items.length > 0) {
+    let kept = items.length;
+    let out = full;
+    while (kept > 0 && out.length > TOOL_RESULT_LIMIT) {
+      kept = Math.floor(kept / 2);
+      const trimmed = items.slice(0, kept);
+      out = JSON.stringify({
+        ...(key ? { ...(holder as Record<string, unknown>), [key]: trimmed } : { items: trimmed }),
+        _truncated: {
+          shown: kept,
+          total: items.length,
+          hint:
+            "Result too large. Re-run with narrower filters (folder_id, connection_id, "
+            + "name_contains, limit) or fetch bodies by id instead of listing everything.",
+        },
+      });
+    }
+    if (out.length <= TOOL_RESULT_LIMIT) return out;
+  }
+
+  return JSON.stringify({
+    _error: "tool result too large to return",
+    _hint: "Re-run with narrower filters or fetch fewer records at a time.",
+  });
 }
 
 interface ConversationRow {
@@ -342,7 +403,7 @@ chatRouter.post("/send", async (req, res) => {
         toolResults.push({
           type: "tool_result",
           tool_use_id: tu.id,
-          content: JSON.stringify(result).slice(0, 60_000),
+          content: clampToolResult(result),
         });
       }
 

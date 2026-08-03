@@ -70,6 +70,18 @@ const title = computed(() => {
     }
     case "new_query": return `Create “${x.query.name}”`;
     case "delete_query": return `Delete “${x.target.name}”`;
+    case "new_folder": {
+      const n = x.folder.queries.length;
+      const where = x.folder.parent_path ? ` in “${x.folder.parent_path}”` : "";
+      return n === 0
+        ? `Create folder “${x.folder.name}”${where}`
+        : `Create folder “${x.folder.name}”${where} with ${n} quer${n === 1 ? "y" : "ies"}`;
+    }
+    case "move_queries": {
+      const n = x.queries.length;
+      const dest = x.folder_path ? `“${x.folder_path}”` : "the root";
+      return `Move ${n} quer${n === 1 ? "y" : "ies"} to ${dest}`;
+    }
     case "new_dashboard": return `Create dashboard “${x.dashboard.name}”`;
     case "add_widget": return `Add chart to “${x.dashboard_name}”`;
     case "remove_widget": return `Remove “${x.widget_name}” from “${x.dashboard_name}”`;
@@ -256,6 +268,42 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
       <div class="prop__delete">
         <p>Will permanently delete <strong>“{{ p.target.name }}”</strong>.</p>
         <pre class="prop__delete-sql hljs"><code v-html="highlightCode(p.target.sql, 'sql')" /></pre>
+      </div>
+    </template>
+
+    <!-- new_folder: the folder plus anything seeded inside it -->
+    <template v-if="p.kind === 'new_folder'">
+      <div class="prop__newq">
+        <div class="prop__newq-row"><span class="prop__field">Folder</span> {{ p.folder.name }}</div>
+        <div class="prop__newq-row">
+          <span class="prop__field">Inside</span>
+          {{ p.folder.parent_path ?? "Top level" }}
+        </div>
+        <div class="prop__newq-row">
+          <span class="prop__field">Queries</span>
+          {{ p.folder.queries.length === 0 ? "none — empty folder" : `${p.folder.queries.length} to create` }}
+        </div>
+        <ul v-if="p.folder.queries.length" class="prop__list">
+          <li v-for="(q, i) in p.folder.queries" :key="i">
+            <span class="prop__list-name">{{ q.name }}</span>
+            <span class="prop__list-meta">{{ q.connection_name }}</span>
+          </li>
+        </ul>
+      </div>
+    </template>
+
+    <!-- move_queries -->
+    <template v-if="p.kind === 'move_queries'">
+      <div class="prop__newq">
+        <div class="prop__newq-row">
+          <span class="prop__field">Destination</span>
+          {{ p.folder_path ?? "Top level" }}
+        </div>
+        <ul class="prop__list">
+          <li v-for="q in p.queries" :key="q.id">
+            <span class="prop__list-name">{{ q.name }}</span>
+          </li>
+        </ul>
       </div>
     </template>
 
@@ -651,6 +699,37 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 }
 .prop__newq-row .prop__field {
   min-width: 5.5rem;
+}
+.prop__list {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.prop__list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  min-width: 0;
+}
+.prop__list-name {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prop__list-meta {
+  color: var(--fg-subtle);
+  font-size: 11px;
+  flex-shrink: 0;
 }
 .prop__newq-sql, .prop__delete-sql {
   margin: 4px 0 0;

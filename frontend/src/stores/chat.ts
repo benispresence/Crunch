@@ -94,6 +94,27 @@ export type Proposal =
       target: { name: string; sql: string };
     }
   | {
+      kind: "new_folder";
+      rationale?: string;
+      folder: {
+        name: string;
+        parent_id: number | null;
+        parent_path: string | null;
+        queries: Array<{
+          name: string; sql: string; connection_id: number; connection_name: string;
+          chart_type: string; chart_config: Record<string, unknown>;
+          chart_mode: string; chart_python_code: string | null;
+        }>;
+      };
+    }
+  | {
+      kind: "move_queries";
+      rationale?: string;
+      folder_id: number | null;
+      folder_path: string | null;
+      queries: Array<{ id: number; name: string; from_folder_id: number | null }>;
+    }
+  | {
       kind: "new_dashboard";
       rationale?: string;
       dashboard: {
@@ -506,6 +527,50 @@ export const useChatStore = defineStore("chat", {
         } else if (p.kind === "delete_query") {
           await api.del(`/queries/${p.query_id}`);
           rec.resultId = p.query_id;
+        } else if (p.kind === "new_folder") {
+          // Folder first — its id doesn't exist until now, which is exactly
+          // why the queries ride along on this proposal instead of being
+          // proposed separately.
+          const created = await api.post<{ id: number }>("/folders", {
+            name: p.folder.name,
+            parent_id: p.folder.parent_id ?? undefined,
+          });
+          rec.resultId = created.id;
+          const made: number[] = [];
+          for (const q of p.folder.queries) {
+            try {
+              const cq = await api.post<{ id: number }>("/queries", {
+                name: q.name,
+                sql: q.sql,
+                connection_id: q.connection_id,
+                folder_id: created.id,
+                chart_type: q.chart_type,
+                chart_config: q.chart_config,
+                chart_mode: q.chart_mode,
+                chart_python_code: q.chart_python_code ?? undefined,
+              });
+              made.push(cq.id);
+            } catch (e) {
+              throw new Error(
+                `folder created, but query "${q.name}" failed after ${made.length}`
+                + ` of ${p.folder.queries.length}: ${(e as Error).message}`,
+              );
+            }
+          }
+        } else if (p.kind === "move_queries") {
+          const moved: number[] = [];
+          for (const q of p.queries) {
+            try {
+              await api.put(`/queries/${q.id}`, { folder_id: p.folder_id });
+              moved.push(q.id);
+            } catch (e) {
+              throw new Error(
+                `moved ${moved.length} of ${p.queries.length}; "${q.name}" failed:`
+                + ` ${(e as Error).message}`,
+              );
+            }
+          }
+          rec.resultId = p.folder_id ?? undefined;
         } else if (p.kind === "new_dashboard") {
           // Two-step: create the dashboard, then bulk-add widgets and
           // attach filters. We pick up the new id from the POST and
@@ -595,6 +660,10 @@ export const useChatStore = defineStore("chat", {
         ) {
           ws.invalidateCache(rec.resultId);
           await ws.loadSavedQueries();
+        }
+        if (rec.proposal.kind === "new_folder" || rec.proposal.kind === "move_queries") {
+          // Both the tree and the query list change shape here.
+          await Promise.all([ws.loadFolders(), ws.loadSavedQueries()]);
         }
         if (rec.proposal.kind === "bulk_query_edit") {
           // Invalidate every edited query's cache so the row count
