@@ -13,6 +13,13 @@ from typing import Any
 
 import pandas as pd
 
+from crunch.visualization.sandbox_modules import (
+    BLOCKED_MODULES,
+    SAFE_STDLIB,
+    is_blocked,
+    resolve_allowed,
+)
+
 
 class _ExecutionTimeout(Exception):
     pass
@@ -38,14 +45,12 @@ class CodeExecutor:
     both by static validation and by the import whitelist.
     """
 
-    # Fallback whitelist used when DB is unavailable.
+    # Fallback whitelist used when the DB is unavailable. Stdlib modules are
+    # not listed here — SAFE_STDLIB is folded in unconditionally by
+    # resolve_allowed(), so they work even with no package table at all.
     _FALLBACK_WHITELIST: dict[str, str] = {
-        "pandas": "pandas", "numpy": "numpy",
-        "plotly": "plotly", "datetime": "datetime", "math": "math",
+        "pandas": "pandas", "numpy": "numpy", "plotly": "plotly",
         "matplotlib": "matplotlib", "seaborn": "seaborn",
-        "json": "json", "re": "re", "collections": "collections",
-        "itertools": "itertools", "functools": "functools",
-        "statistics": "statistics", "decimal": "decimal",
     }
 
     # Class-level cache for the whitelist
@@ -60,6 +65,7 @@ class CodeExecutor:
         df: pd.DataFrame,
         timeout: float = 30.0,
         params: dict[str, Any] | None = None,
+        allowed_packages: list[str] | None = None,
     ) -> ExecutionResult:
         """
         Execute visualization code and return the result.
@@ -70,6 +76,11 @@ class CodeExecutor:
             timeout: Maximum execution time in seconds
             params: Dashboard / query parameters exposed to user code
                 as a ``params`` dict (e.g. for dynamic titles).
+            allowed_packages: Import names the caller has whitelisted. The
+                Express backend passes the enabled rows from its package
+                table; when omitted we fall back to the local package
+                service. Either way ``SAFE_STDLIB`` is folded in and
+                ``BLOCKED_MODULES`` subtracted.
 
         Returns:
             ExecutionResult with figure or error
@@ -83,8 +94,12 @@ class CodeExecutor:
                     error="; ".join(errors),
                 )
 
-            # Load the allowed modules whitelist
-            allowed_modules = cls._get_allowed_modules()
+            # Load the allowed modules whitelist. A caller-supplied list wins
+            # over the local package service — the Express backend owns the
+            # package table in this deployment.
+            allowed_modules = resolve_allowed(
+                allowed_packages if allowed_packages else cls._get_allowed_modules(),
+            )
 
             # Build the restricted namespace
             namespace = cls._build_namespace(df, allowed_modules, params or {})
@@ -216,6 +231,13 @@ class CodeExecutor:
 
         def _controlled_import(name, globals=None, locals=None, fromlist=(), level=0):
             top_level = name.split(".")[0]
+            # Re-checked here, not just when the whitelist is built: this is
+            # the last gate before the real import, so a bad package-table
+            # row can never widen the sandbox.
+            if is_blocked(name):
+                raise ImportError(
+                    f"Module '{name}' is blocked in the visualization sandbox."
+                )
             if top_level not in allowed_modules:
                 raise ImportError(
                     f"Module '{name}' is not in the allowed package list. "

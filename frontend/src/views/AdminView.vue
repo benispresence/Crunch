@@ -17,6 +17,8 @@ interface Pkg {
   error_message: string | null;
   is_default: boolean;
   is_enabled: boolean;
+  /** Ships with Python: no pip step, no version number. */
+  is_stdlib?: boolean;
 }
 
 interface AdminUser {
@@ -464,11 +466,17 @@ async function deleteUser(u: AdminUser) {
             <td>
               <div class="admin__pkg">
                 <strong>{{ p.package_name }}</strong>
-                <span v-if="p.is_default" class="admin__badge">default</span>
+                <span v-if="p.is_stdlib" class="admin__badge">stdlib</span>
+                <span v-else-if="p.is_default" class="admin__badge">default</span>
               </div>
             </td>
             <td class="admin__mono">{{ p.import_name ?? "—" }}</td>
-            <td class="admin__mono">{{ p.installed_version ?? p.version_spec ?? "—" }}</td>
+            <td class="admin__mono">
+              <span v-if="p.is_stdlib" class="admin__stdlib" title="Part of Python — no pip package, so there is no version to report">
+                built in
+              </span>
+              <template v-else>{{ p.installed_version ?? p.version_spec ?? "—" }}</template>
+            </td>
             <td>
               <span class="admin__status" :class="`admin__status--${p.status}`">
                 {{ p.status }}
@@ -487,7 +495,7 @@ async function deleteUser(u: AdminUser) {
             </td>
             <td class="admin__actions">
               <button
-                v-if="p.status !== 'installed'"
+                v-if="p.status !== 'installed' && !p.is_stdlib"
                 class="btn btn-sm"
                 :disabled="busy[p.id]"
                 @click="install(p.id)"
@@ -495,7 +503,7 @@ async function deleteUser(u: AdminUser) {
                 {{ busy[p.id] ? "..." : "Install" }}
               </button>
               <button
-                v-if="!p.is_default && p.status === 'installed'"
+                v-if="!p.is_default && !p.is_stdlib && p.status === 'installed'"
                 class="btn btn-sm"
                 :disabled="busy[p.id]"
                 @click="uninstall(p.id)"
@@ -934,6 +942,7 @@ async function deleteUser(u: AdminUser) {
   border: 1px solid var(--border);
 }
 .admin__mono { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.admin__stdlib { font-family: var(--font-sans); font-style: italic; color: var(--fg-subtle); }
 .admin__date { color: var(--fg-subtle); }
 
 .admin__status {

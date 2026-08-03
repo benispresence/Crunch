@@ -6,6 +6,7 @@
 
 import { db } from "../../db/index.js";
 import { decryptConnectionConfig } from "../crypto.js";
+import { allowedImportNames } from "../packages.js";
 import { pythonEngine } from "../pythonEngine.js";
 import type { ToolHandler, ToolModule } from "./types.js";
 
@@ -40,7 +41,13 @@ const render_chart: ToolHandler = async (_ctx, input) => {
 const run_python: ToolHandler = async (_ctx, input) => {
   const code = input.code as string;
   const data = (input.data as Record<string, unknown[]> | undefined) ?? {};
-  return await pythonEngine.executePython({ code, data });
+  // Same whitelist the workspace editor gets — the agent doesn't get a wider
+  // sandbox than the user it acts for.
+  return await pythonEngine.executePython({
+    code,
+    data,
+    allowed_packages: allowedImportNames(),
+  });
 };
 
 export const dataTools: ToolModule = {

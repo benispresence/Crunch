@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAdmin, requireAuth } from "../middleware/auth.js";
 import { createUser, findUserByEmail, updatePassword } from "../services/auth.js";
+import { isStdlibRow } from "../services/packages.js";
 import {
   createApiKey,
   deleteProvider,
@@ -83,6 +84,9 @@ function rowToPackage(row: PackageRow) {
     error_message: row.error_message,
     is_default: !!row.is_default,
     is_enabled: !!row.is_enabled,
+    // Lets the UI drop the Install/Uninstall buttons — there is no pip step
+    // for a module that ships with Python.
+    is_stdlib: isStdlibRow(row.installed_version),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -158,6 +162,12 @@ adminRouter.post("/packages/:id/uninstall", async (req, res) => {
   }
   if (row.is_default) {
     res.status(400).json({ error: "cannot uninstall default package" });
+    return;
+  }
+  if (isStdlibRow(row.installed_version)) {
+    res.status(400).json({
+      error: `${row.package_name} is part of Python and cannot be uninstalled — disable it instead`,
+    });
     return;
   }
   try {
