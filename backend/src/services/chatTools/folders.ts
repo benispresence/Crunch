@@ -68,6 +68,32 @@ interface SeedQueryInput {
   chart_config?: unknown;
   chart_mode?: unknown;
   chart_python_code?: unknown;
+  copy_from_query_id?: unknown;
+}
+
+interface SourceQueryRow {
+  id: number;
+  name: string;
+  sql: string;
+  connection_id: number | null;
+  chart_type: string;
+  chart_mode: string;
+  chart_config_json: string;
+  chart_python_code: string | null;
+}
+
+/** Bodies of the queries being cloned, fetched in one round trip. */
+function loadSources(userId: number, ids: number[]): Map<number, SourceQueryRow> {
+  if (ids.length === 0) return new Map();
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT id, name, sql, connection_id, chart_type, chart_mode,
+              chart_config_json, chart_python_code
+       FROM queries WHERE user_id = ? AND id IN (${placeholders})`,
+    )
+    .all(userId, ...ids) as SourceQueryRow[];
+  return new Map(rows.map((r) => [r.id, r]));
 }
 
 const propose_new_folder: ToolHandler = (ctx, input) => {
@@ -95,14 +121,39 @@ const propose_new_folder: ToolHandler = (ctx, input) => {
   if (seeds.length > 100) {
     return { error: "capped at 100 queries per folder proposal", success: false };
   }
+  // Resolve any clone sources up front — one query for the whole batch.
+  const copyIds = seeds
+    .map((s) => Number(s.copy_from_query_id))
+    .filter((n) => Number.isFinite(n));
+  const sources = loadSources(ctx.userId, copyIds);
+  const missingSources = copyIds.filter((id) => !sources.has(id));
+  if (missingSources.length > 0) {
+    return {
+      error: `not your queries: ${missingSources.join(", ")}. Use list_saved_queries first.`,
+      success: false,
+    };
+  }
+
   const connCache = new Map<number, string>();
   const queries = [];
   for (const [i, s] of seeds.entries()) {
-    const qName = String(s.name ?? "").trim();
-    const sql = String(s.sql ?? "").trim();
-    const connId = Number(s.connection_id);
+    // Cloning: inherit everything from the source, then let any field
+    // supplied alongside it win (that's how "same queries, new connection"
+    // works without restating the SQL).
+    const src = Number.isFinite(Number(s.copy_from_query_id))
+      ? sources.get(Number(s.copy_from_query_id))
+      : undefined;
+
+    const qName = String(s.name ?? src?.name ?? "").trim();
+    const sql = String(s.sql ?? src?.sql ?? "").trim();
+    const connId = Number(s.connection_id ?? src?.connection_id);
     if (!qName || !sql) {
-      return { error: `queries[${i}]: name and sql are required`, success: false };
+      return {
+        error:
+          `queries[${i}]: name and sql are required `
+          + "(or pass copy_from_query_id to inherit them)",
+        success: false,
+      };
     }
     if (!Number.isFinite(connId)) {
       return { error: `queries[${i}] ("${qName}"): connection_id is required`, success: false };
@@ -126,10 +177,14 @@ const propose_new_folder: ToolHandler = (ctx, input) => {
       sql,
       connection_id: connId,
       connection_name: connCache.get(connId)!,
-      chart_type: (s.chart_type as string | undefined) ?? "bar",
-      chart_config: (s.chart_config as Record<string, unknown> | undefined) ?? {},
-      chart_mode: (s.chart_mode as string | undefined) ?? "picker",
-      chart_python_code: (s.chart_python_code as string | undefined) ?? null,
+      chart_type: (s.chart_type as string | undefined) ?? src?.chart_type ?? "bar",
+      chart_config:
+        (s.chart_config as Record<string, unknown> | undefined)
+        ?? (src ? (safeParse(src.chart_config_json) as Record<string, unknown>) : {}),
+      chart_mode: (s.chart_mode as string | undefined) ?? src?.chart_mode ?? "picker",
+      chart_python_code:
+        (s.chart_python_code as string | undefined) ?? src?.chart_python_code ?? null,
+      copied_from: src ? { id: src.id, name: src.name } : null,
     });
   }
 
@@ -194,6 +249,14 @@ const propose_move_queries: ToolHandler = (ctx, input) => {
 const seedQuerySchema = {
   type: "object" as const,
   properties: {
+    copy_from_query_id: {
+      type: "number",
+      description:
+        "Clone an existing saved query by id. Name, SQL, and chart settings are inherited, "
+        + "so you do NOT need to restate them — pass only the fields you want to change "
+        + "(typically connection_id, and a new name). Strongly preferred over pasting SQL: "
+        + "it is exact and costs almost no output tokens.",
+    },
     name: { type: "string" },
     sql: { type: "string" },
     connection_id: { type: "number", description: "Id from list_connections" },
@@ -235,8 +298,9 @@ export const folderTools: ToolModule = {
           queries: {
             type: "array",
             description:
-              "Saved queries to create inside the new folder. To duplicate existing queries, "
-              + "read their full SQL with get_saved_queries first.",
+              "Saved queries to create inside the new folder. To duplicate existing ones, set "
+              + "copy_from_query_id on each and override only what changes (e.g. connection_id) "
+              + "— do not paste their SQL.",
             items: seedQuerySchema,
           },
           rationale: { type: "string" },

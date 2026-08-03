@@ -104,6 +104,7 @@ export type Proposal =
           name: string; sql: string; connection_id: number; connection_name: string;
           chart_type: string; chart_config: Record<string, unknown>;
           chart_mode: string; chart_python_code: string | null;
+          copied_from: { id: number; name: string } | null;
         }>;
       };
     }

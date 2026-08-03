@@ -285,7 +285,10 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
         </div>
         <ul v-if="p.folder.queries.length" class="prop__list">
           <li v-for="(q, i) in p.folder.queries" :key="i">
-            <span class="prop__list-name">{{ q.name }}</span>
+            <span class="prop__list-name">
+              {{ q.name }}
+              <em v-if="q.copied_from" class="prop__list-src">copy of “{{ q.copied_from.name }}”</em>
+            </span>
             <span class="prop__list-meta">{{ q.connection_name }}</span>
           </li>
         </ul>
@@ -730,6 +733,12 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
   color: var(--fg-subtle);
   font-size: 11px;
   flex-shrink: 0;
+}
+.prop__list-src {
+  color: var(--fg-subtle);
+  font-size: 10.5px;
+  font-style: normal;
+  margin-left: 6px;
 }
 .prop__newq-sql, .prop__delete-sql {
   margin: 4px 0 0;

@@ -44,7 +44,8 @@ Modifying the user's saved queries / charts:
 - NEVER mutate state silently in prose. If the user asks you to edit, create, or delete a saved query or its chart settings, you MUST call the corresponding \`propose_*\` tool. The UI renders a Cursor-style diff and lets the user Accept/Reject.
 - Discovery order: \`list_saved_queries\` (find ids) → \`get_saved_queries\` if you need the actual SQL or chart python → call the relevant propose tool with a one-line \`rationale\`.
 - \`list_saved_queries\` returns summaries only, and takes \`folder_id\` / \`connection_id\` / \`name_contains\` filters — use them rather than listing everything. If a result comes back with a \`_truncated\` field, it was too big: narrow the filters and call again instead of guessing at what you didn't see.
-- To duplicate queries onto a different connection, read the originals with \`get_saved_queries\`, then create copies with the new \`connection_id\`. To repoint the existing ones in place instead, use \`propose_bulk_query_edit\`.
+- To duplicate queries onto a different connection, use \`copy_from_query_id\` in \`propose_new_folder\` and override only \`connection_id\` (plus a new name if wanted). Never paste the original SQL back out — cloning by id is exact and avoids running out of output space. To repoint the existing queries in place instead, use \`propose_bulk_query_edit\`.
+- Keep tool inputs small. If a batch is large, split it across several proposals rather than emitting one huge call.
 - For editing existing query SQL/name/connection: \`propose_query_edit\` (set \`new_connection_id\` to repoint a query at another data source without rewriting SQL).
 - For repointing many queries at once: \`propose_bulk_query_edit\` with a list of \`{query_id, new_connection_id}\` edits. The user gets one Accept/Reject card listing every change.
 - For changing chart_type / chart_config / python code on a saved query: \`propose_chart_change\`.
@@ -218,6 +219,111 @@ function clampToolResult(result: unknown): string {
   });
 }
 
+/**
+ * Drop `tool_use` blocks that never got a `tool_result`, and vice versa.
+ *
+ * The API rejects the whole conversation if an assistant `tool_use` isn't
+ * answered in the very next message ("tool_use ids were found without
+ * tool_result blocks"). A turn that ends between those two messages — the
+ * model running out of output tokens mid-tool-call, or the request being
+ * aborted — leaves exactly that shape, and because the history is persisted,
+ * every later message in the conversation fails too. One bad turn used to
+ * brick the thread permanently.
+ *
+ * Running this on load repairs conversations already in that state; running
+ * it before save stops new ones being written.
+ */
+export function sanitizeHistory(history: MessageParam[]): MessageParam[] {
+  const out: MessageParam[] = [];
+
+  for (let i = 0; i < history.length; i++) {
+    const msg = history[i];
+    if (!msg) continue;
+    const content = msg.content;
+    if (typeof content === "string" || !Array.isArray(content)) {
+      out.push(msg);
+      continue;
+    }
+
+    if (msg.role === "assistant") {
+      const toolUseIds = content
+        .filter((b): b is ToolUseBlock => (b as { type?: string }).type === "tool_use")
+        .map((b) => b.id);
+      if (toolUseIds.length === 0) {
+        out.push(msg);
+        continue;
+      }
+      // Answers must live in the immediately following message.
+      const next = history[i + 1];
+      const answered = new Set<string>();
+      if (next && next.role === "user" && Array.isArray(next.content)) {
+        for (const b of next.content) {
+          const blk = b as { type?: string; tool_use_id?: string };
+          if (blk.type === "tool_result" && blk.tool_use_id) answered.add(blk.tool_use_id);
+        }
+      }
+      const kept = content.filter((b) => {
+        const blk = b as { type?: string; id?: string };
+        return blk.type !== "tool_use" || (blk.id != null && answered.has(blk.id));
+      });
+      // An assistant turn that was *only* an unanswered tool call carries no
+      // information worth replaying — and a lone thinking block isn't a valid
+      // message on its own.
+      const hasSubstance = kept.some((b) => {
+        const t = (b as { type?: string }).type;
+        return t === "text" || t === "tool_use";
+      });
+      if (hasSubstance) out.push({ role: msg.role, content: kept });
+      continue;
+    }
+
+    // User side: strip tool_results whose tool_use didn't survive above.
+    const prev = out[out.length - 1];
+    const prevIds = new Set<string>();
+    if (prev && prev.role === "assistant" && Array.isArray(prev.content)) {
+      for (const b of prev.content) {
+        const blk = b as { type?: string; id?: string };
+        if (blk.type === "tool_use" && blk.id) prevIds.add(blk.id);
+      }
+    }
+    const kept = content.filter((b) => {
+      const blk = b as { type?: string; tool_use_id?: string };
+      return blk.type !== "tool_result"
+        || (blk.tool_use_id != null && prevIds.has(blk.tool_use_id));
+    });
+    if (kept.length > 0) out.push({ role: msg.role, content: kept });
+  }
+
+  return mergeConsecutive(out);
+}
+
+/**
+ * Fold consecutive same-role messages together.
+ *
+ * Dropping a trailing assistant turn (above) can leave the history ending on
+ * the user's tool_result message, and the next send appends another user
+ * message right after it. Merging keeps the transcript strictly alternating
+ * rather than relying on the API to combine them for us.
+ */
+function mergeConsecutive(msgs: MessageParam[]): MessageParam[] {
+  const asBlocks = (c: MessageParam["content"]): ContentBlockParam[] =>
+    typeof c === "string" ? [{ type: "text", text: c }] : [...c];
+
+  const out: MessageParam[] = [];
+  for (const msg of msgs) {
+    const prev = out[out.length - 1];
+    if (prev && prev.role === msg.role) {
+      out[out.length - 1] = {
+        role: msg.role,
+        content: [...asBlocks(prev.content), ...asBlocks(msg.content)],
+      };
+    } else {
+      out.push(msg);
+    }
+  }
+  return out;
+}
+
 interface ConversationRow {
   id: number;
   title: string;
@@ -233,15 +339,23 @@ function loadConversation(userId: number, id: number | null | undefined): {
     .prepare("SELECT id, title, messages_json FROM conversations WHERE id = ? AND user_id = ?")
     .get(id, userId) as ConversationRow | undefined;
   if (!row) return { id: null, history: [] };
-  return { id: row.id, history: JSON.parse(row.messages_json) as MessageParam[] };
+  // Repair on the way in, so a thread bricked by an earlier interrupted turn
+  // becomes usable again instead of 400-ing on every subsequent message.
+  return {
+    id: row.id,
+    history: sanitizeHistory(JSON.parse(row.messages_json) as MessageParam[]),
+  };
 }
 
 function saveConversation(
   userId: number,
   id: number | null,
   title: string,
-  history: MessageParam[],
+  rawHistory: MessageParam[],
 ): number {
+  // Never persist an unanswered tool_use — that's what makes a thread
+  // permanently unusable on the next send.
+  const history = sanitizeHistory(rawHistory);
   if (id) {
     db.prepare(
       "UPDATE conversations SET messages_json = ?, updated_at = strftime('%s', 'now') WHERE id = ? AND user_id = ?",
@@ -304,8 +418,12 @@ chatRouter.post("/send", async (req, res) => {
 
   const userId = req.user!.sub;
   const conv = loadConversation(userId, parsed.data.conversation_id ?? null);
-  const history: MessageParam[] = [...conv.history];
-  history.push({ role: "user", content: parsed.data.message });
+  // Normalise once with the new message included, so a repaired history that
+  // now ends on a user turn merges with it instead of doubling up.
+  const history: MessageParam[] = sanitizeHistory([
+    ...conv.history,
+    { role: "user", content: parsed.data.message },
+  ]);
   send("user_saved", { conversation_id: conv.id });
 
   const client = new Anthropic({ apiKey });
@@ -332,7 +450,10 @@ chatRouter.post("/send", async (req, res) => {
       }
       const stream = client.messages.stream({
         model,
-        max_tokens: 4096,
+        // 4096 also had to cover thinking, so a proposal carrying several
+        // queries' SQL would run out mid-tool-call. See the max_tokens branch
+        // below for what that used to do to the conversation.
+        max_tokens: 16_384,
         system: systemBlocks,
         tools: chatToolsForRequest(),
         messages: history,
@@ -380,7 +501,23 @@ chatRouter.post("/send", async (req, res) => {
         (b): b is ToolUseBlock => b.type === "tool_use",
       );
 
-      if (toolUses.length === 0 || final.stop_reason !== "tool_use") {
+      // Tool calls present but the turn didn't end *because* of them — the
+      // model was cut off (usually max_tokens) partway through emitting the
+      // block. Its input JSON is incomplete, so we can't run it, and leaving
+      // it in history would orphan the tool_use. Drop the message and say so.
+      if (toolUses.length > 0 && final.stop_reason !== "tool_use") {
+        history.pop();
+        send("error", {
+          error:
+            final.stop_reason === "max_tokens"
+              ? "The assistant ran out of output space while building a tool call. "
+                + "Ask it to work in smaller batches (e.g. fewer queries at a time)."
+              : `Tool call was cut short (stop_reason: ${final.stop_reason}). Try again.`,
+        });
+        break;
+      }
+
+      if (toolUses.length === 0) {
         const text = assistantBlocks
           .filter((b): b is TextBlock => b.type === "text")
           .map((b) => b.text)
