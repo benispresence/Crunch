@@ -14,6 +14,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from crunch.visualization.base import ChartConfig, ChartRenderer, RenderResult
+from crunch.visualization.plotly_theme import TEMPLATE_NAME, install as install_template
+
+install_template(set_default=True)
 
 
 class PlotlyRenderer(ChartRenderer):
@@ -221,7 +224,9 @@ class PlotlyRenderer(ChartRenderer):
         """Apply common layout settings."""
         layout_updates = {
             "title": config.title or None,
-            "template": config.template or "plotly_white",
+            # Neutral by default so the client theme decides the chrome —
+            # see crunch.visualization.plotly_theme.
+            "template": config.template or TEMPLATE_NAME,
         }
         
         # Axis labels from config or options

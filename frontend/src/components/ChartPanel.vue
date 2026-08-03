@@ -2,6 +2,7 @@
 import Plotly from "plotly.js-dist-min";
 import { onClickOutside } from "@vueuse/core";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { chartTemplate, themedSpec } from "@/composables/chartTheme";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
 import CookieLoader from "./CookieLoader.vue";
@@ -37,14 +38,10 @@ let fitTimers: number[] = [];
 let lastFitW = 0;
 let lastFitH = 0;
 
+// Panel chrome only — every colour comes from the theme template that
+// themedLayout() injects (see composables/chartTheme.ts).
 const baseLayout: Record<string, unknown> = {
-  paper_bgcolor: "rgba(0,0,0,0)",
-  plot_bgcolor: "rgba(0,0,0,0)",
-  font: { family: "Inter, sans-serif", color: "#a8a098", size: 11 },
   margin: { t: 24, r: 16, b: 36, l: 44 },
-  xaxis: { gridcolor: "#36312b", zerolinecolor: "#36312b" },
-  yaxis: { gridcolor: "#36312b", zerolinecolor: "#36312b" },
-  colorway: ["#d97757", "#7aa2c8", "#7fb069", "#e8b04c", "#c8a2d4"],
   autosize: true,
 };
 
@@ -232,18 +229,21 @@ watch(
   },
 );
 
+// Light/dark toggle: repaint the same spec through the new template. No
+// re-query, no engine round-trip — Plotly.react diffs the layout in place.
+watch(chartTemplate, () => {
+  void renderPlotly(chartHost.value, activeSpec.value);
+});
+
 /**
- * Build layout without baked-in size. Python figs often ship fixed width/
- * height; we always size from the live container instead (see fitPlotly).
+ * Theme the figure and strip baked-in size. Python figs often ship fixed
+ * width/height; we always size from the live container instead (see fitPlotly).
  */
-function baseFluidLayout(specLayout: Record<string, unknown> | undefined): Record<string, unknown> {
-  const layout: Record<string, unknown> = {
-    ...baseLayout,
-    ...(specLayout || {}),
-  };
-  delete layout.width;
-  delete layout.height;
-  return layout;
+function fluidThemedSpec(spec: { data: unknown[]; layout: Record<string, unknown> }) {
+  const themed = themedSpec(spec, baseLayout);
+  delete themed.layout.width;
+  delete themed.layout.height;
+  return themed;
 }
 
 function containerSize(): { w: number; h: number } | null {
@@ -325,7 +325,7 @@ async function renderPlotly(
     return;
   }
   const size = containerSize();
-  const layout = baseFluidLayout(spec.layout as Record<string, unknown> | undefined);
+  const { data, layout } = fluidThemedSpec(spec);
   if (size) {
     layout.width = size.w;
     layout.height = size.h;
@@ -338,7 +338,7 @@ async function renderPlotly(
   try {
     await Plotly.react(
       host,
-      spec.data as Parameters<typeof Plotly.react>[1],
+      data as Parameters<typeof Plotly.react>[1],
       layout,
       plotlyConfig,
     );

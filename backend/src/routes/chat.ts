@@ -26,6 +26,20 @@ Behavior rules:
 - For numeric results, format them readably (commas, units).
 - Wrap any SQL or Python you produce in fenced code blocks with the language tag.
 
+Writing chart code (theme-aware charts):
+- Crunch has a light and a dark theme and the user flips between them at will. One saved figure must serve both. Never pick a single "compromise" shade that is merely survivable on both backgrounds — that produces washed-out charts. Colours should genuinely flip: dark text on the light canvas, light text on the dark one.
+- **Leave it unset and it is themed for you.** Do NOT set \`template=\` (no "plotly_white" / "plotly_dark"), \`paper_bgcolor\`, \`plot_bgcolor\`, \`font_color\`, \`gridcolor\`, \`zerolinecolor\`, \`linecolor\`, tick/legend/colorbar/annotation text colours, or table \`fill_color\`. The client fills each of these from the active theme. Likewise skip \`width\`/\`height\` — the panel sizes the figure.
+- **To pin a colour that must still flip, use a theme token.** A token is a plain string in any Plotly colour slot; the client resolves it at paint time.
+  - \`"$fg"\`, \`"$fg-muted"\`, \`"$accent"\`, \`"$success"\`, \`"$error"\`, \`"$warn"\`, \`"$info"\`, \`"$grid"\`, \`"$border"\`, \`"$bg-elev"\`, and \`"$series0"\`…\`"$series7"\` (the categorical palette, in order) are built in.
+  - \`theme_color(light_hex, dark_hex)\` — a one-off pair, e.g. \`fig.add_annotation(font_color=theme_color("#b4552f", "#e08a63"))\`.
+  - \`theme_palette(light={...}, dark={...}, both={...})\` — declare named colours on the figure, then reference them anywhere as \`$name\`:
+    \`fig.update_layout(**theme_palette(light={"ehex": "#b4552f"}, dark={"ehex": "#e08a63"}))\` then \`line=dict(color="$ehex")\`. Names declared here shadow the built-ins, so a chart can rebind \`$accent\` to its own brand colour.
+  - Both helpers are pre-injected into the sandbox — no import needed.
+- When you do write an explicit light/dark pair, choose each side for its own background: the light value should be a deep, saturated hue (roughly #b4552f, #3c6f9e, #4e7c3a) and the dark value a lifted, brighter one (#e08a63, #8fb8dd, #90c47c). Same hue, different lightness.
+- Series colours: prefer leaving them unset entirely so the figure inherits the theme's colorway, which is already tuned per theme. Reach for \`$series0\`…\`$series7\` only when you need a specific slot (e.g. to keep two charts' series aligned).
+- Continuous scales: leave \`color_continuous_scale\` unset to inherit the theme's ramp, or pick a perceptually uniform one (Viridis, Cividis).
+- Raw hexes and named CSS colours are a last resort — they do not flip. If the user explicitly asks for one fixed colour, honour it, and say in your summary that it will not follow the theme.
+
 Modifying the user's saved queries / charts:
 - NEVER mutate state silently in prose. If the user asks you to edit, create, or delete a saved query or its chart settings, you MUST call the corresponding \`propose_*\` tool. The UI renders a Cursor-style diff and lets the user Accept/Reject.
 - Discovery order: \`list_saved_queries\` (find ids) → call the relevant propose tool with a one-line \`rationale\`.

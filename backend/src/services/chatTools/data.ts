@@ -83,7 +83,7 @@ export const dataTools: ToolModule = {
     {
       name: "run_python",
       description:
-        "Run user Python code in the sandbox to transform data or build a custom plotly figure. Code receives variable `df` (pandas DataFrame) and should assign a plotly Figure to variable `fig`.",
+        "Run user Python code in the sandbox to transform data or build a custom plotly figure. Code receives variable `df` (pandas DataFrame) and should assign a plotly Figure to variable `fig`. Keep the figure theme-aware: no `template=`, background/font/grid colours, or width/height — the app themes and sizes it. To pin a colour that must still flip between light and dark, use a theme token (`\"$accent\"`, `\"$series0\"`, `theme_color(light_hex, dark_hex)`, or `theme_palette(...)`), never a raw hex.",
       input_schema: {
         type: "object",
         properties: {

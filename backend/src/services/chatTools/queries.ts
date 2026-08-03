@@ -380,7 +380,11 @@ export const queryTools: ToolModule = {
             description: "Picker field bindings, e.g. {x: 'date', y: 'value'}",
             additionalProperties: { type: "string" },
           },
-          chart_python_code: { type: "string", description: "Custom python code (sets `fig`). Switches mode to python." },
+          chart_python_code: {
+            type: "string",
+            description:
+              "Custom python code (sets `fig`). Switches mode to python. Must be theme-aware: no `template=`, background/font/grid/tick colours, or width/height. Pin a colour that flips with the theme via a token — \"$accent\", \"$series0\", theme_color(light_hex, dark_hex), or theme_palette(light={...}, dark={...}) — never a raw hex.",
+          },
           chart_mode: { type: "string", description: "'picker' or 'python'" },
           rationale: { type: "string" },
         },
@@ -401,7 +405,11 @@ export const queryTools: ToolModule = {
           chart_type: { type: "string" },
           chart_config: { type: "object", additionalProperties: { type: "string" } },
           chart_mode: { type: "string", description: "'picker' or 'python'" },
-          chart_python_code: { type: "string" },
+          chart_python_code: {
+            type: "string",
+            description:
+              "Custom python code (sets `fig`). Switches mode to python. Must be theme-aware: no `template=`, background/font/grid/tick colours, or width/height. Pin a colour that flips with the theme via a token — \"$accent\", \"$series0\", theme_color(light_hex, dark_hex), or theme_palette(light={...}, dark={...}) — never a raw hex.",
+          },
           rationale: { type: "string" },
         },
         required: ["name", "sql", "connection_id"],

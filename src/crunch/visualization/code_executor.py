@@ -242,6 +242,8 @@ class CodeExecutor:
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
 
+        from crunch.visualization.theme_tokens import sandbox_namespace as theme_helpers
+
         controlled_import = cls._make_controlled_import(allowed_modules)
 
         namespace = {
@@ -266,6 +268,10 @@ class CodeExecutor:
             "make_subplots": make_subplots,
             "datetime": datetime,
             "math": math,
+
+            # Two-theme colour helpers — available without an import so a
+            # snippet can pin a colour that still flips with the user's theme.
+            **theme_helpers(),
 
             # Built-in functions (safe subset)
             "len": len,

@@ -2,6 +2,7 @@
 import Plotly from "plotly.js-dist-min";
 import { onMounted, ref, watch } from "vue";
 import { api } from "@/api/client";
+import { chartTemplate, themeColor, themedLayout } from "@/composables/chartTheme";
 import CookieLoader from "./CookieLoader.vue";
 
 /**
@@ -32,12 +33,14 @@ const loading = ref(false);
 const error = ref<string | null>(null);
 const runs = ref<RunRow[]>([]);
 
-const STATUS_COLOR: Record<string, string> = {
-  success: "#7fb069",
-  failed: "#e07a5f",
-  running: "#7aa2c8",
-  cancelled: "#a8a098",
-  pending: "#d4a44e",
+// Theme tokens, not hexes — resolved per theme at render time so the bars
+// stay legible on both the near-black and the near-white canvas.
+const STATUS_TOKEN: Record<string, string> = {
+  success: "success",
+  failed: "error",
+  running: "info",
+  cancelled: "fg-subtle",
+  pending: "warn",
 };
 
 async function load() {
@@ -84,7 +87,7 @@ async function render() {
       // bars without using figure_factory.
       base: items.map((r) => new Date(r.started_at * 1000).toISOString()),
       y: items.map((r) => r.pipeline_name),
-      marker: { color: STATUS_COLOR[status] ?? "#888" },
+      marker: { color: themeColor(STATUS_TOKEN[status] ?? "fg-muted") },
       customdata: items.map((r) => [
         r.id,
         r.rows_loaded ?? "—",
@@ -107,27 +110,17 @@ async function render() {
   await Plotly.react(
     host.value,
     data as Parameters<typeof Plotly.react>[1],
-    {
-      barmode: "overlay",
-      paper_bgcolor: "rgba(0,0,0,0)",
-      plot_bgcolor: "rgba(0,0,0,0)",
-      font: { family: "Inter, sans-serif", color: "#a8a098", size: 11 },
-      margin: { t: 28, r: 24, b: 36, l: 200 },
-      xaxis: {
-        type: "date",
-        gridcolor: "#36312b",
-        zerolinecolor: "#36312b",
-        showgrid: true,
+    themedLayout(
+      {
+        barmode: "overlay",
+        xaxis: { type: "date", showgrid: true },
+        yaxis: { autorange: "reversed" },
+        legend: { orientation: "h", y: 1.1, x: 0 },
+        showlegend: true,
+        height: Math.max(220, 32 * new Set(runs.value.map((r) => r.pipeline_name)).size + 80),
       },
-      yaxis: {
-        gridcolor: "#36312b",
-        automargin: true,
-        autorange: "reversed",
-      },
-      legend: { orientation: "h", y: 1.1, x: 0 },
-      showlegend: true,
-      height: Math.max(220, 32 * new Set(runs.value.map((r) => r.pipeline_name)).size + 80),
-    },
+      { margin: { t: 28, r: 24, b: 36, l: 200 } },
+    ),
     { displayModeBar: false, responsive: true },
   );
 }
@@ -142,6 +135,8 @@ function humanDuration(seconds: number): string {
 
 onMounted(load);
 watch(lookback, load);
+// Repaint on light/dark toggle without re-fetching the run history.
+watch(chartTemplate, () => void render());
 </script>
 
 <template>

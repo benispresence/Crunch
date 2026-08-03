@@ -56,6 +56,15 @@ from crunch.query.template import (  # noqa: E402
 from crunch.query.validator import QueryValidator  # noqa: E402
 from crunch.visualization.code_executor import CodeExecutor  # noqa: E402
 from crunch.visualization.factory import ChartFactory  # noqa: E402
+from crunch.visualization.plotly_theme import install as install_plotly_theme  # noqa: E402
+from crunch.visualization.theme_tokens import install_token_validator  # noqa: E402
+
+# Make the neutral template the process-wide Plotly default before any figure
+# is built — including figures from sandboxed user/agent code, which runs
+# in-process. The SPA layers the active light/dark palette on top.
+install_plotly_theme(set_default=True)
+# …and let "$accent"-style theme tokens through plotly's colour validation.
+install_token_validator()
 
 _DEV_ENGINE_TOKEN = "dev-engine-token"
 ENGINE_TOKEN = os.environ.get("PYTHON_ENGINE_TOKEN", _DEV_ENGINE_TOKEN)
