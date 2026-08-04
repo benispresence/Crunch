@@ -38,6 +38,8 @@ interface SettingsState {
   anthropic_model: string;
   known_models: ModelOption[];
   public_registration_enabled: boolean;
+  web_search_enabled: boolean;
+  web_search_max_uses: number;
 }
 const settings = ref<SettingsState | null>(null);
 const apiKeyInput = ref("");
@@ -68,6 +70,20 @@ async function saveSettings() {
     apiKeyInput.value = "";
     modelInput.value = s.anthropic_model;
     settingsToast.value = "Saved.";
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    settingsBusy.value = false;
+  }
+}
+
+async function updateWebSearch(patch: Record<string, unknown>, note: string) {
+  settingsBusy.value = true;
+  error.value = "";
+  try {
+    settings.value = await api.put<SettingsState>("/admin/settings", patch);
+    settingsToast.value = note;
+    setTimeout(() => (settingsToast.value = ""), 3500);
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -580,6 +596,50 @@ async function deleteUser(u: AdminUser) {
               {{ settingsBusy ? "Saving…" : "Save settings" }}
             </button>
           </div>
+        </div>
+
+        <div class="settings__group">
+          <h3>Web search</h3>
+          <p class="settings__hint">
+            Lets the assistant look things up on the web — a data source's API docs,
+            a SQL dialect quirk, a current figure — via Anthropic's server-side search.
+            It never sees your warehouse data. Searches are billed per use, so the cap
+            below bounds what a single question can cost.
+          </p>
+          <label class="settings__toggle">
+            <input
+              type="checkbox"
+              :checked="settings.web_search_enabled"
+              :disabled="settingsBusy"
+              @change="updateWebSearch(
+                { web_search_enabled: ($event.target as HTMLInputElement).checked },
+                ($event.target as HTMLInputElement).checked
+                  ? 'Web search enabled.'
+                  : 'Web search disabled — the assistant will answer from your data only.',
+              )"
+            />
+            <span>Allow the assistant to search the web</span>
+            <span
+              class="settings__pill"
+              :class="settings.web_search_enabled ? 'settings__pill--on' : 'settings__pill--off'"
+            >
+              {{ settings.web_search_enabled ? "ENABLED" : "DISABLED" }}
+            </span>
+          </label>
+          <label v-if="settings.web_search_enabled" class="settings__field">
+            <span>Max searches per message</span>
+            <input
+              type="number"
+              min="1"
+              max="20"
+              :value="settings.web_search_max_uses"
+              :disabled="settingsBusy"
+              @change="updateWebSearch(
+                { web_search_max_uses: Number(($event.target as HTMLInputElement).value) },
+                'Search cap updated.',
+              )"
+            />
+          </label>
         </div>
 
         <div class="settings__group">

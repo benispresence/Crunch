@@ -69,6 +69,11 @@ export function useEntityLabels() {
 
 /** Friendly tool names for the agent tool strip. */
 export const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  web_search: "Search the web",
+  list_folders: "List collections",
+  get_saved_queries: "Read queries",
+  propose_new_folder: "Propose new collection",
+  propose_move_queries: "Propose move queries",
   list_connections: "List connections",
   list_tables: "List tables",
   describe_table: "Describe table",

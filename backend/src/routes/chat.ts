@@ -13,6 +13,7 @@ import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { chatToolsForRequest, runTool } from "../services/chatTools.js";
 import { getAnthropicApiKey, getAnthropicModel } from "../services/settings.js";
+import { readWebSearchResult, webSearchTool } from "../services/webSearch.js";
 
 export const chatRouter = Router();
 chatRouter.use(requireAuth);
@@ -25,6 +26,13 @@ Behavior rules:
 - Always inspect the schema (\`list_connections\` then a small \`SELECT\` against information_schema-style tables) before writing larger queries.
 - For numeric results, format them readably (commas, units).
 - Wrap any SQL or Python you produce in fenced code blocks with the language tag.
+
+Web search:
+- \`web_search\` runs on Anthropic's servers and returns results directly — you do not need a proposal for it, and it never touches the user's data.
+- Search when the answer depends on information you can't get from the user's warehouse or your own knowledge: current figures or events, a data source's API/schema documentation, or dialect-specific SQL and library behaviour you are unsure about. Prefer searching over guessing at a syntax you half-remember.
+- Do NOT search for anything answerable from the user's own data — query it instead. \`execute_sql\` and \`list_saved_queries\` are the sources of truth for their warehouse; the web is not.
+- Searches are billed per use and capped per turn, so keep them targeted: one or two precise queries beat a broad sweep.
+- Cite what you used. When a claim rests on a search result, name the source inline so the user can check it.
 
 Writing chart code (theme-aware charts):
 - Crunch has a light and a dark theme and the user flips between them at will. One saved figure must serve both. Never pick a single "compromise" shade that is merely survivable on both backgrounds — that produces washed-out charts. Colours should genuinely flip: dark text on the light canvas, light text on the dark one.
@@ -164,6 +172,39 @@ function formatWorkspaceContext(ctx: z.infer<typeof workspaceContextSchema>): st
     "When the user says \"this query\", \"current chart\", \"add a limit\", etc., assume they mean the active_saved_query above. Use propose_query_edit / propose_chart_change with that query_id rather than asking which one. When they say \"this dashboard\", target active_dashboard_id. If a task spans both surfaces (e.g. \"add a query and put it on the dashboard\"), chain the propose_* tools and finish with propose_navigate to take the user where they need to go.",
   );
   return lines.join("\n");
+}
+
+/**
+ * Replay server-side tool activity onto the SSE stream.
+ *
+ * Anthropic runs web search itself and hands back the finished blocks, so there
+ * is no request/response pair for the UI to observe the way there is for our own
+ * tools. This synthesises the same `tool_call` / `tool_result` events off the
+ * completed message, letting the existing tool list render searches with no
+ * special-casing on the client.
+ */
+function emitServerToolActivity(
+  blocks: ContentBlockParam[] | Array<{ type: string; [k: string]: unknown }>,
+  send: (event: string, data: unknown) => void,
+): void {
+  // The dynamic-filtering search variant runs code execution internally, so a
+  // single search produces extra `server_tool_use` blocks (the filtering script)
+  // answered by `code_execution_tool_result` rather than a search result.
+  // Surfacing those would strand tool calls in "running" forever — and they're
+  // plumbing the user has no use for. Track the real searches and skip the rest.
+  const searchIds = new Set<string>();
+  for (const raw of blocks as Array<Record<string, unknown>>) {
+    if (raw.type === "server_tool_use" && raw.name === "web_search") {
+      searchIds.add(String(raw.id));
+      send("tool_call", { id: raw.id, name: "web_search", input: raw.input });
+    }
+  }
+  for (const raw of blocks as Array<Record<string, unknown>>) {
+    if (raw.type !== "web_search_tool_result") continue;
+    const id = String(raw.tool_use_id);
+    if (!searchIds.has(id)) continue;
+    send("tool_result", { id, name: "web_search", result: readWebSearchResult(raw.content) });
+  }
 }
 
 const TOOL_RESULT_LIMIT = 60_000;
@@ -429,8 +470,15 @@ chatRouter.post("/send", async (req, res) => {
   const client = new Anthropic({ apiKey });
   const wantThinking = parsed.data.thinking ?? true;
 
+  const searchTool = webSearchTool(model);
+
   let turn = 0;
   const maxTurns = 8;
+  // Server-side tools run their own sampling loop; when it hits Anthropic's
+  // iteration cap the turn comes back `pause_turn` and we resume it. Capped
+  // separately from maxTurns so a long research turn can't starve tool turns.
+  let pauseResumes = 0;
+  const maxPauseResumes = 5;
 
   try {
     while (turn < maxTurns) {
@@ -455,7 +503,9 @@ chatRouter.post("/send", async (req, res) => {
         // below for what that used to do to the conversation.
         max_tokens: 16_384,
         system: systemBlocks,
-        tools: chatToolsForRequest(),
+        // Anthropic's server-side web search runs on their infrastructure, so
+        // it sits alongside our own tools but never reaches runTool().
+        tools: [...chatToolsForRequest(), ...(searchTool ? [searchTool] : [])],
         messages: history,
         // Claude 4.x uses adaptive thinking with an effort knob. The older
         // `{ type: "enabled", budget_tokens }` shape returns 400 on Sonnet 4.6+.
@@ -476,6 +526,12 @@ chatRouter.post("/send", async (req, res) => {
             send("text_start", { index: event.index });
           } else if (block.type === "tool_use") {
             send("tool_start", { index: event.index, id: block.id, name: block.name });
+          } else if (block.type === "server_tool_use" && block.name === "web_search") {
+            // Show "searching…" the moment it starts. The query itself streams
+            // in as input_json_delta, so it's filled in after finalMessage().
+            // Non-search server tools are dynamic-filtering plumbing — see
+            // emitServerToolActivity.
+            send("tool_call", { id: block.id, name: "web_search", input: undefined });
           }
         } else if (event.type === "content_block_delta") {
           const delta = event.delta;
@@ -496,6 +552,24 @@ chatRouter.post("/send", async (req, res) => {
       const final = await stream.finalMessage();
       const assistantBlocks = final.content;
       history.push({ role: "assistant", content: assistantBlocks });
+
+      emitServerToolActivity(assistantBlocks, send);
+
+      // Server-side tools hit Anthropic's internal iteration cap. Resending the
+      // conversation as-is resumes them — deliberately with no extra user
+      // message, which the API would read as a new instruction.
+      if (final.stop_reason === "pause_turn") {
+        pauseResumes += 1;
+        if (pauseResumes > maxPauseResumes) {
+          send("error", {
+            error: `Web research did not converge after ${maxPauseResumes} continuations.`,
+          });
+          break;
+        }
+        turn -= 1; // a resumed turn is the same turn, not a new one
+        send("turn_paused", { turn, resume: pauseResumes });
+        continue;
+      }
 
       const toolUses = assistantBlocks.filter(
         (b): b is ToolUseBlock => b.type === "tool_use",

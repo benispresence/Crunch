@@ -424,14 +424,24 @@ export const useChatStore = defineStore("chat", {
         case "tools_running":
           turn.toolsAggregated = Boolean(d.aggregated);
           break;
-        case "tool_call":
-          turn.toolCalls.push({
-            id: String(d.id),
-            name: String(d.name),
-            input: d.input,
-            status: "running",
-          });
+        case "tool_call": {
+          // Upsert, not push: server-side tools (web search) announce themselves
+          // when the block opens and then fill in their input once it's fully
+          // streamed, so the same id arrives twice.
+          const id = String(d.id);
+          const existing = turn.toolCalls.find((c) => c.id === id);
+          if (existing) {
+            if (d.input !== undefined) existing.input = d.input;
+          } else {
+            turn.toolCalls.push({
+              id,
+              name: String(d.name),
+              input: d.input,
+              status: "running",
+            });
+          }
           break;
+        }
         case "tool_result": {
           const id = String(d.id);
           const call = turn.toolCalls.find((c) => c.id === id);

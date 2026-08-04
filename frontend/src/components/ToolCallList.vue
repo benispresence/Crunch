@@ -90,6 +90,36 @@ function formatFieldValue(key: string, v: unknown): { text: string; lang: string
   return null;
 }
 
+interface SearchHit { title: string; url: string }
+
+/**
+ * Web search results get links instead of a JSON dump — the point of a search
+ * is that the user can go check the source.
+ */
+function searchHits(call: ToolCall): SearchHit[] | null {
+  if (call.name !== "web_search") return null;
+  const r = call.result as { results?: unknown } | undefined;
+  if (!r || !Array.isArray(r.results)) return null;
+  return (r.results as Array<Record<string, unknown>>)
+    .filter((h) => typeof h.url === "string" && h.url)
+    .map((h) => ({ title: String(h.title ?? h.url), url: String(h.url) }));
+}
+
+function searchError(call: ToolCall): string | null {
+  if (call.name !== "web_search") return null;
+  const r = call.result as { error?: unknown } | undefined;
+  return r?.error ? String(r.error) : null;
+}
+
+/** Host only — "docs.snowflake.com", not the full URL. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 interface RenderedField {
   label: string;
   lang: string;
@@ -208,7 +238,17 @@ function escapeHtml(s: string): string {
               <div v-if="call.result === undefined" class="tool__empty tool__empty--run">
                 <CookieLoader label="Crunching…" size="sm" />
               </div>
+              <p v-else-if="searchError(call)" class="tool__search-err">
+                Search failed: {{ searchError(call) }}
+              </p>
+              <ul v-else-if="searchHits(call)" class="tool__hits">
+                <li v-for="hit in searchHits(call)" :key="hit.url">
+                  <a :href="hit.url" target="_blank" rel="noopener noreferrer">{{ hit.title }}</a>
+                  <span class="tool__hit-host">{{ hostOf(hit.url) }}</span>
+                </li>
+              </ul>
               <div
+                v-else
                 v-for="(f, j) in renderPayload(call.result)"
                 :key="`out-${call.id}-${j}`"
                 class="tool__field"
@@ -254,7 +294,17 @@ function escapeHtml(s: string): string {
             <div v-if="call.result === undefined" class="tool__empty tool__empty--run">
               <CookieLoader label="Crunching…" size="sm" />
             </div>
+            <p v-else-if="searchError(call)" class="tool__search-err">
+              Search failed: {{ searchError(call) }}
+            </p>
+            <ul v-else-if="searchHits(call)" class="tool__hits">
+              <li v-for="hit in searchHits(call)" :key="hit.url">
+                <a :href="hit.url" target="_blank" rel="noopener noreferrer">{{ hit.title }}</a>
+                <span class="tool__hit-host">{{ hostOf(hit.url) }}</span>
+              </li>
+            </ul>
             <div
+              v-else
               v-for="(f, j) in renderPayload(call.result)"
               :key="`out-${call.id}-${j}`"
               class="tool__field"
@@ -445,6 +495,39 @@ function escapeHtml(s: string): string {
   font-style: normal;
   display: flex;
   padding: 4px 0;
+}
+.tool__hits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+}
+.tool__hits li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  min-width: 0;
+}
+.tool__hits a {
+  color: var(--accent);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool__hits a:hover { text-decoration: underline; }
+.tool__hit-host {
+  color: var(--fg-subtle);
+  font-size: 10.5px;
+  flex-shrink: 0;
+}
+.tool__search-err {
+  margin: 0;
+  font-size: 12px;
+  color: var(--error);
 }
 .tool__code {
   margin: 0;

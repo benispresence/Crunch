@@ -5,6 +5,12 @@ import { requireAdmin, requireAuth } from "../middleware/auth.js";
 import { createUser, findUserByEmail, updatePassword } from "../services/auth.js";
 import { isStdlibRow } from "../services/packages.js";
 import {
+  getWebSearchMaxUses,
+  isWebSearchEnabled,
+  setWebSearchEnabled,
+  setWebSearchMaxUses,
+} from "../services/webSearch.js";
+import {
   createApiKey,
   deleteProvider,
   getEmailDomainAllowlist,
@@ -245,6 +251,8 @@ function settingsPayload() {
     anthropic_model: getAnthropicModel(),
     known_models: KNOWN_MODELS,
     public_registration_enabled: isPublicRegistrationEnabled(),
+    web_search_enabled: isWebSearchEnabled(),
+    web_search_max_uses: getWebSearchMaxUses(),
   };
 }
 
@@ -258,6 +266,8 @@ adminRouter.put("/settings", (req, res) => {
       anthropic_api_key: z.string().optional(),
       anthropic_model: z.string().optional(),
       public_registration_enabled: z.boolean().optional(),
+      web_search_enabled: z.boolean().optional(),
+      web_search_max_uses: z.number().int().min(1).max(20).optional(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -278,6 +288,12 @@ adminRouter.put("/settings", (req, res) => {
   }
   if (parsed.data.public_registration_enabled !== undefined) {
     setPublicRegistrationEnabled(parsed.data.public_registration_enabled);
+  }
+  if (parsed.data.web_search_enabled !== undefined) {
+    setWebSearchEnabled(parsed.data.web_search_enabled);
+  }
+  if (parsed.data.web_search_max_uses !== undefined) {
+    setWebSearchMaxUses(parsed.data.web_search_max_uses);
   }
   res.json(settingsPayload());
 });
