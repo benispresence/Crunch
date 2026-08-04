@@ -238,6 +238,19 @@ export interface ChatTurn {
 }
 
 const AUTO_ACCEPT_KEY = "nicemeta.chat.autoAccept";
+const MODEL_KEY = "nicemeta.chat.model";
+const EFFORT_KEY = "nicemeta.chat.effort";
+
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface ModelOption {
+  id: string;
+  label: string;
+  blurb: string;
+  efforts: EffortLevel[];
+  default_effort: EffortLevel | null;
+  supports_thinking_off: boolean;
+}
 
 interface ConversationSummary {
   id: number;
@@ -258,8 +271,18 @@ export const useChatStore = defineStore("chat", {
     // When on, every proposal is applied automatically as soon as the agent
     // emits it (no Accept click). Persisted per-browser.
     autoAccept: localStorage.getItem(AUTO_ACCEPT_KEY) === "1",
+    // Model + effort for the next message. Both are per-browser preferences;
+    // the server clamps whatever arrives to what the model actually accepts.
+    models: [] as ModelOption[],
+    model: localStorage.getItem(MODEL_KEY) ?? "",
+    effort: (localStorage.getItem(EFFORT_KEY) as EffortLevel | null) ?? null,
+    /** Server-side adjustments to the requested model/effort, shown inline. */
+    notices: [] as string[],
   }),
   getters: {
+    activeModel(state): ModelOption | null {
+      return state.models.find((m) => m.id === state.model) ?? state.models[0] ?? null;
+    },
     /**
      * The first not-yet-resolved proposal across the whole conversation.
      * Panels (SqlEditor / ChartPanel / WorkspaceView) read this so the UI
@@ -322,9 +345,44 @@ export const useChatStore = defineStore("chat", {
       this.autoAccept = on;
       localStorage.setItem(AUTO_ACCEPT_KEY, on ? "1" : "0");
     },
+    async loadModels() {
+      try {
+        const r = await api.get<{ default_model: string; models: ModelOption[] }>(
+          "/chat/models",
+        );
+        this.models = r.models;
+        // A stored preference can point at a model the admin has since turned
+        // off — fall back rather than sending an id the server will reject.
+        if (!this.models.some((m) => m.id === this.model)) {
+          this.setModel(
+            this.models.some((m) => m.id === r.default_model)
+              ? r.default_model
+              : (this.models[0]?.id ?? ""),
+          );
+        }
+      } catch {
+        /* picker just stays empty; the server default still applies */
+      }
+    },
+    setModel(id: string) {
+      this.model = id;
+      localStorage.setItem(MODEL_KEY, id);
+      // Effort levels aren't shared across models — drop one the new model
+      // doesn't offer instead of sending it and getting it clamped.
+      const opt = this.models.find((m) => m.id === id);
+      if (opt && this.effort && !opt.efforts.includes(this.effort)) {
+        this.setEffort(opt.default_effort);
+      }
+    },
+    setEffort(level: EffortLevel | null) {
+      this.effort = level;
+      if (level) localStorage.setItem(EFFORT_KEY, level);
+      else localStorage.removeItem(EFFORT_KEY);
+    },
     async send(message: string) {
       if (!message.trim() || this.sending) return;
       this.sending = true;
+      this.notices = [];
       this.turns.push(this.makeTurn("user", message));
       this.turns.push(this.makeTurn("assistant"));
       // Critical: re-fetch via index so we get the reactive Pinia proxy,
@@ -379,6 +437,8 @@ export const useChatStore = defineStore("chat", {
             conversation_id: this.conversationId,
             message,
             thinking: this.showThinking,
+            model: this.model || undefined,
+            effort: this.effort ?? undefined,
             workspace,
           },
           { signal: controller.signal },
@@ -420,6 +480,13 @@ export const useChatStore = defineStore("chat", {
           break;
         case "text_delta":
           turn.text += String(d.text ?? "");
+          break;
+        case "notice":
+          // Server clamped the requested model/effort — say so rather than
+          // silently running something other than what was picked.
+          if (d.text) this.notices.push(String(d.text));
+          break;
+        case "run_config":
           break;
         case "tools_running":
           turn.toolsAggregated = Boolean(d.aggregated);

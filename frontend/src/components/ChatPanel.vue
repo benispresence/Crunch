@@ -10,10 +10,25 @@ const scroller = ref<HTMLDivElement | null>(null);
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const showHistory = ref(false);
 
+const modelMenuOpen = ref(false);
+
 onMounted(async () => {
   textarea.value?.focus();
-  await chat.loadConversations();
+  await Promise.all([chat.loadConversations(), chat.loadModels()]);
 });
+
+const EFFORT_HINT: Record<string, string> = {
+  low: "Fastest and cheapest. Short, scoped tasks.",
+  medium: "Balanced. Good for routine analysis.",
+  high: "Default. Best for most real work.",
+  xhigh: "Deeper reasoning. Complex or agentic tasks.",
+  max: "Maximum depth. Slow and expensive.",
+};
+
+function pickModel(id: string) {
+  chat.setModel(id);
+  modelMenuOpen.value = false;
+}
 
 function formatWhen(ts: number): string {
   const d = new Date(ts * 1000);
@@ -160,6 +175,48 @@ function resize() {
     </div>
 
     <footer class="chat__compose">
+      <p v-for="(n, i) in chat.notices" :key="`n-${i}`" class="chat__notice">{{ n }}</p>
+
+      <div v-if="chat.models.length > 0" class="chat__run">
+        <div class="chat__model">
+          <button
+            class="chat__run-btn"
+            :title="chat.activeModel?.blurb"
+            @click="modelMenuOpen = !modelMenuOpen"
+          >
+            {{ chat.activeModel?.label ?? "Model" }}
+            <span class="chat__run-chev" :class="{ 'chat__run-chev--open': modelMenuOpen }">▾</span>
+          </button>
+          <div v-if="modelMenuOpen" class="chat__model-menu">
+            <button
+              v-for="m in chat.models"
+              :key="m.id"
+              class="chat__model-item"
+              :class="{ 'chat__model-item--active': m.id === chat.model }"
+              @click="pickModel(m.id)"
+            >
+              <span class="chat__model-name">{{ m.label }}</span>
+              <span class="chat__model-blurb">{{ m.blurb }}</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Effort levels differ per model, and some models have none at all. -->
+        <label v-if="(chat.activeModel?.efforts.length ?? 0) > 0" class="chat__effort">
+          <span>Effort</span>
+          <select
+            :value="chat.effort ?? chat.activeModel?.default_effort ?? ''"
+            :title="EFFORT_HINT[chat.effort ?? chat.activeModel?.default_effort ?? 'high']"
+            @change="chat.setEffort(($event.target as HTMLSelectElement).value as any)"
+          >
+            <option v-for="e in chat.activeModel!.efforts" :key="e" :value="e">{{ e }}</option>
+          </select>
+        </label>
+        <span v-else class="chat__effort-none" title="This model has no effort control">
+          no effort control
+        </span>
+      </div>
+
       <div class="chat__input-wrap">
         <textarea
           ref="textarea"
@@ -418,6 +475,84 @@ function resize() {
   transition: border-color 120ms;
 }
 .chat__input-wrap:focus-within { border-color: var(--accent-border); }
+.chat__notice {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--warn);
+  line-height: 1.4;
+}
+.chat__run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.chat__model { position: relative; }
+.chat__run-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.chat__run-btn:hover { color: var(--fg); border-color: var(--accent-border); }
+.chat__run-chev { font-size: 9px; transition: transform 150ms; }
+.chat__run-chev--open { transform: rotate(180deg); }
+.chat__model-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  min-width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 4px;
+  display: grid;
+  gap: 1px;
+}
+.chat__model-item {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 7px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.chat__model-item:hover { background: var(--bg-hover); }
+.chat__model-item--active { background: var(--accent-subtle); }
+.chat__model-item--active .chat__model-name { color: var(--accent); }
+.chat__model-name { font-size: 12px; }
+.chat__model-blurb { font-size: 10.5px; color: var(--fg-subtle); line-height: 1.35; }
+.chat__effort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+.chat__effort select {
+  font-size: 11px;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+}
+.chat__effort-none {
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+  font-style: italic;
+}
 .chat__input-wrap textarea {
   border: 0;
   background: transparent;

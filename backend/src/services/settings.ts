@@ -4,13 +4,11 @@ import { decryptString, encryptString, isEncrypted } from "./crypto.js";
 
 const ENCRYPTED_KEYS = new Set(["anthropic_api_key"]);
 
-export const KNOWN_MODELS = [
-  { id: "claude-opus-4-7", label: "Claude Opus 4.7 (most capable)" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (balanced)" },
-  { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 (fastest)" },
-];
-
-const DEFAULT_MODEL = "claude-opus-4-7";
+// The selectable model list lives in services/models.ts, which carries
+// per-model capabilities rather than just ids. It reads settings from here, so
+// this module deliberately does *not* import it back — the fallback id is
+// duplicated instead of creating an import cycle.
+const DEFAULT_MODEL = "claude-opus-5";
 
 export function getSetting(key: string): string {
   const row = db

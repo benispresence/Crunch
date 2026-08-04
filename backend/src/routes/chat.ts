@@ -13,10 +13,17 @@ import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { chatToolsForRequest, runTool } from "../services/chatTools.js";
 import { getAnthropicApiKey, getAnthropicModel } from "../services/settings.js";
+import { isModelEnabled, modelPickerPayload, resolveRun } from "../services/models.js";
 import { readWebSearchResult, webSearchTool } from "../services/webSearch.js";
 
 export const chatRouter = Router();
 chatRouter.use(requireAuth);
+
+/** What the composer's model picker offers — enabled models plus, per model,
+ *  the effort levels it actually accepts. */
+chatRouter.get("/models", (_req, res) => {
+  res.json(modelPickerPayload());
+});
 
 const SYSTEM_PROMPT = `You are Crunch, an analytics copilot embedded in a BI tool.
 
@@ -113,6 +120,8 @@ const sendSchema = z.object({
   conversation_id: z.number().int().nullable().optional(),
   message: z.string().min(1),
   thinking: z.boolean().optional(),
+  model: z.string().optional(),
+  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
   workspace: workspaceContextSchema.optional(),
 });
 
@@ -206,6 +215,9 @@ function emitServerToolActivity(
     send("tool_result", { id, name: "web_search", result: readWebSearchResult(raw.content) });
   }
 }
+
+/** Output cap per turn. Thinking counts against this too. */
+const MAX_TOKENS = 16_384;
 
 const TOOL_RESULT_LIMIT = 60_000;
 
@@ -468,9 +480,31 @@ chatRouter.post("/send", async (req, res) => {
   send("user_saved", { conversation_id: conv.id });
 
   const client = new Anthropic({ apiKey });
-  const wantThinking = parsed.data.thinking ?? true;
 
-  const searchTool = webSearchTool(model);
+  // Per-message model/effort override, validated against what the admin has
+  // enabled. resolveRun() then clamps the pair into a shape this particular
+  // model accepts — the family is not uniform (see services/models.ts).
+  const requested = parsed.data.model;
+  if (requested && !isModelEnabled(requested)) {
+    send("error", { error: `Model "${requested}" is not enabled for this workspace.` });
+    res.end();
+    return;
+  }
+  const run = resolveRun({
+    model: requested || model,
+    effort: parsed.data.effort ?? null,
+    thinking: parsed.data.thinking ?? true,
+    maxTokens: MAX_TOKENS,
+  });
+  for (const note of run.notes) send("notice", { text: note });
+  send("run_config", {
+    model: run.model,
+    label: run.spec.label,
+    effort: run.effort,
+    thinking: run.thinking,
+  });
+
+  const searchTool = webSearchTool(run.model);
 
   let turn = 0;
   const maxTurns = 8;
@@ -497,24 +531,19 @@ chatRouter.post("/send", async (req, res) => {
         });
       }
       const stream = client.messages.stream({
-        model,
+        model: run.model,
         // 4096 also had to cover thinking, so a proposal carrying several
         // queries' SQL would run out mid-tool-call. See the max_tokens branch
         // below for what that used to do to the conversation.
-        max_tokens: 16_384,
+        max_tokens: MAX_TOKENS,
         system: systemBlocks,
         // Anthropic's server-side web search runs on their infrastructure, so
         // it sits alongside our own tools but never reaches runTool().
         tools: [...chatToolsForRequest(), ...(searchTool ? [searchTool] : [])],
         messages: history,
-        // Claude 4.x uses adaptive thinking with an effort knob. The older
-        // `{ type: "enabled", budget_tokens }` shape returns 400 on Sonnet 4.6+.
-        ...(wantThinking
-          ? {
-              thinking: { type: "adaptive" },
-              output_config: { effort: "low" },
-            }
-          : {}),
+        // Thinking / effort come pre-shaped for this specific model — the
+        // same pair 400s on several of them. See services/models.ts.
+        ...run.params,
       } as Parameters<typeof client.messages.stream>[0]);
 
       stream.on("streamEvent", (event) => {

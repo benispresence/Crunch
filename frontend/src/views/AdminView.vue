@@ -31,12 +31,19 @@ interface AdminUser {
 const auth = useAuthStore();
 const tab = ref<"settings" | "packages" | "users" | "auth" | "permissions" | "pipelines" | "mcp" | "git">("settings");
 
-interface ModelOption { id: string; label: string }
+interface ModelOption {
+  id: string;
+  label: string;
+  blurb: string;
+  efforts: string[];
+  thinking: string;
+}
 interface SettingsState {
   anthropic_api_key_masked: string;
   anthropic_api_key_set: boolean;
   anthropic_model: string;
   known_models: ModelOption[];
+  enabled_models: string[];
   public_registration_enabled: boolean;
   web_search_enabled: boolean;
   web_search_max_uses: number;
@@ -70,6 +77,26 @@ async function saveSettings() {
     apiKeyInput.value = "";
     modelInput.value = s.anthropic_model;
     settingsToast.value = "Saved.";
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    settingsBusy.value = false;
+  }
+}
+
+async function toggleModel(id: string, on: boolean) {
+  if (!settings.value) return;
+  const next = on
+    ? [...settings.value.enabled_models, id]
+    : settings.value.enabled_models.filter((m) => m !== id);
+  settingsBusy.value = true;
+  error.value = "";
+  try {
+    settings.value = await api.put<SettingsState>("/admin/settings", {
+      enabled_models: next,
+    });
+    settingsToast.value = `${next.length} model${next.length === 1 ? "" : "s"} available to users.`;
+    setTimeout(() => (settingsToast.value = ""), 3000);
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -599,6 +626,38 @@ async function deleteUser(u: AdminUser) {
         </div>
 
         <div class="settings__group">
+          <h3>Available models</h3>
+          <p class="settings__hint">
+            Which models users can pick in the assistant's composer. The default
+            model above is always kept available. Capabilities differ — effort
+            levels vary by model and some have none at all; the app adapts each
+            request automatically.
+          </p>
+          <ul class="settings__models">
+            <li v-for="m in settings.known_models" :key="m.id">
+              <label class="settings__model-row">
+                <input
+                  type="checkbox"
+                  :checked="settings.enabled_models.includes(m.id)"
+                  :disabled="settingsBusy || m.id === settings.anthropic_model"
+                  @change="toggleModel(m.id, ($event.target as HTMLInputElement).checked)"
+                />
+                <span class="settings__model-main">
+                  <span class="settings__model-name">
+                    {{ m.label }}
+                    <span v-if="m.id === settings.anthropic_model" class="admin__badge">default</span>
+                  </span>
+                  <span class="settings__model-blurb">{{ m.blurb }}</span>
+                </span>
+                <span class="settings__model-caps">
+                  {{ m.efforts.length ? m.efforts.join(" / ") : "no effort control" }}
+                </span>
+              </label>
+            </li>
+          </ul>
+        </div>
+
+        <div class="settings__group">
           <h3>Web search</h3>
           <p class="settings__hint">
             Lets the assistant look things up on the web — a data source's API docs,
@@ -1002,6 +1061,40 @@ async function deleteUser(u: AdminUser) {
   border: 1px solid var(--border);
 }
 .admin__mono { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.settings__models {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+.settings__model-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  min-width: 0;
+}
+.settings__model-row:hover { background: var(--bg-hover); }
+.settings__model-row input:disabled { cursor: not-allowed; }
+.settings__model-main { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.settings__model-name {
+  font-size: 12.5px;
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings__model-blurb { font-size: 11px; color: var(--fg-subtle); line-height: 1.4; }
+.settings__model-caps {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-subtle);
+  flex-shrink: 0;
+  padding-top: 2px;
+}
 .admin__stdlib { font-family: var(--font-sans); font-style: italic; color: var(--fg-subtle); }
 .admin__date { color: var(--fg-subtle); }
 

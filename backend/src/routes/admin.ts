@@ -46,7 +46,12 @@ import {
 } from "../services/pipelines.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 import {
-  KNOWN_MODELS,
+  MODEL_CATALOG,
+  findModel,
+  getEnabledModelIds,
+  setEnabledModelIds,
+} from "../services/models.js";
+import {
   getAnthropicApiKey,
   getAnthropicModel,
   isPublicRegistrationEnabled,
@@ -249,7 +254,16 @@ function settingsPayload() {
     anthropic_api_key_masked: maskApiKey(key),
     anthropic_api_key_set: !!key,
     anthropic_model: getAnthropicModel(),
-    known_models: KNOWN_MODELS,
+    // Full catalog with capabilities so the admin sees why a model differs
+    // (no effort control, thinking always on, …), plus which are switched on.
+    known_models: MODEL_CATALOG.map((m) => ({
+      id: m.id,
+      label: m.label,
+      blurb: m.blurb,
+      efforts: m.efforts,
+      thinking: m.thinking,
+    })),
+    enabled_models: getEnabledModelIds(),
     public_registration_enabled: isPublicRegistrationEnabled(),
     web_search_enabled: isWebSearchEnabled(),
     web_search_max_uses: getWebSearchMaxUses(),
@@ -268,6 +282,7 @@ adminRouter.put("/settings", (req, res) => {
       public_registration_enabled: z.boolean().optional(),
       web_search_enabled: z.boolean().optional(),
       web_search_max_uses: z.number().int().min(1).max(20).optional(),
+      enabled_models: z.array(z.string()).optional(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -278,11 +293,20 @@ adminRouter.put("/settings", (req, res) => {
   if (parsed.data.anthropic_api_key !== undefined) {
     setSetting("anthropic_api_key", parsed.data.anthropic_api_key.trim());
   }
+  // Enablement is applied before the default, so an admin can switch the
+  // default to a model they're enabling in the same request.
+  if (parsed.data.enabled_models !== undefined) {
+    setEnabledModelIds(parsed.data.enabled_models);
+  }
   if (parsed.data.anthropic_model !== undefined) {
-    const allowed = KNOWN_MODELS.some((m) => m.id === parsed.data.anthropic_model);
-    if (!allowed) {
+    if (!findModel(parsed.data.anthropic_model)) {
       res.status(400).json({ error: `unknown model: ${parsed.data.anthropic_model}` });
       return;
+    }
+    // The default has to stay selectable, or the assistant points at a model
+    // users can't pick and every request falls back silently.
+    if (!getEnabledModelIds().includes(parsed.data.anthropic_model)) {
+      setEnabledModelIds([...getEnabledModelIds(), parsed.data.anthropic_model]);
     }
     setSetting("anthropic_model", parsed.data.anthropic_model);
   }
