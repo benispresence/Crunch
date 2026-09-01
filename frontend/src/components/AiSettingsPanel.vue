@@ -47,12 +47,42 @@ export interface AiSettingsState {
 
 const emit = defineEmits<{ error: [string] }>();
 
+const LAB_KEY = "nicemeta.admin.aiLab";
 const settings = ref<AiSettingsState | null>(null);
 const busy = ref(false);
 const toast = ref("");
 const keyDraft = ref<Record<string, string>>({});
 const testing = ref<Record<string, boolean>>({});
 const testNote = ref<Record<string, { ok: boolean; text: string }>>({});
+const activeLabId = ref<ProviderId>("anthropic");
+
+const activeLab = computed(() =>
+  settings.value?.providers.find((p) => p.id === activeLabId.value)
+  ?? settings.value?.providers[0]
+  ?? null,
+);
+
+function selectLab(id: ProviderId) {
+  activeLabId.value = id;
+  localStorage.setItem(LAB_KEY, id);
+}
+
+function pickInitialLab(s: AiSettingsState) {
+  const stored = localStorage.getItem(LAB_KEY);
+  if (stored && s.providers.some((p) => p.id === stored)) {
+    activeLabId.value = stored as ProviderId;
+    return;
+  }
+  const fromDefault = s.providers.find((p) =>
+    p.models.some((m) => m.id === s.default_model),
+  );
+  if (fromDefault) {
+    activeLabId.value = fromDefault.id;
+    return;
+  }
+  const connected = s.providers.find((p) => p.connected);
+  activeLabId.value = (connected ?? s.providers[0])?.id ?? "anthropic";
+}
 
 interface OauthFlow {
   session_id: string;
@@ -90,6 +120,7 @@ function flash(msg: string) {
 async function load() {
   try {
     settings.value = await api.get<AiSettingsState>("/admin/settings");
+    if (settings.value) pickInitialLab(settings.value);
   } catch (e) {
     emit("error", (e as Error).message);
   }
@@ -289,17 +320,44 @@ function oauthExpiry(p: ProviderDisplay): string {
       <small>Used when a user hasn't picked a model in the composer.</small>
     </label>
 
-    <article v-for="p in settings.providers" :key="p.id" class="lab">
+    <div class="ai__switch">
+      <span class="ai__switch-label">Lab</span>
+      <nav class="ai__labs" role="tablist" aria-label="AI labs">
+      <button
+        v-for="p in settings.providers"
+        :key="p.id"
+        type="button"
+        role="tab"
+        class="ai__lab-tab"
+        :class="{
+          'ai__lab-tab--active': p.id === activeLabId,
+          'ai__lab-tab--on': p.connected,
+        }"
+        :aria-selected="p.id === activeLabId"
+        @click="selectLab(p.id)"
+      >
+        <span class="ai__lab-tab-dot" :title="p.connected ? 'Connected' : 'Not connected'" />
+        <span class="ai__lab-tab-name">{{ p.short }}</span>
+        <span class="ai__lab-tab-lab">{{ p.label }}</span>
+        <span
+          v-if="p.id === 'xai' && oauth && oauth.status === 'pending'"
+          class="ai__lab-tab-wait"
+        >signing in</span>
+      </button>
+      </nav>
+    </div>
+
+    <article v-if="activeLab" :key="activeLab.id" class="lab">
       <header class="lab__head">
         <div>
-          <h4>{{ p.label }} <span class="lab__short">{{ p.short }}</span></h4>
-          <p>{{ p.blurb }}</p>
+          <h4>{{ activeLab.label }} <span class="lab__short">{{ activeLab.short }}</span></h4>
+          <p>{{ activeLab.blurb }}</p>
         </div>
         <span
           class="lab__pill"
-          :class="p.connected ? 'lab__pill--on' : 'lab__pill--off'"
+          :class="activeLab.connected ? 'lab__pill--on' : 'lab__pill--off'"
         >
-          {{ p.connected ? "CONNECTED" : "NOT CONNECTED" }}
+          {{ activeLab.connected ? "CONNECTED" : "NOT CONNECTED" }}
         </span>
       </header>
 
@@ -308,68 +366,68 @@ function oauthExpiry(p: ProviderDisplay): string {
         <label class="lab__mode">
           <input
             type="radio"
-            :name="`mode-${p.id}`"
-            :checked="p.auth_mode === 'api_key'"
+            :name="`mode-${activeLab.id}`"
+            :checked="activeLab.auth_mode === 'api_key'"
             :disabled="busy"
-            @change="setAuthMode(p, 'api_key')"
+            @change="setAuthMode(activeLab, 'api_key')"
           />
           <span>API key</span>
         </label>
         <label
           class="lab__mode"
-          :class="{ 'lab__mode--disabled': !p.auth_modes.includes('subscription') }"
+          :class="{ 'lab__mode--disabled': !activeLab.auth_modes.includes('subscription') }"
         >
           <input
             type="radio"
-            :name="`mode-${p.id}`"
-            :checked="p.auth_mode === 'subscription'"
-            :disabled="busy || !p.auth_modes.includes('subscription')"
-            @change="setAuthMode(p, 'subscription')"
+            :name="`mode-${activeLab.id}`"
+            :checked="activeLab.auth_mode === 'subscription'"
+            :disabled="busy || !activeLab.auth_modes.includes('subscription')"
+            @change="setAuthMode(activeLab, 'subscription')"
           />
-          <span>{{ p.subscription_label }}</span>
+          <span>{{ activeLab.subscription_label }}</span>
         </label>
       </div>
 
-      <p v-if="p.auth_mode === 'subscription' && p.subscription_unavailable" class="lab__warn">
-        {{ p.subscription_unavailable }}
+      <p v-if="activeLab.auth_mode === 'subscription' && activeLab.subscription_unavailable" class="lab__warn">
+        {{ activeLab.subscription_unavailable }}
       </p>
 
-      <div v-if="p.auth_mode === 'api_key' || !p.auth_modes.includes('subscription')" class="lab__key">
+      <div v-if="activeLab.auth_mode === 'api_key' || !activeLab.auth_modes.includes('subscription')" class="lab__key">
         <label class="lab__field">
           <span>API key</span>
           <div class="lab__row">
             <input
-              v-model="keyDraft[p.id]"
+              v-model="keyDraft[activeLab.id]"
               type="password"
               autocomplete="off"
-              :placeholder="p.api_key_set ? p.api_key_masked : p.api_key_placeholder"
+              :placeholder="activeLab.api_key_set ? activeLab.api_key_masked : activeLab.api_key_placeholder"
             />
-            <button class="btn btn-primary btn-sm" :disabled="busy" @click="saveApiKey(p)">
+            <button class="btn btn-primary btn-sm" :disabled="busy" @click="saveApiKey(activeLab)">
               Save key
             </button>
             <button
-              v-if="p.api_key_set"
+              v-if="activeLab.api_key_set"
               class="btn btn-sm"
               :disabled="busy"
-              @click="clearCredentials(p)"
+              @click="clearCredentials(activeLab)"
             >
               Clear
             </button>
           </div>
-          <small v-if="p.api_key_set">
-            Currently set: <code>{{ p.api_key_masked }}</code>.
+          <small v-if="activeLab.api_key_set">
+            Currently set: <code>{{ activeLab.api_key_masked }}</code>.
             Get a new one at
-            <a :href="p.console_url" target="_blank" rel="noreferrer">the {{ p.label }} console</a>.
+            <a :href="activeLab.console_url" target="_blank" rel="noreferrer">the {{ activeLab.label }} console</a>.
           </small>
           <small v-else>
             Paste a key from
-            <a :href="p.console_url" target="_blank" rel="noreferrer">{{ p.console_url.replace(/^https:\/\//, "") }}</a>.
+            <a :href="activeLab.console_url" target="_blank" rel="noreferrer">{{ activeLab.console_url.replace(/^https:\/\//, "") }}</a>.
           </small>
         </label>
       </div>
 
-      <div v-else-if="p.id === 'xai'" class="lab__sub">
-        <p class="lab__help">{{ p.subscription_help }}</p>
+      <div v-else-if="activeLab.id === 'xai'" class="lab__sub">
+        <p class="lab__help">{{ activeLab.subscription_help }}</p>
 
         <div v-if="oauth" class="lab__device">
           <p>Open the verification page and enter this code, or click the button — it fills the code in for you.</p>
@@ -389,10 +447,10 @@ function oauthExpiry(p: ProviderDisplay): string {
           <p v-else-if="oauth.error" class="lab__err">{{ oauth.error }}</p>
         </div>
 
-        <div v-else-if="p.oauth_connected" class="lab__connected">
+        <div v-else-if="activeLab.oauth_connected" class="lab__connected">
           <div>
-            Signed in{{ p.oauth_email ? ` as ${p.oauth_email}` : "" }}.
-            <span class="lab__muted">{{ oauthExpiry(p) }}</span>
+            Signed in{{ activeLab.oauth_email ? ` as ${activeLab.oauth_email}` : "" }}.
+            <span class="lab__muted">{{ oauthExpiry(activeLab) }}</span>
           </div>
           <button class="btn btn-sm" :disabled="busy" @click="disconnectGrokOauth">Disconnect</button>
         </div>
@@ -410,31 +468,31 @@ function oauthExpiry(p: ProviderDisplay): string {
       <div class="lab__actions">
         <button
           class="btn btn-sm"
-          :disabled="busy || testing[p.id] || !p.connected"
-          @click="testConnection(p)"
+          :disabled="busy || testing[activeLab.id] || !activeLab.connected"
+          @click="testConnection(activeLab)"
         >
-          {{ testing[p.id] ? "Testing…" : "Test connection" }}
+          {{ testing[activeLab.id] ? "Testing…" : "Test connection" }}
         </button>
         <span
-          v-if="testNote[p.id]"
+          v-if="testNote[activeLab.id]"
           class="lab__test"
-          :class="testNote[p.id]!.ok ? 'lab__test--ok' : 'lab__test--err'"
+          :class="testNote[activeLab.id]!.ok ? 'lab__test--ok' : 'lab__test--err'"
         >
-          {{ testNote[p.id]!.text }}
+          {{ testNote[activeLab.id]!.text }}
         </span>
       </div>
 
       <div class="lab__models">
         <h5>Models in chat</h5>
-        <p v-if="!p.connected" class="lab__muted">Connect this lab to offer its models in the picker.</p>
+        <p v-if="!activeLab.connected" class="lab__muted">Connect this lab to offer its models in the picker.</p>
         <ul>
-          <li v-for="m in p.models" :key="m.id">
+          <li v-for="m in activeLab.models" :key="m.id">
             <label class="lab__model">
               <input
                 type="checkbox"
-                :checked="p.enabled_models.includes(m.id)"
-                :disabled="busy || (!p.connected && !p.enabled_models.includes(m.id))"
-                @change="toggleModel(p, m.id, ($event.target as HTMLInputElement).checked)"
+                :checked="activeLab.enabled_models.includes(m.id)"
+                :disabled="busy || (!activeLab.connected && !activeLab.enabled_models.includes(m.id))"
+                @change="toggleModel(activeLab, m.id, ($event.target as HTMLInputElement).checked)"
               />
               <span class="lab__model-main">
                 <span class="lab__model-name">
@@ -570,6 +628,76 @@ function oauthExpiry(p: ProviderDisplay): string {
 }
 .ai__pill--on { background: rgba(127, 176, 105, 0.12); color: var(--success); }
 .ai__pill--off { background: var(--bg-elev-2); color: var(--fg-subtle); }
+
+.ai__switch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 6px 0 8px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.ai__switch-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-subtle);
+  flex-shrink: 0;
+}
+.ai__labs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.ai__lab-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.ai__lab-tab:hover { border-color: var(--accent-border); color: var(--fg); }
+.ai__lab-tab--active {
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+  color: var(--fg);
+}
+.ai__lab-tab-name { font-weight: 600; }
+.ai__lab-tab-lab {
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+.ai__lab-tab--active .ai__lab-tab-lab { color: var(--fg-muted); }
+.ai__lab-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-subtle);
+  flex-shrink: 0;
+}
+.ai__lab-tab--on .ai__lab-tab-dot {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+}
+.ai__lab-tab-wait {
+  font-size: 10px;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+@media (max-width: 640px) {
+  .ai__lab-tab-lab { display: none; }
+}
 
 .lab {
   background: var(--bg);
