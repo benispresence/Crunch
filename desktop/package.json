@@ -1,0 +1,82 @@
+{
+  "name": "crunch-desktop",
+  "productName": "Crunch",
+  "version": "1.1.1",
+  "private": true,
+  "description": "Crunch desktop shell — local BI workspace in an app window",
+  "main": "src/main.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/dev.mjs",
+    "pack:mac": "node scripts/pack-mac.mjs"
+  },
+  "devDependencies": {
+    "electron": "^33.4.5",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "local.crunch.app",
+    "productName": "Crunch",
+    "copyright": "Copyright © Crunch contributors",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "frontend/dist"
+      },
+      {
+        "from": "../backend/dist",
+        "to": "backend/dist"
+      },
+      {
+        "from": "../backend/node_modules",
+        "to": "backend/node_modules"
+      },
+      {
+        "from": "../backend/package.json",
+        "to": "backend/package.json"
+      },
+      {
+        "from": "../python-engine/server.py",
+        "to": "python-engine/server.py"
+      },
+      {
+        "from": "../src",
+        "to": "src"
+      },
+      {
+        "from": ".pack/node",
+        "to": "node"
+      },
+      {
+        "from": ".pack/python",
+        "to": "python"
+      },
+      {
+        "from": ".pack/pydeps",
+        "to": "pydeps"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "../frontend/public/logo.png",
+      "target": [
+        "dir"
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
+  }
+}

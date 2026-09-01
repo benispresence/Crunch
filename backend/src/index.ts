@@ -87,6 +87,24 @@ app.use("/api/git", gitRouter);
 app.use("/api/mcp", mcpRouter);
 app.use("/api/mcp-client", mcpClientOAuthRouter);
 
+if (config.frontendDist) {
+  const dist = path.resolve(config.frontendDist);
+  if (fs.existsSync(dist)) {
+    app.use(express.static(dist, { index: false, fallthrough: true }));
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api")) {
+        res.status(404).json({ error: "not found" });
+        return;
+      }
+      res.sendFile(path.join(dist, "index.html"), (err) => {
+        if (err) next(err);
+      });
+    });
+  } else {
+    console.warn(`[desktop] FRONTEND_DIST does not exist: ${dist}`);
+  }
+}
+
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
   res.status(500).json({ error: err.message });
@@ -122,10 +140,17 @@ if (seed.created && seed.password) {
   console.log("");
 }
 
-app.listen(config.port, () => {
-  console.log(`crunch backend listening on :${config.port}`);
+function onListen() {
+  const where = config.bindHost ? `${config.bindHost}:${config.port}` : `:${config.port}`;
+  console.log(`crunch backend listening on ${where}`);
   // Pipeline cron-tick starts with the server so any due schedules
   // fire on the first 30s boundary after startup. Idempotent across
   // restarts.
   startScheduler();
-});
+}
+
+if (config.bindHost) {
+  app.listen(config.port, config.bindHost, onListen);
+} else {
+  app.listen(config.port, onListen);
+}

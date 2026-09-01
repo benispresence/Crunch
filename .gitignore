@@ -101,6 +101,9 @@ dmypy.json
 node_modules/
 backend/dist/
 frontend/dist/
+desktop/node_modules/
+desktop/release/
+desktop/.pack/
 backend/*.sqlite
 backend/.env
 .vite/
