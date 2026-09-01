@@ -186,6 +186,24 @@ class ParameterSpecModel(BaseModel):
     type: str = "text"
     default: Any = None
     required: bool = False
+    widget: str | None = None
+    target: str | None = None
+    options: list[str] | None = None
+    display_name: str | None = None
+
+
+def _parameter_specs(models: list[ParameterSpecModel]) -> list[ParameterSpec]:
+    return [
+        ParameterSpec(
+            name=p.name,
+            type=p.type,
+            default=p.default,
+            required=p.required,
+            widget=p.widget,
+            target=p.target,
+        )
+        for p in models
+    ]
 
 
 class ExecuteSqlRequest(BaseModel):
@@ -378,15 +396,7 @@ async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
         binds: dict[str, Any] = {}
     else:
         try:
-            specs = [
-                ParameterSpec(
-                    name=p.name,
-                    type=p.type,
-                    default=p.default,
-                    required=p.required,
-                )
-                for p in req.parameters
-            ]
+            specs = _parameter_specs(req.parameters)
             rendered_sql, binds = render_template(req.sql, specs, req.parameter_values)
         except TemplateError as exc:
             return ExecuteSqlResponse(success=False, error=str(exc))
@@ -556,15 +566,7 @@ async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
 
         df = pd.DataFrame(req.data) if req.data else pd.DataFrame()
         try:
-            specs = [
-                ParameterSpec(
-                    name=p.name,
-                    type=p.type,
-                    default=p.default,
-                    required=p.required,
-                )
-                for p in req.parameters
-            ]
+            specs = _parameter_specs(req.parameters)
             params = coerce_values(specs, req.parameter_values)
         except TemplateError as exc:
             return ExecutePythonResponse(success=False, error=str(exc))

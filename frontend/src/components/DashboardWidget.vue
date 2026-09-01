@@ -4,6 +4,7 @@ import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { api } from "@/api/client";
 import { chartTemplate, themedSpec } from "@/composables/chartTheme";
 import { useDashboardsStore, type DashboardWidget } from "@/stores/dashboards";
+import type { ParameterValues } from "@/stores/workspace";
 import { useVisualizationsStore } from "@/stores/visualizations";
 import CookieLoader from "./CookieLoader.vue";
 
@@ -12,7 +13,7 @@ const props = defineProps<{
   editing: boolean;
   /** Parameter values resolved from the dashboard filter bar. Re-render
    *  is triggered whenever this changes so chips behave like Metabase's. */
-  parameterValues?: Record<string, string | number | boolean | null>;
+  parameterValues?: ParameterValues;
 }>();
 const emit = defineEmits<{
   (e: "remove"): void;

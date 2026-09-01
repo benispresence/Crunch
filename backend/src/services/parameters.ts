@@ -6,15 +6,41 @@ import { z } from "zod";
  * type, optional default, and a UI widget hint. The python engine
  * uses the same `name/type/default/required` fields for substitution.
  */
-export const parameterTypeSchema = z.enum(["text", "number", "date", "boolean"]);
+export const parameterTypeSchema = z.enum([
+  "text",
+  "number",
+  "date",
+  "boolean",
+  "field",
+]);
 export type ParameterType = z.infer<typeof parameterTypeSchema>;
 
 export const parameterWidgetSchema = z.enum([
   "input",
   "dropdown",
   "date",
+  "daterange",
+  "month",
   "toggle",
 ]);
+
+export const dateRangeValueSchema = z.object({
+  start: z.union([z.string(), z.null()]).optional(),
+  end: z.union([z.string(), z.null()]).optional(),
+});
+export type DateRangeValue = z.infer<typeof dateRangeValueSchema>;
+
+export const parameterValueSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.null(),
+  z.array(z.union([z.string(), z.number()])),
+  dateRangeValueSchema,
+]);
+export type ParameterValue = z.infer<typeof parameterValueSchema>;
+
+const parameterDefaultSchema = parameterValueSchema;
 
 export const parameterSpecSchema = z.object({
   name: z
@@ -23,11 +49,14 @@ export const parameterSpecSchema = z.object({
     .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be alphanumeric/underscore"),
   display_name: z.string().optional(),
   type: parameterTypeSchema.default("text"),
-  default: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+  default: parameterDefaultSchema.optional(),
   required: z.boolean().default(false),
   widget: parameterWidgetSchema.optional(),
   // For dropdown widgets — a static list of options. Empty for free input.
   options: z.array(z.string()).optional(),
+  // Mapped column for Metabase-style field filters, e.g. hex.stakes.created_at.
+  // When set (or type is "field"), {{name}} is replaced with a SQL clause.
+  target: z.string().optional(),
 });
 export type ParameterSpec = z.infer<typeof parameterSpecSchema>;
 
@@ -38,7 +67,7 @@ export const dashboardFilterSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   type: parameterTypeSchema.default("text"),
-  default: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+  default: parameterDefaultSchema.optional(),
   widget: parameterWidgetSchema.optional(),
   options: z.array(z.string()).optional(),
 });
@@ -51,10 +80,7 @@ export const widgetParameterMappingSchema = z.record(z.string(), z.string());
 export type WidgetParameterMapping = z.infer<typeof widgetParameterMappingSchema>;
 
 /** Per-run user-supplied values (whatever the input widgets emit). */
-export const parameterValuesSchema = z.record(
-  z.string(),
-  z.union([z.string(), z.number(), z.boolean(), z.null()]),
-);
+export const parameterValuesSchema = z.record(z.string(), parameterValueSchema);
 export type ParameterValues = z.infer<typeof parameterValuesSchema>;
 
 export function safeParseSpecs(raw: string): ParameterSpec[] {

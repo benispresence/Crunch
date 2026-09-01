@@ -4,8 +4,19 @@ import {
   useWorkspaceStore,
   type ParameterSpec,
   type ParameterType,
+  type ParameterValue,
   type ParameterWidget,
 } from "@/stores/workspace";
+import {
+  DATE_POINT_PRESETS,
+  DATE_RANGE_PRESETS,
+  formatRangeSummary,
+  isDateRangeValue,
+  isPointPresetId,
+  isRangePresetId,
+  looksLikeDateColumn,
+  stripRelativePrefix,
+} from "@/utils/dateFilters";
 
 /**
  * Filter bar that sits above the SQL editor.
@@ -13,32 +24,24 @@ import {
  * Type `{{name}}` in SQL (or click + Filter) and a chip appears here.
  * Changing a chip re-runs the query. Optional clauses use
  * `[[ AND col = {{name}} ]]` so an empty chip drops that predicate.
+ * Field filters (`type=field` + mapped column) replace `{{name}}` with
+ * a SQL clause the way Metabase does — `WHERE {{created_at}}` becomes
+ * `created_at >= $1 AND created_at < $2`.
  */
 
 const ws = useWorkspaceStore();
 
 const params = computed(() => ws.parameters);
 const adding = ref(false);
-const addName = ref("");
 const addLabel = ref("");
-const addType = ref<ParameterType>("text");
-const addMode = ref<"value" | "equals" | "like">("equals");
+const addName = ref("");
+const addKind = ref<"text" | "number" | "date" | "date_range" | "category" | "boolean">("text");
+const addMode = ref<"value" | "equals" | "like" | "clause">("equals");
 const addColumn = ref("");
 const addInput = ref<HTMLInputElement | null>(null);
 const settingsFor = ref<string | null>(null);
 const autoRun = ref(true);
 const hintOpen = ref(false);
-
-const DATE_PRESETS: Array<{ id: string; label: string }> = [
-  { id: "", label: "Custom date" },
-  { id: "today", label: "Today" },
-  { id: "yesterday", label: "Yesterday" },
-  { id: "7d", label: "Last 7 days" },
-  { id: "30d", label: "Last 30 days" },
-  { id: "90d", label: "Last 90 days" },
-  { id: "this_month", label: "This month" },
-  { id: "this_year", label: "This year" },
-];
 
 watch(
   () => ws.sql,
@@ -47,10 +50,17 @@ watch(
 );
 
 let runTimer: ReturnType<typeof setTimeout> | null = null;
+function isBlankValue(v: ParameterValue | undefined): boolean {
+  if (v === undefined || v === null || v === "") return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === "object") return !v.start && !v.end;
+  return false;
+}
+
 function scheduleRun() {
   if (!autoRun.value || !ws.activeConnectionId) return;
   const missing = ws.parameters.some(
-    (p) => p.required && (ws.parameterValues[p.name] === undefined || ws.parameterValues[p.name] === null || ws.parameterValues[p.name] === ""),
+    (p) => p.required && isBlankValue(ws.parameterValues[p.name]),
   );
   if (missing) return;
   if (runTimer) clearTimeout(runTimer);
@@ -63,20 +73,44 @@ onBeforeUnmount(() => {
 });
 
 function labelOf(p: ParameterSpec): string {
-  return (p.display_name && p.display_name.trim()) || p.name;
+  if (p.display_name && p.display_name.trim()) return p.display_name.trim();
+  return p.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function isFieldParam(p: ParameterSpec): boolean {
+  return p.type === "field" || Boolean(p.target);
+}
+
+function isDateRangeParam(p: ParameterSpec): boolean {
+  if (p.widget === "daterange") return true;
+  if (p.widget) return false;
+  return isFieldParam(p) && looksLikeDateColumn(p.target);
+}
+
+function isMonthParam(p: ParameterSpec): boolean {
+  return p.widget === "month";
+}
+
+function isDatePointParam(p: ParameterSpec): boolean {
+  const w = p.widget as ParameterWidget | undefined;
+  if (w === "daterange" || w === "month") return false;
+  return p.type === "date" || w === "date";
 }
 
 function widgetOf(p: ParameterSpec): ParameterWidget {
   if (p.widget) return p.widget;
+  if (isFieldParam(p) && looksLikeDateColumn(p.target)) return "daterange";
   if (p.options && p.options.length > 0) return "dropdown";
   if (p.type === "date") return "date";
   if (p.type === "boolean") return "toggle";
+  if (p.type === "field") return "dropdown";
   return "input";
 }
 
 function valueFor(name: string): string {
   const v = ws.parameterValues[name];
   if (v === undefined || v === null) return "";
+  if (typeof v === "object") return "";
   return String(v);
 }
 
@@ -84,7 +118,19 @@ function boolValueFor(name: string): boolean {
   return ws.parameterValues[name] === true || ws.parameterValues[name] === "true";
 }
 
-function setValue(name: string, value: string | boolean, run = true) {
+function rangeFor(name: string): { start: string; end: string } {
+  const v = ws.parameterValues[name];
+  if (isDateRangeValue(v)) {
+    return { start: String(v.start ?? ""), end: String(v.end ?? "") };
+  }
+  if (typeof v === "string" && v.includes("~")) {
+    const [s, e] = v.split("~", 2);
+    return { start: s ?? "", end: e ?? "" };
+  }
+  return { start: "", end: "" };
+}
+
+function setValue(name: string, value: ParameterValue, run = true) {
   ws.parameterValues = { ...ws.parameterValues, [name]: value };
   if (run) scheduleRun();
 }
@@ -107,7 +153,6 @@ function slugify(raw: string): string {
   let name = base;
   let i = 2;
   const taken = new Set(ws.parameters.map((p) => p.name));
-  // Also avoid names already in SQL that we haven't synced yet.
   while (taken.has(name)) name = `${base}_${i++}`;
   return name;
 }
@@ -117,7 +162,7 @@ function startAdd() {
   settingsFor.value = null;
   addLabel.value = "";
   addName.value = "";
-  addType.value = "text";
+  addKind.value = "text";
   addMode.value = "equals";
   addColumn.value = "";
   nextTick(() => addInput.value?.focus());
@@ -127,8 +172,19 @@ function cancelAdd() {
   adding.value = false;
 }
 
-function snippetFor(name: string, column: string, mode: "value" | "equals" | "like"): string {
-  if (mode === "value") return `{{${name}}}`;
+const addNeedsColumn = computed(() => {
+  if (addKind.value === "date_range" || addKind.value === "category") return true;
+  if (addKind.value === "boolean") return false;
+  return addMode.value === "equals" || addMode.value === "like";
+});
+
+function snippetFor(name: string, column: string, kind: typeof addKind.value, mode: typeof addMode.value): string {
+  if (kind === "date_range" || kind === "category") {
+    return mode === "clause" || !column.trim()
+      ? `{{${name}}}`
+      : `AND {{${name}}}`;
+  }
+  if (mode === "value" || mode === "clause") return `{{${name}}}`;
   const col = column.trim() || "column";
   if (mode === "like") {
     return `[[ AND ${col} LIKE '%' || {{${name}}} || '%' ]]`;
@@ -139,13 +195,30 @@ function snippetFor(name: string, column: string, mode: "value" | "equals" | "li
 function confirmAdd() {
   const label = addLabel.value.trim() || addName.value.trim() || "filter";
   const name = slugify(addName.value.trim() || label);
-  const snippet = snippetFor(name, addColumn.value, addMode.value);
+  const snippet = snippetFor(name, addColumn.value, addKind.value, addKind.value === "date_range" || addKind.value === "category" ? "clause" : addMode.value);
   ws.insertSql(snippet);
-  // Spec lands after SQL sync; stash display metadata to merge in.
+  const isField = addKind.value === "date_range" || addKind.value === "category";
+  const type: ParameterType = isField
+    ? "field"
+    : addKind.value === "date"
+      ? "date"
+      : addKind.value === "boolean"
+        ? "boolean"
+        : addKind.value === "number"
+          ? "number"
+          : "text";
+  const widget: ParameterWidget = isField
+    ? (addKind.value === "date_range" ? "daterange" : "dropdown")
+    : addKind.value === "boolean"
+      ? "toggle"
+      : addKind.value === "date"
+        ? "date"
+        : "input";
   pendingMeta.value[name] = {
     display_name: label,
-    type: addType.value,
-    widget: addType.value === "boolean" ? "toggle" : addType.value === "date" ? "date" : "input",
+    type,
+    widget,
+    target: isField ? addColumn.value.trim() || undefined : undefined,
   };
   adding.value = false;
   settingsFor.value = name;
@@ -188,16 +261,42 @@ function fillOptionsFromColumn(name: string, column: string) {
   patchParam(name, { widget: "dropdown", options });
 }
 
-function isDatePreset(v: string): boolean {
-  return DATE_PRESETS.some((p) => p.id && p.id === v);
-}
-
 function dateSelectValue(name: string): string {
   const v = valueFor(name);
-  if (isDatePreset(v) || v.startsWith("relative:")) {
-    return v.replace(/^relative:/, "");
+  if (!v) return "";
+  const key = stripRelativePrefix(v);
+  if (isPointPresetId(key)) return key;
+  return "";
+}
+
+function rangePresetValue(name: string): string {
+  const v = ws.parameterValues[name];
+  if (typeof v === "string") {
+    const key = stripRelativePrefix(v);
+    if (isRangePresetId(key)) return key;
   }
   return "";
+}
+
+function setRangePart(name: string, side: "start" | "end", value: string) {
+  const cur = rangeFor(name);
+  const next = { ...cur, [side]: value };
+  setValue(name, next);
+}
+
+function onTypeChange(p: ParameterSpec, next: ParameterType) {
+  const patch: Partial<ParameterSpec> = { type: next };
+  if (next === "field" && !p.widget) {
+    patch.widget = looksLikeDateColumn(p.target) ? "daterange" : "dropdown";
+  }
+  if (next === "date") patch.widget = p.widget === "daterange" || p.widget === "month" ? p.widget : "date";
+  if (next === "boolean") patch.widget = "toggle";
+  patchParam(p.name, patch);
+}
+
+function hasChipValue(p: ParameterSpec): boolean {
+  if (p.type === "boolean") return boolValueFor(p.name);
+  return !isBlankValue(ws.parameterValues[p.name]);
 }
 </script>
 
@@ -215,12 +314,16 @@ function dateSelectValue(name: string): string {
         :key="p.name"
         class="filters__chip"
         :class="{
-          'filters__chip--on': valueFor(p.name) !== '' || boolValueFor(p.name),
+          'filters__chip--on': hasChipValue(p),
           'filters__chip--open': settingsFor === p.name,
-          'filters__chip--required': p.required && valueFor(p.name) === '' && !boolValueFor(p.name),
+          'filters__chip--required': p.required && !hasChipValue(p),
+          'filters__chip--range': isDateRangeParam(p) && !rangePresetValue(p.name),
         }"
       >
-        <span class="filters__label" :title="p.name">{{ labelOf(p) }}</span>
+        <span class="filters__label" :title="p.target ? `${p.name} → ${p.target}` : p.name">
+          {{ labelOf(p) }}
+          <em v-if="isFieldParam(p)" class="filters__kind">field</em>
+        </span>
 
         <template v-if="widgetOf(p) === 'toggle' || p.type === 'boolean'">
           <label class="filters__bool">
@@ -243,7 +346,51 @@ function dateSelectValue(name: string): string {
           </select>
         </template>
 
-        <template v-else-if="p.type === 'date' || widgetOf(p) === 'date'">
+        <template v-else-if="isMonthParam(p)">
+          <input
+            class="filters__input filters__input--month"
+            type="month"
+            :value="valueFor(p.name)"
+            @change="(e) => setValue(p.name, (e.target as HTMLInputElement).value)"
+          />
+        </template>
+
+        <template v-else-if="isDateRangeParam(p)">
+          <select
+            class="filters__preset"
+            :value="rangePresetValue(p.name)"
+            :title="formatRangeSummary(ws.parameterValues[p.name])"
+            @change="(e) => {
+              const v = (e.target as HTMLSelectElement).value;
+              if (v) setValue(p.name, v);
+              else setValue(p.name, { start: rangeFor(p.name).start, end: rangeFor(p.name).end });
+            }"
+          >
+            <option v-for="d in DATE_RANGE_PRESETS" :key="d.id || 'custom'" :value="d.id">{{ d.label }}</option>
+          </select>
+          <template v-if="!rangePresetValue(p.name)">
+            <input
+              class="filters__input filters__input--date"
+              type="date"
+              :value="rangeFor(p.name).start"
+              @change="(e) => setRangePart(p.name, 'start', (e.target as HTMLInputElement).value)"
+            />
+            <span class="filters__dash">–</span>
+            <input
+              class="filters__input filters__input--date"
+              type="date"
+              :value="rangeFor(p.name).end"
+              @change="(e) => setRangePart(p.name, 'end', (e.target as HTMLInputElement).value)"
+            />
+          </template>
+          <span
+            v-else
+            class="filters__summary"
+            :title="formatRangeSummary(ws.parameterValues[p.name])"
+          >{{ formatRangeSummary(ws.parameterValues[p.name]) }}</span>
+        </template>
+
+        <template v-else-if="isDatePointParam(p)">
           <select
             class="filters__preset"
             :value="dateSelectValue(p.name)"
@@ -252,7 +399,7 @@ function dateSelectValue(name: string): string {
               if (v) setValue(p.name, v);
             }"
           >
-            <option v-for="d in DATE_PRESETS" :key="d.id || 'custom'" :value="d.id">{{ d.label }}</option>
+            <option v-for="d in DATE_POINT_PRESETS" :key="d.id || 'custom'" :value="d.id">{{ d.label }}</option>
           </select>
           <input
             v-if="!dateSelectValue(p.name)"
@@ -273,7 +420,7 @@ function dateSelectValue(name: string): string {
         />
 
         <button
-          v-if="valueFor(p.name) !== '' || (p.type === 'boolean' && boolValueFor(p.name))"
+          v-if="hasChipValue(p)"
           class="filters__icon"
           title="Clear"
           @click="clearValue(p.name)"
@@ -301,15 +448,21 @@ function dateSelectValue(name: string): string {
     </div>
 
     <p v-if="hintOpen" class="filters__hint">
-      In SQL, <code v-pre>{{name}}</code> becomes a bind parameter (never concatenated).
+      <code v-pre>{{name}}</code> is a bind parameter (never concatenated) — use it in
+      comparisons like <code v-pre>created_at &gt;= {{start_date}}</code>.
       Wrap a predicate in <code v-pre>[[ AND col = {{name}} ]]</code> to drop it when the
-      chip is empty. Required filters block the run until they're filled.
+      chip is empty.
+      A <strong>field filter</strong> maps <code v-pre>{{name}}</code> to a column and
+      replaces the variable with a whole clause
+      (<code v-pre>WHERE {{created_at}}</code> → <code>column &gt;= … AND column &lt; …</code>).
+      Empty field filters become <code>1=1</code>. Date values are sent as real dates,
+      not strings, so Postgres accepts them.
     </p>
 
     <form v-if="adding" class="filters__composer" @submit.prevent="confirmAdd">
       <label>
         <span>Label</span>
-        <input ref="addInput" v-model="addLabel" placeholder="Status" />
+        <input ref="addInput" v-model="addLabel" placeholder="Created at" />
       </label>
       <label>
         <span>SQL name</span>
@@ -317,14 +470,16 @@ function dateSelectValue(name: string): string {
       </label>
       <label>
         <span>Type</span>
-        <select v-model="addType">
+        <select v-model="addKind">
           <option value="text">text</option>
           <option value="number">number</option>
           <option value="date">date</option>
+          <option value="date_range">date range (field)</option>
+          <option value="category">category (field)</option>
           <option value="boolean">boolean</option>
         </select>
       </label>
-      <label>
+      <label v-if="addKind !== 'date_range' && addKind !== 'category' && addKind !== 'boolean'">
         <span>Insert</span>
         <select v-model="addMode">
           <option value="equals">optional equals</option>
@@ -332,9 +487,14 @@ function dateSelectValue(name: string): string {
           <option value="value">value only</option>
         </select>
       </label>
-      <label v-if="addMode !== 'value'">
-        <span>Column</span>
-        <input v-model="addColumn" placeholder="status" class="filters__mono" list="filter-cols" />
+      <label v-if="addNeedsColumn">
+        <span>{{ addKind === 'date_range' || addKind === 'category' ? 'Column (mapped field)' : 'Column' }}</span>
+        <input
+          v-model="addColumn"
+          :placeholder="addKind === 'date_range' || addKind === 'category' ? 'hex.stakes.created_at' : 'status'"
+          class="filters__mono"
+          list="filter-cols"
+        />
       </label>
       <button class="btn btn-primary btn-sm" type="submit">Add</button>
     </form>
@@ -357,12 +517,13 @@ function dateSelectValue(name: string): string {
             <span>Type</span>
             <select
               :value="p.type"
-              @change="(e) => patchParam(p.name, { type: (e.target as HTMLSelectElement).value as ParameterType })"
+              @change="(e) => onTypeChange(p, (e.target as HTMLSelectElement).value as ParameterType)"
             >
-              <option value="text">text</option>
-              <option value="number">number</option>
-              <option value="date">date</option>
+              <option value="text">text (bind)</option>
+              <option value="number">number (bind)</option>
+              <option value="date">date (bind)</option>
               <option value="boolean">boolean</option>
+              <option value="field">field filter</option>
             </select>
           </label>
           <label>
@@ -374,14 +535,26 @@ function dateSelectValue(name: string): string {
               <option value="input">input</option>
               <option value="dropdown">dropdown</option>
               <option value="date">date</option>
+              <option value="daterange">date range</option>
+              <option value="month">month</option>
               <option value="toggle">toggle</option>
             </select>
           </label>
-          <label>
+          <label v-if="isFieldParam(p) || p.type === 'field'">
+            <span>Mapped column</span>
+            <input
+              class="filters__mono"
+              :value="p.target ?? ''"
+              placeholder="schema.table.column"
+              list="filter-cols"
+              @change="(e) => patchParam(p.name, { target: (e.target as HTMLInputElement).value.trim() || undefined, type: 'field' })"
+            />
+          </label>
+          <label v-if="!isDateRangeParam(p) && p.type !== 'boolean' && p.widget !== 'daterange'">
             <span>Default</span>
             <input
-              :type="p.type === 'date' ? 'date' : p.type === 'number' ? 'number' : 'text'"
-              :value="p.default == null ? '' : String(p.default)"
+              :type="p.type === 'date' || widgetOf(p) === 'date' ? 'date' : p.type === 'number' ? 'number' : widgetOf(p) === 'month' ? 'month' : 'text'"
+              :value="p.default == null || typeof p.default === 'object' ? '' : String(p.default)"
               placeholder="none"
               @change="(e) => {
                 const raw = (e.target as HTMLInputElement).value;
@@ -421,7 +594,13 @@ function dateSelectValue(name: string): string {
               </select>
             </label>
           </div>
-          <p class="filters__sqlname">SQL name <code>{{ p.name }}</code></p>
+          <p class="filters__sqlname">
+            SQL name <code>{{ p.name }}</code>
+            <template v-if="isFieldParam(p)">
+              · field filter on <code>{{ p.target || "set a column" }}</code>
+              — write <code v-pre>WHERE {{name}}</code>, not a comparison.
+            </template>
+          </p>
         </div>
       </template>
     </div>
@@ -476,13 +655,28 @@ function dateSelectValue(name: string): string {
 .filters__chip--on { border-color: var(--accent-border); background: var(--accent-subtle); }
 .filters__chip--open { border-color: var(--accent); }
 .filters__chip--required { border-color: var(--warn); }
+.filters__chip--range { border-radius: 10px; }
 .filters__label {
   color: var(--fg-muted);
   font-weight: 500;
-  max-width: 120px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.filters__kind {
+  font-style: normal;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-subtle);
+  padding: 1px 5px;
+  border-radius: 999px;
 }
 .filters__input,
 .filters__preset {
@@ -492,11 +686,25 @@ function dateSelectValue(name: string): string {
   background: transparent;
   color: var(--fg);
   min-width: 88px;
-  max-width: 160px;
+  max-width: 170px;
 }
 .filters__input--date { min-width: 118px; }
+.filters__input--month { min-width: 130px; }
 .filters__input:focus,
 .filters__preset:focus { outline: none; }
+.filters__dash {
+  color: var(--fg-subtle);
+  padding: 0 2px;
+}
+.filters__summary {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  padding-right: 4px;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .filters__bool {
   display: inline-flex;
   align-items: center;

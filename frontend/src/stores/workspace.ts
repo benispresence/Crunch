@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { markRaw } from "vue";
 import { api } from "@/api/client";
+import { inferParameterType } from "@/utils/dateFilters";
 
 export interface Connection {
   id: number;
@@ -17,20 +18,35 @@ export interface Folder {
   created_at: number;
 }
 
-export type ParameterType = "text" | "number" | "date" | "boolean";
-export type ParameterWidget = "input" | "dropdown" | "date" | "toggle";
+export type ParameterType = "text" | "number" | "date" | "boolean" | "field";
+export type ParameterWidget = "input" | "dropdown" | "date" | "daterange" | "month" | "toggle";
+
+export interface DateRangeValue {
+  start?: string | null;
+  end?: string | null;
+}
+
+export type ParameterValue =
+  | string
+  | number
+  | boolean
+  | null
+  | string[]
+  | DateRangeValue;
 
 export interface ParameterSpec {
   name: string;
   display_name?: string;
   type: ParameterType;
-  default?: string | number | boolean | null;
+  default?: ParameterValue;
   required?: boolean;
   widget?: ParameterWidget;
   options?: string[];
+  /** Mapped column for a Metabase-style field filter, e.g. hex.stakes.created_at. */
+  target?: string;
 }
 
-export type ParameterValues = Record<string, string | number | boolean | null>;
+export type ParameterValues = Record<string, ParameterValue>;
 
 export interface SavedQuery {
   id: number;
@@ -390,7 +406,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       const keep: ParameterSpec[] = [];
       for (const name of found) {
         const existing = this.parameters.find((p) => p.name === name);
-        keep.push(existing ?? { name, type: "text" });
+        keep.push(existing ?? { name, type: inferParameterType(name) });
       }
       // Drop values for parameters that no longer exist.
       const next: ParameterValues = {};
