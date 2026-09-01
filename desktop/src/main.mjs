@@ -11,7 +11,7 @@
  *     backend dist, and (if packed) a bundled CPython + site-packages.
  */
 
-import { app, BrowserWindow, dialog, shell } from "electron";
+import { app, BrowserWindow, dialog, Menu, shell } from "electron";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -342,6 +342,279 @@ function stopChildren() {
   }
 }
 
+let importing = false;
+
+function parseDotEnv(file) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  if (!file || !fs.existsSync(file)) return out;
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 1) continue;
+    let val = trimmed.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    out[trimmed.slice(0, eq).trim()] = val;
+  }
+  return out;
+}
+
+function findSourceEnv(sqlitePath) {
+  const dir = path.dirname(sqlitePath);
+  const candidates = [
+    path.join(dir, ".env"),
+    path.join(dir, "..", ".env"),
+    path.join(dir, "..", "backend", ".env"),
+  ];
+  return candidates.find((f) => fs.existsSync(f)) ?? "";
+}
+
+function findSourceWorkspace(sqlitePath) {
+  const dir = path.dirname(sqlitePath);
+  const candidates = [
+    path.join(dir, "..", "nicemeta-workspace"),
+    path.join(dir, "nicemeta-workspace"),
+    path.join(dir, "..", "..", "nicemeta-workspace"),
+  ];
+  return candidates.find((f) => fs.existsSync(f) && fs.statSync(f).isDirectory()) ?? "";
+}
+
+function suggestedImportSqlite() {
+  const candidates = [
+    !app.isPackaged ? path.join(repoRoot(), "backend", "nicemeta.sqlite") : null,
+    path.join(os.homedir(), "CursorProjects", "NiceMeta", "backend", "nicemeta.sqlite"),
+    path.join(os.homedir(), "Projects", "NiceMeta", "backend", "nicemeta.sqlite"),
+    path.join(os.homedir(), "nice-meta", "backend", "nicemeta.sqlite"),
+  ].filter(Boolean);
+  return candidates.find((f) => fs.existsSync(f)) || os.homedir();
+}
+
+function sidecarNode() {
+  if (app.isPackaged) {
+    return path.join(
+      resourcesDir(),
+      "node",
+      process.platform === "win32" ? "node.exe" : "bin/node",
+    );
+  }
+  return process.env.npm_node_execpath || "node";
+}
+
+function importScriptPath() {
+  if (app.isPackaged) return path.join(resourcesDir(), "import-instance.mjs");
+  return path.join(repoRoot(), "desktop", "scripts", "import-instance.mjs");
+}
+
+function backendNodeModules() {
+  if (app.isPackaged) return path.join(resourcesDir(), "backend", "node_modules");
+  return path.join(repoRoot(), "backend", "node_modules");
+}
+
+function runImportScript(extraEnv) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(sidecarNode(), [importScriptPath()], {
+      env: { ...process.env, ...extraEnv },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    let err = "";
+    child.stdout?.on("data", (buf) => {
+      out += buf.toString();
+    });
+    child.stderr?.on("data", (buf) => {
+      err += buf.toString();
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        try {
+          resolve(JSON.parse(out.trim() || "{}"));
+        } catch {
+          resolve({ ok: true, raw: out });
+        }
+      } else {
+        reject(new Error((err || out || `import exited ${code}`).trim()));
+      }
+    });
+  });
+}
+
+async function importFromOtherInstance() {
+  if (importing) return;
+  const win = mainWindow;
+  const picked = await dialog.showOpenDialog(win ?? undefined, {
+    title: "Choose the other Crunch database",
+    defaultPath: suggestedImportSqlite(),
+    properties: ["openFile"],
+    filters: [
+      { name: "Crunch database", extensions: ["sqlite", "db"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+    message:
+      "Pick nicemeta.sqlite from the instance you want to copy. "
+      + "The browser/dev app usually stores it at backend/nicemeta.sqlite in the git repo.",
+  });
+  if (picked.canceled || !picked.filePaths[0]) return;
+
+  const sourceSqlite = picked.filePaths[0];
+  const sourceEnvFile = findSourceEnv(sourceSqlite);
+  const sourceWorkspace = findSourceWorkspace(sourceSqlite);
+  const sourceEnv = parseDotEnv(sourceEnvFile);
+  const destDir = path.join(userDir(), "data");
+  const destSqlite = path.join(destDir, "nicemeta.sqlite");
+  const destWorkspace = path.join(userDir(), "workspace");
+
+  const confirm = await dialog.showMessageBox(win ?? undefined, {
+    type: "warning",
+    buttons: ["Cancel", "Replace and restart"],
+    defaultId: 1,
+    cancelId: 0,
+    title: "Replace this app's data?",
+    message: "This Mac app's queries, connections, dashboards, and users will be replaced.",
+    detail: [
+      `Source: ${sourceSqlite}`,
+      sourceEnvFile ? `Encryption key: ${sourceEnvFile}` : "Encryption key: not found next to the file (dev JWT fallback will be tried).",
+      sourceWorkspace ? `Workspace: ${sourceWorkspace}` : "Workspace: none found (queries in SQLite still import).",
+      "",
+      "Connection passwords and API keys are re-encrypted for this app.",
+      "Sign in afterwards with the other instance's account.",
+      "A backup of the current database is kept next to it.",
+    ].join("\n"),
+  });
+  if (confirm.response !== 1) return;
+
+  importing = true;
+  const tmp = path.join(destDir, `nicemeta.importing-${Date.now()}.sqlite`);
+  const secrets = loadOrCreateSecrets();
+  let stopped = false;
+  try {
+    if (win && !win.isDestroyed()) {
+      win.setTitle("Crunch — importing…");
+    }
+    fs.mkdirSync(destDir, { recursive: true });
+    if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+
+    const result = await runImportScript({
+      CRUNCH_IMPORT_FROM: sourceSqlite,
+      CRUNCH_IMPORT_TO: tmp,
+      CRUNCH_IMPORT_FROM_DATA_KEY: sourceEnv.DATA_KEY || "",
+      CRUNCH_IMPORT_FROM_JWT_SECRET: sourceEnv.JWT_SECRET || "dev-secret-change-me",
+      CRUNCH_IMPORT_TO_DATA_KEY: secrets.DATA_KEY,
+      CRUNCH_IMPORT_TO_JWT_SECRET: secrets.JWT_SECRET,
+      CRUNCH_BACKEND_NODE_MODULES: backendNodeModules(),
+      CRUNCH_IMPORT_FROM_WORKSPACE: sourceWorkspace,
+      CRUNCH_IMPORT_TO_WORKSPACE: destWorkspace,
+    });
+
+    stopChildren();
+    stopped = true;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    if (fs.existsSync(destSqlite)) {
+      fs.copyFileSync(destSqlite, `${destSqlite}.bak-${stamp}`);
+    }
+    // Wait until the backend has dropped the SQLite lock, then swap.
+    const deadline = Date.now() + 8000;
+    let lastErr = null;
+    while (Date.now() < deadline) {
+      try {
+        for (const ext of ["-wal", "-shm"]) {
+          const f = destSqlite + ext;
+          if (fs.existsSync(f)) fs.unlinkSync(f);
+        }
+        if (fs.existsSync(destSqlite)) fs.unlinkSync(destSqlite);
+        fs.renameSync(tmp, destSqlite);
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    if (lastErr) throw lastErr;
+
+    log("import complete", result);
+    await dialog.showMessageBox(win ?? undefined, {
+      type: "info",
+      title: "Import complete",
+      message: "Data copied. Crunch will restart.",
+      detail: result && typeof result.rekeyed === "number"
+        ? `Re-encrypted ${result.rekeyed} secret${result.rekeyed === 1 ? "" : "s"}.`
+        : "",
+    });
+    app.relaunch();
+    app.exit(0);
+  } catch (err) {
+    importing = false;
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    log("import failed", msg);
+    await dialog.showMessageBox(win ?? undefined, {
+      type: "error",
+      title: "Import failed",
+      message: msg,
+    });
+    if (stopped) {
+      app.relaunch();
+      app.exit(1);
+      return;
+    }
+    if (win && !win.isDestroyed()) win.setTitle("Crunch");
+  }
+}
+
+function buildMenu() {
+  const isMac = process.platform === "darwin";
+  /** @type {import('electron').MenuItemConstructorOptions[]} */
+  const template = [
+    ...(isMac
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: "about" },
+            { type: "separator" },
+            { role: "services" },
+            { type: "separator" },
+            { role: "hide" },
+            { role: "hideOthers" },
+            { role: "unhide" },
+            { type: "separator" },
+            { role: "quit" },
+          ],
+        }]
+      : []),
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "Import from another Crunch instance…",
+          click: () => {
+            void importFromOtherInstance();
+          },
+        },
+        {
+          label: "Reveal data folder",
+          click: () => {
+            void shell.openPath(userDir());
+          },
+        },
+        { type: "separator" },
+        isMac ? { role: "close" } : { role: "quit" },
+      ],
+    },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -352,7 +625,10 @@ if (!gotLock) {
       mainWindow.focus();
     }
   });
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => {
+    buildMenu();
+    return createWindow();
+  });
   app.on("before-quit", stopChildren);
   app.on("window-all-closed", () => {
     stopChildren();

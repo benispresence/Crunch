@@ -65,6 +65,10 @@
       {
         "from": ".pack/pydeps",
         "to": "pydeps"
+      },
+      {
+        "from": "scripts/import-instance.mjs",
+        "to": "import-instance.mjs"
       }
     ],
     "artifactName": "${productName}-${version}-mac-${arch}.${ext}",

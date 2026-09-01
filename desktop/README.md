@@ -20,6 +20,24 @@ A Crunch window should open. Data lives in
 `~/Library/Application Support/Crunch/` (SQLite, workspace, generated
 secrets) so it does not touch your git repo.
 
+## Import from the browser / `npm run dev` instance
+
+The two copies keep separate databases:
+
+| Instance | Database |
+|----------|----------|
+| Browser (`npm run dev`) | `backend/nicemeta.sqlite` in the git repo |
+| Mac app | `~/Library/Application Support/Crunch/data/nicemeta.sqlite` |
+
+To bring queries, connections, dashboards, and users across: open the
+Mac app → **File → Import from another Crunch instance…** → pick
+`backend/nicemeta.sqlite`. The app re-encrypts connection passwords
+for its own key (the two instances do not share `DATA_KEY`), copies
+`nicemeta-workspace` if it sits next to the file, then restarts.
+
+**File → Reveal data folder** opens the Application Support directory
+if you want to inspect or back up the files yourself.
+
 ## Downloadable zip (Intel vs Apple Silicon)
 
 These are **two different files**. Native Python/Node wheels cannot be
