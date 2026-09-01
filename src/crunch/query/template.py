@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 # Permissive identifier — Metabase allows letters, digits, underscores,
@@ -51,6 +51,26 @@ class ParameterSpec:
     type: str = "text"  # "text" | "number" | "date" | "boolean"
     default: Any = None
     required: bool = False
+
+
+def _relative_date(raw: str) -> date | None:
+    """Resolve UI relative-date tokens (`7d`, `today`, `this_month`, …)."""
+    key = raw.lower()
+    if key.startswith("relative:"):
+        key = key[9:]
+    today = date.today()
+    if key in ("today", "now"):
+        return today
+    if key == "yesterday":
+        return today - timedelta(days=1)
+    if key in ("this_month", "month"):
+        return today.replace(day=1)
+    if key in ("this_year", "year"):
+        return today.replace(month=1, day=1)
+    m = re.fullmatch(r"(\d+)d", key)
+    if m:
+        return today - timedelta(days=int(m.group(1)))
+    return None
 
 
 def parse_variable_names(sql: str) -> list[str]:
@@ -89,7 +109,10 @@ def _coerce(spec: ParameterSpec, raw: Any) -> Any:
             raise ValueError(f"not a boolean: {raw!r}")
         if t == "date":
             if isinstance(raw, (date, datetime)):
-                return raw.isoformat()
+                return raw.isoformat()[:10]
+            resolved = _relative_date(str(raw).strip())
+            if resolved is not None:
+                return resolved.isoformat()
             # Accept any string the driver will parse — we just hand it
             # through. Validation that it's a real date is the driver's job.
             return str(raw)

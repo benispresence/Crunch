@@ -12,7 +12,7 @@ import pytest
 def _load_template_module():
     """Load template.py without dragging in the rest of nicemeta.query,
     which pulls pandas/sqlalchemy (heavy + not needed for these tests)."""
-    path = Path(__file__).resolve().parent.parent / "src" / "nicemeta" / "query" / "template.py"
+    path = Path(__file__).resolve().parent.parent / "src" / "crunch" / "query" / "template.py"
     spec = importlib.util.spec_from_file_location("nicemeta_template", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["nicemeta_template"] = mod
@@ -172,6 +172,31 @@ def test_undeclared_variable_treated_as_text():
     )
     assert ":undeclared" in sql
     assert binds == {"undeclared": "hello"}
+
+
+def test_relative_date_tokens():
+    from datetime import date, timedelta
+
+    _, binds = template.render(
+        "SELECT {{d}}",
+        [template.ParameterSpec(name="d", type="date")],
+        {"d": "today"},
+    )
+    assert binds == {"d": date.today().isoformat()}
+
+    _, binds = template.render(
+        "SELECT {{d}}",
+        [template.ParameterSpec(name="d", type="date")],
+        {"d": "7d"},
+    )
+    assert binds == {"d": (date.today() - timedelta(days=7)).isoformat()}
+
+    _, binds = template.render(
+        "SELECT {{d}}",
+        [template.ParameterSpec(name="d", type="date")],
+        {"d": "relative:this_month"},
+    )
+    assert binds == {"d": date.today().replace(day=1).isoformat()}
 
 
 def test_coerce_values_drops_blanks_and_keeps_typed():

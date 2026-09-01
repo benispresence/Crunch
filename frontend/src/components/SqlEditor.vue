@@ -320,6 +320,7 @@ function mountSqlEditor() {
   });
   sqlEditor.onDidChangeModelContent(() => {
     ws.sql = sqlEditor!.getValue();
+    paintSqlDecorations();
   });
   sqlEditor.addAction({
     id: "run-sql",
@@ -354,9 +355,63 @@ function mountPyEditor() {
   });
 }
 
+let sqlDecorations: string[] = [];
+
+function paintSqlDecorations() {
+  if (!sqlEditor) return;
+  const model = sqlEditor.getModel();
+  if (!model) return;
+  const text = model.getValue();
+  const decos: monaco.editor.IModelDeltaDecoration[] = [];
+  const varRe = /\{\{\s*[A-Za-z_][A-Za-z0-9_]*\s*\}\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = varRe.exec(text)) !== null) {
+    const start = model.getPositionAt(m.index);
+    const end = model.getPositionAt(m.index + m[0].length);
+    decos.push({
+      range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
+      options: { inlineClassName: "sql-filter-var" },
+    });
+  }
+  const optRe = /\[\[([\s\S]+?)\]\]/g;
+  while ((m = optRe.exec(text)) !== null) {
+    const start = model.getPositionAt(m.index);
+    const end = model.getPositionAt(m.index + m[0].length);
+    decos.push({
+      range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
+      options: { inlineClassName: "sql-filter-opt" },
+    });
+  }
+  sqlDecorations = sqlEditor.deltaDecorations(sqlDecorations, decos);
+}
+
+watch(
+  () => ws.pendingSqlInsert,
+  (snippet) => {
+    if (!snippet || !sqlEditor) return;
+    const sel = sqlEditor.getSelection() ?? sqlEditor.getModel()?.getFullModelRange();
+    const padded = snippet.startsWith("[[") ? ` ${snippet}` : snippet;
+    sqlEditor.executeEdits("insert-filter", [
+      {
+        range: sel
+          ? new monaco.Range(sel.startLineNumber, sel.startColumn, sel.endLineNumber, sel.endColumn)
+          : new monaco.Range(1, 1, 1, 1),
+        text: padded,
+        forceMoveMarkers: true,
+      },
+    ]);
+    ws.sql = sqlEditor.getValue();
+    ws.syncParametersFromSql();
+    ws.pendingSqlInsert = null;
+    paintSqlDecorations();
+    sqlEditor.focus();
+  },
+);
+
 onMounted(() => {
   mountSqlEditor();
   mountPyEditor();
+  paintSqlDecorations();
 });
 
 // Re-mount whichever editor host appears later (e.g. after a collapse toggle).
@@ -372,6 +427,7 @@ watch(
   () => ws.sql,
   (value) => {
     if (sqlEditor && sqlEditor.getValue() !== value) sqlEditor.setValue(value);
+    paintSqlDecorations();
   },
 );
 
@@ -561,7 +617,7 @@ const activeQueryProposal = computed(() => {
       <code>df</code> = last query result · assign <code>fig</code> · use Plotly express or graph_objects
     </div>
 
-    <ParametersPanel v-if="!props.collapsed" />
+    <ParametersPanel v-if="tab === 'sql'" />
 
     <div v-show="!props.collapsed && tab === 'sql'" ref="sqlHost" class="editor__host" />
     <div v-show="!props.collapsed && tab === 'python'" ref="pyHost" class="editor__host" />
@@ -848,5 +904,24 @@ const activeQueryProposal = computed(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+</style>
+
+<style>
+/* Monaco decorations live outside the Vue scoped tree. */
+.sql-filter-var {
+  background: rgba(217, 119, 87, 0.22);
+  border-radius: 3px;
+  font-weight: 600;
+}
+.sql-filter-opt {
+  background: rgba(122, 162, 200, 0.16);
+  border-radius: 3px;
+}
+[data-theme="light"] .sql-filter-var {
+  background: rgba(217, 119, 87, 0.18);
+}
+[data-theme="light"] .sql-filter-opt {
+  background: rgba(90, 140, 180, 0.14);
 }
 </style>

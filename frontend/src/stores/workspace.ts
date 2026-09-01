@@ -147,6 +147,8 @@ export const useWorkspaceStore = defineStore("workspace", {
     // we detect in the SQL). Values are the per-run user inputs.
     parameters: [] as ParameterSpec[],
     parameterValues: {} as ParameterValues,
+    /** Snippet the SQL editor should insert at the cursor (filter add). */
+    pendingSqlInsert: null as string | null,
     pythonOutput: null as { spec?: Record<string, unknown>; stdout?: string; error?: string } | null,
     pythonRunning: false,
     result: null as SqlResult | null,
@@ -370,6 +372,9 @@ export const useWorkspaceStore = defineStore("workspace", {
      * in document order. Mirrors what Metabase's editor does on every
      * keystroke.
      */
+    insertSql(snippet: string) {
+      this.pendingSqlInsert = snippet;
+    },
     syncParametersFromSql() {
       const found: string[] = [];
       const seen = new Set<string>();
@@ -501,6 +506,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.chartMode = "picker";
       this.parameters = [];
       this.parameterValues = {};
+      this.pendingSqlInsert = null;
     },
     async runSql() {
       if (!this.activeConnectionId) throw new Error("Pick a connection first");
