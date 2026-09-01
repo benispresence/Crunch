@@ -64,14 +64,16 @@
         "to": "pydeps"
       }
     ],
+    "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "../frontend/public/logo.png",
       "target": [
-        "dir"
+        "zip"
       ],
       "hardenedRuntime": false,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "identity": null
     },
     "win": {
       "target": [

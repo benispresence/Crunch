@@ -20,20 +20,29 @@ A Crunch window should open. Data lives in
 `~/Library/Application Support/Crunch/` (SQLite, workspace, generated
 secrets) so it does not touch your git repo.
 
-## Pack a `.app` (Mac)
+## Downloadable zip (Intel vs Apple Silicon)
+
+These are **two different files**. Native Python/Node wheels cannot be
+universal. Pack on the matching Mac, or run the `Desktop Mac zips`
+GitHub Action (it builds both on `macos-13` Intel and `macos-14` Apple
+Silicon and uploads artifacts).
 
 ```bash
 cd desktop && npm install && npm run pack:mac
 ```
 
-That downloads a relocatable CPython + a Node binary into
-`desktop/.pack/` (gitignored), builds the SPA and API, and writes
-`desktop/release/mac/Crunch.app`.
+Output (gitignored):
 
-The first pack is slow (Python scientific wheels). The `.app` is large
-(hundreds of MB) because pandas / Plotly / DuckDB come along.
+| Machine        | File |
+|----------------|------|
+| Apple Silicon  | `desktop/release/Crunch-1.1.1-mac-arm64.zip` |
+| Intel          | `desktop/release/Crunch-1.1.1-mac-x64.zip` |
 
-The app is **unsigned**. First launch: right-click → Open.
+Send the zip. The other person unzips, then **right-click `Crunch.app` →
+Open** (the build is unsigned).
+
+The first pack is slow (downloads CPython + pandas/Plotly/DuckDB). The
+zip is large — hundreds of MB.
 
 ## Windows
 

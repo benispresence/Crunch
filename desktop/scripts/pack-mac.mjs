@@ -116,12 +116,22 @@ if (!skipPython) {
   }
 }
 
-console.log("→ electron-builder");
+console.log("→ electron-builder (zip for this Mac:", arch, ")");
 await run(
   path.join(desktopDir, "node_modules", ".bin", "electron-builder"),
-  ["--mac", "dir", "--publish", "never"],
+  ["--mac", "zip", "--publish", "never"],
   desktopDir,
+  { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: "false" },
 );
 
-console.log("\nPacked app is under desktop/release/mac. Drag Crunch.app to /Applications.");
-console.log("Unsigned: first open with right-click → Open (Gatekeeper).");
+const label = arch === "arm64" ? "apple-silicon" : "intel";
+const zips = fs.readdirSync(path.join(desktopDir, "release"))
+  .filter((f) => f.endsWith(".zip"))
+  .map((f) => path.join(desktopDir, "release", f));
+console.log("\nDownloadable file(s) for this machine (" + label + "):");
+for (const z of zips) {
+  const mb = (fs.statSync(z).size / (1024 * 1024)).toFixed(1);
+  console.log("  " + z + "  (" + mb + " MB)");
+}
+console.log("Send that zip. Recipients unzip, then right-click Crunch.app → Open.");
+console.log("Intel and Apple Silicon are different zips — pack on each arch (or GitHub Actions).");
