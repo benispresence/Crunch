@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { api } from "@/api/client";
+import AiSettingsPanel from "@/components/AiSettingsPanel.vue";
 import AuthSettingsPanel from "@/components/AuthSettingsPanel.vue";
 import McpSettingsPanel from "@/components/McpSettingsPanel.vue";
 import PermissionsPanel from "@/components/PermissionsPanel.vue";
@@ -30,91 +31,20 @@ interface AdminUser {
 
 const auth = useAuthStore();
 const tab = ref<"settings" | "packages" | "users" | "auth" | "permissions" | "pipelines" | "mcp" | "git">("settings");
+const error = ref("");
 
-interface ModelOption {
-  id: string;
-  label: string;
-  blurb: string;
-  efforts: string[];
-  thinking: string;
-}
 interface SettingsState {
-  anthropic_api_key_masked: string;
-  anthropic_api_key_set: boolean;
-  anthropic_model: string;
-  known_models: ModelOption[];
-  enabled_models: string[];
   public_registration_enabled: boolean;
-  web_search_enabled: boolean;
-  web_search_max_uses: number;
 }
 const settings = ref<SettingsState | null>(null);
-const apiKeyInput = ref("");
-const modelInput = ref("");
 const settingsBusy = ref(false);
 const settingsToast = ref("");
 
 async function loadSettings() {
   try {
-    const s = await api.get<SettingsState>("/admin/settings");
-    settings.value = s;
-    modelInput.value = s.anthropic_model;
-    apiKeyInput.value = "";
+    settings.value = await api.get<SettingsState>("/admin/settings");
   } catch (e) {
     error.value = (e as Error).message;
-  }
-}
-
-async function saveSettings() {
-  settingsBusy.value = true;
-  settingsToast.value = "";
-  error.value = "";
-  try {
-    const body: Record<string, unknown> = { anthropic_model: modelInput.value };
-    if (apiKeyInput.value.trim() !== "") body.anthropic_api_key = apiKeyInput.value.trim();
-    const s = await api.put<SettingsState>("/admin/settings", body);
-    settings.value = s;
-    apiKeyInput.value = "";
-    modelInput.value = s.anthropic_model;
-    settingsToast.value = "Saved.";
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    settingsBusy.value = false;
-  }
-}
-
-async function toggleModel(id: string, on: boolean) {
-  if (!settings.value) return;
-  const next = on
-    ? [...settings.value.enabled_models, id]
-    : settings.value.enabled_models.filter((m) => m !== id);
-  settingsBusy.value = true;
-  error.value = "";
-  try {
-    settings.value = await api.put<SettingsState>("/admin/settings", {
-      enabled_models: next,
-    });
-    settingsToast.value = `${next.length} model${next.length === 1 ? "" : "s"} available to users.`;
-    setTimeout(() => (settingsToast.value = ""), 3000);
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    settingsBusy.value = false;
-  }
-}
-
-async function updateWebSearch(patch: Record<string, unknown>, note: string) {
-  settingsBusy.value = true;
-  error.value = "";
-  try {
-    settings.value = await api.put<SettingsState>("/admin/settings", patch);
-    settingsToast.value = note;
-    setTimeout(() => (settingsToast.value = ""), 3500);
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    settingsBusy.value = false;
   }
 }
 
@@ -137,26 +67,9 @@ async function togglePublicRegistration(on: boolean) {
   }
 }
 
-async function clearApiKey() {
-  if (!confirm("Remove the stored Anthropic API key?")) return;
-  settingsBusy.value = true;
-  error.value = "";
-  try {
-    const s = await api.put<SettingsState>("/admin/settings", { anthropic_api_key: "" });
-    settings.value = s;
-    apiKeyInput.value = "";
-    settingsToast.value = "API key cleared.";
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    settingsBusy.value = false;
-  }
-}
-
 const packages = ref<Pkg[]>([]);
 const users = ref<AdminUser[]>([]);
 const busy = ref<Record<number, boolean>>({});
-const error = ref("");
 
 interface GitStatus {
   initialized: boolean;
@@ -567,140 +480,9 @@ async function deleteUser(u: AdminUser) {
 
     <!-- Settings -->
     <section v-if="tab === 'settings'" class="admin__section">
-      <div v-if="settings" class="settings">
-        <div class="settings__group">
-          <h3>AI / Chat &amp; Agent</h3>
-          <p class="settings__hint">
-            Used by the Chat panel and agent tools. The key is stored locally in your
-            Crunch database and never leaves this machine except to call api.anthropic.com.
-          </p>
+      <AiSettingsPanel @error="error = $event" />
 
-          <label class="settings__field">
-            <span>Anthropic API key</span>
-            <div class="settings__row">
-              <input
-                v-model="apiKeyInput"
-                type="password"
-                autocomplete="off"
-                :placeholder="settings.anthropic_api_key_set ? settings.anthropic_api_key_masked : 'sk-ant-…'"
-              />
-              <button
-                v-if="settings.anthropic_api_key_set"
-                type="button"
-                class="btn btn-sm"
-                :disabled="settingsBusy"
-                @click="clearApiKey"
-              >
-                Clear
-              </button>
-            </div>
-            <small v-if="settings.anthropic_api_key_set">
-              Currently set: <code>{{ settings.anthropic_api_key_masked }}</code>.
-              Enter a new value to replace it.
-            </small>
-            <small v-else class="settings__warn">
-              Not configured — Chat / Agent calls will fail until you set this.
-            </small>
-          </label>
-
-          <label class="settings__field">
-            <span>Model</span>
-            <select v-model="modelInput">
-              <option v-for="m in settings.known_models" :key="m.id" :value="m.id">
-                {{ m.label }}
-              </option>
-            </select>
-            <small>Applied to every Chat and Agent request from now on.</small>
-          </label>
-
-          <div class="settings__row settings__row--end">
-            <span v-if="settingsToast" class="settings__toast">{{ settingsToast }}</span>
-            <button
-              class="btn btn-primary btn-sm"
-              :disabled="settingsBusy"
-              @click="saveSettings"
-            >
-              {{ settingsBusy ? "Saving…" : "Save settings" }}
-            </button>
-          </div>
-        </div>
-
-        <div class="settings__group">
-          <h3>Available models</h3>
-          <p class="settings__hint">
-            Which models users can pick in the assistant's composer. The default
-            model above is always kept available. Capabilities differ — effort
-            levels vary by model and some have none at all; the app adapts each
-            request automatically.
-          </p>
-          <ul class="settings__models">
-            <li v-for="m in settings.known_models" :key="m.id">
-              <label class="settings__model-row">
-                <input
-                  type="checkbox"
-                  :checked="settings.enabled_models.includes(m.id)"
-                  :disabled="settingsBusy || m.id === settings.anthropic_model"
-                  @change="toggleModel(m.id, ($event.target as HTMLInputElement).checked)"
-                />
-                <span class="settings__model-main">
-                  <span class="settings__model-name">
-                    {{ m.label }}
-                    <span v-if="m.id === settings.anthropic_model" class="admin__badge">default</span>
-                  </span>
-                  <span class="settings__model-blurb">{{ m.blurb }}</span>
-                </span>
-                <span class="settings__model-caps">
-                  {{ m.efforts.length ? m.efforts.join(" / ") : "no effort control" }}
-                </span>
-              </label>
-            </li>
-          </ul>
-        </div>
-
-        <div class="settings__group">
-          <h3>Web search</h3>
-          <p class="settings__hint">
-            Lets the assistant look things up on the web — a data source's API docs,
-            a SQL dialect quirk, a current figure — via Anthropic's server-side search.
-            It never sees your warehouse data. Searches are billed per use, so the cap
-            below bounds what a single question can cost.
-          </p>
-          <label class="settings__toggle">
-            <input
-              type="checkbox"
-              :checked="settings.web_search_enabled"
-              :disabled="settingsBusy"
-              @change="updateWebSearch(
-                { web_search_enabled: ($event.target as HTMLInputElement).checked },
-                ($event.target as HTMLInputElement).checked
-                  ? 'Web search enabled.'
-                  : 'Web search disabled — the assistant will answer from your data only.',
-              )"
-            />
-            <span>Allow the assistant to search the web</span>
-            <span
-              class="settings__pill"
-              :class="settings.web_search_enabled ? 'settings__pill--on' : 'settings__pill--off'"
-            >
-              {{ settings.web_search_enabled ? "ENABLED" : "DISABLED" }}
-            </span>
-          </label>
-          <label v-if="settings.web_search_enabled" class="settings__field">
-            <span>Max searches per message</span>
-            <input
-              type="number"
-              min="1"
-              max="20"
-              :value="settings.web_search_max_uses"
-              :disabled="settingsBusy"
-              @change="updateWebSearch(
-                { web_search_max_uses: Number(($event.target as HTMLInputElement).value) },
-                'Search cap updated.',
-              )"
-            />
-          </label>
-        </div>
-
+      <div v-if="settings" class="settings" style="margin-top: 16px">
         <div class="settings__group">
           <h3>Access</h3>
           <p class="settings__hint">
@@ -723,6 +505,7 @@ async function deleteUser(u: AdminUser) {
               {{ settings.public_registration_enabled ? "ENABLED" : "DISABLED" }}
             </span>
           </label>
+          <span v-if="settingsToast" class="settings__toast">{{ settingsToast }}</span>
         </div>
       </div>
     </section>

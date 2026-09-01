@@ -250,6 +250,9 @@ export interface ModelOption {
   efforts: EffortLevel[];
   default_effort: EffortLevel | null;
   supports_thinking_off: boolean;
+  provider?: string;
+  provider_label?: string;
+  provider_short?: string;
 }
 
 interface ConversationSummary {
@@ -282,6 +285,21 @@ export const useChatStore = defineStore("chat", {
   getters: {
     activeModel(state): ModelOption | null {
       return state.models.find((m) => m.id === state.model) ?? state.models[0] ?? null;
+    },
+    modelsByLab(state): Array<{ label: string; models: ModelOption[] }> {
+      const groups: Array<{ label: string; models: ModelOption[] }> = [];
+      const index = new Map<string, number>();
+      for (const m of state.models) {
+        const label = m.provider_label || m.provider_short || "Models";
+        let i = index.get(label);
+        if (i === undefined) {
+          i = groups.length;
+          index.set(label, i);
+          groups.push({ label, models: [] });
+        }
+        groups[i]!.models.push(m);
+      }
+      return groups;
     },
     /**
      * The first not-yet-resolved proposal across the whole conversation.

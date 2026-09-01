@@ -46,10 +46,21 @@ app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 app.use(cookieParser());
 
 // One-line request log so "did the request reach the backend?" is a
-// trivial tail away. Skip /api/health to keep the log readable.
-app.use((req, _res, next) => {
+// trivial tail away. The status matters as much as the path — an expired
+// session shows up as a wall of 401s rather than a visible error in the UI.
+// Skip /api/health to keep the log readable.
+app.use((req, res, next) => {
   if (req.path !== "/api/health") {
-    console.log(`${new Date().toISOString().slice(11, 19)} ${req.method} ${req.path}`);
+    // Capture the path now: by the time `finish` fires, routing has rewritten
+    // req.path to be relative to whichever router handled it.
+    const path = req.path;
+    const started = Date.now();
+    res.on("finish", () => {
+      console.log(
+        `${new Date().toISOString().slice(11, 19)} ${req.method} ${path} `
+        + `${res.statusCode} ${Date.now() - started}ms`,
+      );
+    });
   }
   next();
 });

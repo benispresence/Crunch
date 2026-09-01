@@ -30,6 +30,11 @@ function pickModel(id: string) {
   modelMenuOpen.value = false;
 }
 
+async function toggleModelMenu() {
+  modelMenuOpen.value = !modelMenuOpen.value;
+  if (modelMenuOpen.value) await chat.loadModels();
+}
+
 function formatWhen(ts: number): string {
   const d = new Date(ts * 1000);
   const today = new Date();
@@ -182,22 +187,29 @@ function resize() {
           <button
             class="chat__run-btn"
             :title="chat.activeModel?.blurb"
-            @click="modelMenuOpen = !modelMenuOpen"
+            @click="toggleModelMenu"
           >
-            {{ chat.activeModel?.label ?? "Model" }}
+            {{ chat.activeModel
+              ? (chat.activeModel.provider_short
+                ? `${chat.activeModel.provider_short} · ${chat.activeModel.label}`
+                : chat.activeModel.label)
+              : "Model" }}
             <span class="chat__run-chev" :class="{ 'chat__run-chev--open': modelMenuOpen }">▾</span>
           </button>
           <div v-if="modelMenuOpen" class="chat__model-menu">
-            <button
-              v-for="m in chat.models"
-              :key="m.id"
-              class="chat__model-item"
-              :class="{ 'chat__model-item--active': m.id === chat.model }"
-              @click="pickModel(m.id)"
-            >
-              <span class="chat__model-name">{{ m.label }}</span>
-              <span class="chat__model-blurb">{{ m.blurb }}</span>
-            </button>
+            <div v-for="group in chat.modelsByLab" :key="group.label" class="chat__model-group">
+              <div v-if="chat.modelsByLab.length > 1" class="chat__model-lab">{{ group.label }}</div>
+              <button
+                v-for="m in group.models"
+                :key="m.id"
+                class="chat__model-item"
+                :class="{ 'chat__model-item--active': m.id === chat.model }"
+                @click="pickModel(m.id)"
+              >
+                <span class="chat__model-name">{{ m.label }}</span>
+                <span class="chat__model-blurb">{{ m.blurb }}</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -536,6 +548,14 @@ function resize() {
 .chat__model-item--active .chat__model-name { color: var(--accent); }
 .chat__model-name { font-size: 12px; }
 .chat__model-blurb { font-size: 10.5px; color: var(--fg-subtle); line-height: 1.35; }
+.chat__model-group + .chat__model-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
+.chat__model-lab {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-subtle);
+  padding: 4px 9px 2px;
+}
 .chat__effort {
   display: inline-flex;
   align-items: center;

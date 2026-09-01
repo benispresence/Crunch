@@ -41,6 +41,9 @@ export const config = {
   pythonEngineToken: engineToken,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
   anthropicModel: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7",
+  xaiApiKey: process.env.XAI_API_KEY ?? "",
+  openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  googleApiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "",
   databaseFile: process.env.DATABASE_FILE ?? "./nicemeta.sqlite",
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
   // Browser-facing origin of the deployment, used to build OAuth redirect

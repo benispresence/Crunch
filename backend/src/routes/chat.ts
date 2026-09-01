@@ -11,9 +11,16 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  getDefaultModel,
+  getProviderCredentials,
+  isModelEnabled,
+  modelPickerPayload,
+  type ProviderCredentials,
+} from "../services/aiProviders.js";
 import { chatToolsForRequest, runTool } from "../services/chatTools.js";
-import { getAnthropicApiKey, getAnthropicModel } from "../services/settings.js";
-import { isModelEnabled, modelPickerPayload, resolveRun } from "../services/models.js";
+import { findModel, resolveRun, type ResolvedRun } from "../services/models.js";
+import { runOpenAiCompatTurn } from "../services/openaiCompatChat.js";
 import { readWebSearchResult, webSearchTool } from "../services/webSearch.js";
 
 export const chatRouter = Router();
@@ -443,18 +450,99 @@ chatRouter.get("/conversations/:id", (req, res) => {
   });
 });
 
+async function runCompatLoop(opts: {
+  creds: ProviderCredentials;
+  run: ResolvedRun;
+  history: MessageParam[];
+  systemText: string;
+  userId: number;
+  send: (event: string, data: unknown) => void;
+  maxTurns: number;
+}): Promise<void> {
+  const { creds, run, history, systemText, userId, send, maxTurns } = opts;
+  const tools = chatToolsForRequest();
+  let turn = 0;
+  while (turn < maxTurns) {
+    turn += 1;
+    send("turn_start", { turn });
+    const { assistantBlocks, toolUses, stopReason } = await runOpenAiCompatTurn({
+      creds,
+      run,
+      history,
+      system: systemText,
+      tools,
+      maxTokens: MAX_TOKENS,
+      send,
+    });
+    history.push({ role: "assistant", content: assistantBlocks });
+
+    if (toolUses.length > 0 && stopReason !== "tool_calls" && stopReason !== "tool_use") {
+      if (stopReason === "length" || stopReason === "max_tokens") {
+        history.pop();
+        send("error", {
+          error:
+            "The assistant ran out of output space while building a tool call. "
+            + "Ask it to work in smaller batches (e.g. fewer queries at a time).",
+        });
+        return;
+      }
+    }
+
+    if (toolUses.length === 0) {
+      const text = assistantBlocks
+        .filter((b): b is TextBlock => (b as { type?: string }).type === "text")
+        .map((b) => b.text)
+        .join("\n");
+      const thinking = assistantBlocks
+        .filter((b): b is ThinkingBlock => (b as { type?: string }).type === "thinking")
+        .map((b) => (b as ThinkingBlock).thinking)
+        .join("\n");
+      send("assistant_complete", { text, thinking, stop_reason: stopReason });
+      return;
+    }
+
+    send("tools_running", { count: toolUses.length, aggregated: toolUses.length > 5 });
+    const toolResults: ToolResultBlockParam[] = [];
+    for (const tu of toolUses) {
+      send("tool_call", { id: tu.id, name: tu.name, input: tu.input });
+      const result = await runTool({ userId }, tu.name, tu.input as Record<string, unknown>);
+      send("tool_result", { id: tu.id, name: tu.name, result });
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: tu.id,
+        content: clampToolResult(result),
+      });
+    }
+    history.push({ role: "user", content: toolResults });
+  }
+  send("error", { error: `stopped after ${maxTurns} turns` });
+}
+
 chatRouter.post("/send", async (req, res) => {
   const parsed = sendSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const apiKey = getAnthropicApiKey();
-  const model = getAnthropicModel();
-  if (!apiKey) {
-    res.status(503).json({
-      error: "Anthropic API key not configured. Set it in Admin → Settings.",
+  const defaultModel = getDefaultModel();
+  const requestedModel = parsed.data.model;
+  if (requestedModel && !isModelEnabled(requestedModel)) {
+    res.status(400).json({
+      error: `Model "${requestedModel}" is not enabled for this workspace.`,
     });
+    return;
+  }
+  const model = requestedModel || defaultModel;
+  const spec = findModel(model);
+  if (!spec) {
+    res.status(400).json({ error: `unknown model: ${model}` });
+    return;
+  }
+  let creds;
+  try {
+    creds = await getProviderCredentials(spec.provider);
+  } catch (err) {
+    res.status(503).json({ error: (err as Error).message });
     return;
   }
 
@@ -479,19 +567,8 @@ chatRouter.post("/send", async (req, res) => {
   ]);
   send("user_saved", { conversation_id: conv.id });
 
-  const client = new Anthropic({ apiKey });
-
-  // Per-message model/effort override, validated against what the admin has
-  // enabled. resolveRun() then clamps the pair into a shape this particular
-  // model accepts — the family is not uniform (see services/models.ts).
-  const requested = parsed.data.model;
-  if (requested && !isModelEnabled(requested)) {
-    send("error", { error: `Model "${requested}" is not enabled for this workspace.` });
-    res.end();
-    return;
-  }
   const run = resolveRun({
-    model: requested || model,
+    model,
     effort: parsed.data.effort ?? null,
     thinking: parsed.data.thinking ?? true,
     maxTokens: MAX_TOKENS,
@@ -504,7 +581,13 @@ chatRouter.post("/send", async (req, res) => {
     thinking: run.thinking,
   });
 
-  const searchTool = webSearchTool(run.model);
+  const searchTool = spec.provider === "anthropic" ? webSearchTool(run.model) : null;
+  const workspaceBlock = parsed.data.workspace
+    ? formatWorkspaceContext(parsed.data.workspace)
+    : "";
+  const systemText = workspaceBlock
+    ? `${SYSTEM_PROMPT}\n\n${workspaceBlock}`
+    : SYSTEM_PROMPT;
 
   let turn = 0;
   const maxTurns = 8;
@@ -515,6 +598,24 @@ chatRouter.post("/send", async (req, res) => {
   const maxPauseResumes = 5;
 
   try {
+    if (creds.protocol !== "anthropic") {
+      await runCompatLoop({
+        creds,
+        run,
+        history,
+        systemText,
+        userId,
+        send,
+        maxTurns,
+      });
+      const title = conv.history.length === 0 ? parsed.data.message.slice(0, 60) : "";
+      const finalId = saveConversation(userId, conv.id, title, history);
+      send("done", { conversation_id: finalId });
+      return;
+    }
+
+    const client = new Anthropic({ apiKey: creds.api_key });
+
     while (turn < maxTurns) {
       turn += 1;
       send("turn_start", { turn });
