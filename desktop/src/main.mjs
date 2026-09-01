@@ -210,6 +210,12 @@ function frontendDist() {
   return path.join(repoRoot(), "frontend", "dist");
 }
 
+function appIcon() {
+  const packaged = path.join(__dirname, "..", "build", "icon.png");
+  if (fs.existsSync(packaged)) return packaged;
+  return path.join(repoRoot(), "frontend", "public", "logo.png");
+}
+
 async function startStack() {
   fs.mkdirSync(userDir(), { recursive: true });
   const secrets = loadOrCreateSecrets();
@@ -281,12 +287,17 @@ function splashHtml() {
 }
 
 async function createWindow() {
+  const icon = appIcon();
+  if (process.platform === "darwin") {
+    app.dock?.setIcon(icon);
+  }
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 960,
     minHeight: 640,
     title: "Crunch",
+    icon,
     backgroundColor: "#1a1815",
     autoHideMenuBar: true,
     webPreferences: {

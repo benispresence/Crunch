@@ -8,7 +8,8 @@
   "type": "module",
   "scripts": {
     "start": "node scripts/dev.mjs",
-    "pack:mac": "node scripts/pack-mac.mjs"
+    "pack:mac": "node scripts/pack-mac.mjs",
+    "icon": "node scripts/generate-icon.mjs"
   },
   "devDependencies": {
     "electron": "^33.4.5",
@@ -24,7 +25,9 @@
     },
     "files": [
       "src/**/*",
-      "package.json"
+      "package.json",
+      "build/icon.png",
+      "build/icon.icns"
     ],
     "extraResources": [
       {
@@ -67,7 +70,7 @@
     "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "../frontend/public/logo.png",
+      "icon": "build/icon.icns",
       "target": [
         "zip"
       ],

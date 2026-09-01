@@ -71,6 +71,9 @@ fs.mkdirSync(path.join(packDir, "python"), { recursive: true });
 fs.mkdirSync(path.join(packDir, "pydeps"), { recursive: true });
 fs.mkdirSync(path.join(packDir, "node"), { recursive: true });
 
+console.log("→ app icon from Crunch logo");
+await run(process.execPath, [path.join(desktopDir, "scripts", "generate-icon.mjs")], desktopDir);
+
 console.log("→ build frontend");
 await run("npm", ["run", "build"], path.join(repo, "frontend"));
 
