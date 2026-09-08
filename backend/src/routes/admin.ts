@@ -3,6 +3,13 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAdmin, requireAuth } from "../middleware/auth.js";
 import { createUser, findUserByEmail, updatePassword } from "../services/auth.js";
+import { isStdlibRow } from "../services/packages.js";
+import {
+  getWebSearchMaxUses,
+  isWebSearchEnabled,
+  setWebSearchEnabled,
+  setWebSearchMaxUses,
+} from "../services/webSearch.js";
 import {
   createApiKey,
   deleteProvider,
@@ -39,14 +46,30 @@ import {
 } from "../services/pipelines.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 import {
-  KNOWN_MODELS,
-  getAnthropicApiKey,
-  getAnthropicModel,
+  aiSettingsPayload,
+  clearProviderCredentials,
+  clearXaiOauth,
+  findLab,
+  getEnabledModelIds,
+  probeProvider,
+  setDefaultModel,
+  setProviderApiKey,
+  setProviderAuthMode,
+  setProviderEnabledModels,
+  setXaiOauthTokens,
+  type AuthMode,
+} from "../services/aiProviders.js";
+import {
   isPublicRegistrationEnabled,
-  maskApiKey,
   setPublicRegistrationEnabled,
   setSetting,
 } from "../services/settings.js";
+import {
+  beginDeviceSession,
+  cancelDeviceSession,
+  getDeviceSession,
+  takeCompletedTokens,
+} from "../services/xaiOauth.js";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireAdmin);
@@ -83,6 +106,9 @@ function rowToPackage(row: PackageRow) {
     error_message: row.error_message,
     is_default: !!row.is_default,
     is_enabled: !!row.is_enabled,
+    // Lets the UI drop the Install/Uninstall buttons — there is no pip step
+    // for a module that ships with Python.
+    is_stdlib: isStdlibRow(row.installed_version),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -160,6 +186,12 @@ adminRouter.post("/packages/:id/uninstall", async (req, res) => {
     res.status(400).json({ error: "cannot uninstall default package" });
     return;
   }
+  if (isStdlibRow(row.installed_version)) {
+    res.status(400).json({
+      error: `${row.package_name} is part of Python and cannot be uninstalled — disable it instead`,
+    });
+    return;
+  }
   try {
     const r = await pythonEngine.uninstallPackage(row.package_name);
     db.prepare(
@@ -228,13 +260,14 @@ adminRouter.get("/users", (_req, res) => {
 });
 
 function settingsPayload() {
-  const key = getAnthropicApiKey();
+  const ai = aiSettingsPayload();
   return {
-    anthropic_api_key_masked: maskApiKey(key),
-    anthropic_api_key_set: !!key,
-    anthropic_model: getAnthropicModel(),
-    known_models: KNOWN_MODELS,
+    ...ai,
+    anthropic_model: ai.default_model,
+    enabled_models: getEnabledModelIds(),
     public_registration_enabled: isPublicRegistrationEnabled(),
+    web_search_enabled: isWebSearchEnabled(),
+    web_search_max_uses: getWebSearchMaxUses(),
   };
 }
 
@@ -247,28 +280,136 @@ adminRouter.put("/settings", (req, res) => {
     .object({
       anthropic_api_key: z.string().optional(),
       anthropic_model: z.string().optional(),
+      default_model: z.string().optional(),
       public_registration_enabled: z.boolean().optional(),
+      web_search_enabled: z.boolean().optional(),
+      web_search_max_uses: z.number().int().min(1).max(20).optional(),
     })
     .safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  // Empty string means "clear"; undefined means "leave alone".
   if (parsed.data.anthropic_api_key !== undefined) {
-    setSetting("anthropic_api_key", parsed.data.anthropic_api_key.trim());
+    setProviderApiKey("anthropic", parsed.data.anthropic_api_key.trim());
   }
-  if (parsed.data.anthropic_model !== undefined) {
-    const allowed = KNOWN_MODELS.some((m) => m.id === parsed.data.anthropic_model);
-    if (!allowed) {
-      res.status(400).json({ error: `unknown model: ${parsed.data.anthropic_model}` });
+  const nextDefault = parsed.data.default_model ?? parsed.data.anthropic_model;
+  if (nextDefault !== undefined) {
+    try {
+      setDefaultModel(nextDefault);
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
       return;
     }
-    setSetting("anthropic_model", parsed.data.anthropic_model);
   }
   if (parsed.data.public_registration_enabled !== undefined) {
     setPublicRegistrationEnabled(parsed.data.public_registration_enabled);
   }
+  if (parsed.data.web_search_enabled !== undefined) {
+    setWebSearchEnabled(parsed.data.web_search_enabled);
+  }
+  if (parsed.data.web_search_max_uses !== undefined) {
+    setWebSearchMaxUses(parsed.data.web_search_max_uses);
+  }
+  res.json(settingsPayload());
+});
+
+// ---------- Per-lab AI connections --------------------------------
+
+adminRouter.put("/ai/providers/:id", (req, res) => {
+  const lab = findLab(req.params.id);
+  if (!lab) {
+    res.status(404).json({ error: "unknown provider" });
+    return;
+  }
+  const parsed = z
+    .object({
+      auth_mode: z.enum(["api_key", "subscription"]).optional(),
+      api_key: z.string().optional(),
+      enabled_models: z.array(z.string()).optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    if (parsed.data.auth_mode !== undefined) {
+      setProviderAuthMode(lab.id, parsed.data.auth_mode as AuthMode);
+    }
+    if (parsed.data.api_key !== undefined) {
+      setProviderApiKey(lab.id, parsed.data.api_key);
+    }
+    if (parsed.data.enabled_models !== undefined) {
+      setProviderEnabledModels(lab.id, parsed.data.enabled_models);
+    }
+    res.json(settingsPayload());
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+adminRouter.delete("/ai/providers/:id/credentials", (req, res) => {
+  const lab = findLab(req.params.id);
+  if (!lab) {
+    res.status(404).json({ error: "unknown provider" });
+    return;
+  }
+  clearProviderCredentials(lab.id);
+  res.json(settingsPayload());
+});
+
+adminRouter.post("/ai/providers/:id/test", async (req, res) => {
+  const lab = findLab(req.params.id);
+  if (!lab) {
+    res.status(404).json({ error: "unknown provider" });
+    return;
+  }
+  const result = await probeProvider(lab.id);
+  res.json(result);
+});
+
+adminRouter.post("/ai/xai/oauth/start", async (_req, res) => {
+  try {
+    const session = await beginDeviceSession();
+    res.json(session);
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
+});
+
+adminRouter.get("/ai/xai/oauth/status", (req, res) => {
+  const id = String(req.query.session ?? "");
+  if (!id) {
+    res.status(400).json({ error: "session required" });
+    return;
+  }
+  const session = getDeviceSession(id);
+  if (!session) {
+    res.status(404).json({ error: "unknown or finished session" });
+    return;
+  }
+  if (session.status === "complete") {
+    const tokens = takeCompletedTokens(id);
+    if (tokens) setXaiOauthTokens(tokens);
+    res.json({ ...session, connected: true, settings: settingsPayload() });
+    return;
+  }
+  res.json(session);
+});
+
+adminRouter.post("/ai/xai/oauth/cancel", (req, res) => {
+  const parsed = z.object({ session: z.string() }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  cancelDeviceSession(parsed.data.session);
+  res.json({ ok: true });
+});
+
+adminRouter.delete("/ai/xai/oauth", (_req, res) => {
+  clearXaiOauth();
   res.json(settingsPayload());
 });
 

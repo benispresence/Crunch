@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { api } from "@/api/client";
+import AiSettingsPanel from "@/components/AiSettingsPanel.vue";
 import AuthSettingsPanel from "@/components/AuthSettingsPanel.vue";
 import McpSettingsPanel from "@/components/McpSettingsPanel.vue";
 import PermissionsPanel from "@/components/PermissionsPanel.vue";
@@ -17,6 +18,8 @@ interface Pkg {
   error_message: string | null;
   is_default: boolean;
   is_enabled: boolean;
+  /** Ships with Python: no pip step, no version number. */
+  is_stdlib?: boolean;
 }
 
 interface AdminUser {
@@ -28,48 +31,20 @@ interface AdminUser {
 
 const auth = useAuthStore();
 const tab = ref<"settings" | "packages" | "users" | "auth" | "permissions" | "pipelines" | "mcp" | "git">("settings");
+const error = ref("");
 
-interface ModelOption { id: string; label: string }
 interface SettingsState {
-  anthropic_api_key_masked: string;
-  anthropic_api_key_set: boolean;
-  anthropic_model: string;
-  known_models: ModelOption[];
   public_registration_enabled: boolean;
 }
 const settings = ref<SettingsState | null>(null);
-const apiKeyInput = ref("");
-const modelInput = ref("");
 const settingsBusy = ref(false);
 const settingsToast = ref("");
 
 async function loadSettings() {
   try {
-    const s = await api.get<SettingsState>("/admin/settings");
-    settings.value = s;
-    modelInput.value = s.anthropic_model;
-    apiKeyInput.value = "";
+    settings.value = await api.get<SettingsState>("/admin/settings");
   } catch (e) {
     error.value = (e as Error).message;
-  }
-}
-
-async function saveSettings() {
-  settingsBusy.value = true;
-  settingsToast.value = "";
-  error.value = "";
-  try {
-    const body: Record<string, unknown> = { anthropic_model: modelInput.value };
-    if (apiKeyInput.value.trim() !== "") body.anthropic_api_key = apiKeyInput.value.trim();
-    const s = await api.put<SettingsState>("/admin/settings", body);
-    settings.value = s;
-    apiKeyInput.value = "";
-    modelInput.value = s.anthropic_model;
-    settingsToast.value = "Saved.";
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    settingsBusy.value = false;
   }
 }
 
@@ -92,26 +67,9 @@ async function togglePublicRegistration(on: boolean) {
   }
 }
 
-async function clearApiKey() {
-  if (!confirm("Remove the stored Anthropic API key?")) return;
-  settingsBusy.value = true;
-  error.value = "";
-  try {
-    const s = await api.put<SettingsState>("/admin/settings", { anthropic_api_key: "" });
-    settings.value = s;
-    apiKeyInput.value = "";
-    settingsToast.value = "API key cleared.";
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    settingsBusy.value = false;
-  }
-}
-
 const packages = ref<Pkg[]>([]);
 const users = ref<AdminUser[]>([]);
 const busy = ref<Record<number, boolean>>({});
-const error = ref("");
 
 interface GitStatus {
   initialized: boolean;
@@ -464,11 +422,17 @@ async function deleteUser(u: AdminUser) {
             <td>
               <div class="admin__pkg">
                 <strong>{{ p.package_name }}</strong>
-                <span v-if="p.is_default" class="admin__badge">default</span>
+                <span v-if="p.is_stdlib" class="admin__badge">stdlib</span>
+                <span v-else-if="p.is_default" class="admin__badge">default</span>
               </div>
             </td>
             <td class="admin__mono">{{ p.import_name ?? "—" }}</td>
-            <td class="admin__mono">{{ p.installed_version ?? p.version_spec ?? "—" }}</td>
+            <td class="admin__mono">
+              <span v-if="p.is_stdlib" class="admin__stdlib" title="Part of Python — no pip package, so there is no version to report">
+                built in
+              </span>
+              <template v-else>{{ p.installed_version ?? p.version_spec ?? "—" }}</template>
+            </td>
             <td>
               <span class="admin__status" :class="`admin__status--${p.status}`">
                 {{ p.status }}
@@ -487,7 +451,7 @@ async function deleteUser(u: AdminUser) {
             </td>
             <td class="admin__actions">
               <button
-                v-if="p.status !== 'installed'"
+                v-if="p.status !== 'installed' && !p.is_stdlib"
                 class="btn btn-sm"
                 :disabled="busy[p.id]"
                 @click="install(p.id)"
@@ -495,7 +459,7 @@ async function deleteUser(u: AdminUser) {
                 {{ busy[p.id] ? "..." : "Install" }}
               </button>
               <button
-                v-if="!p.is_default && p.status === 'installed'"
+                v-if="!p.is_default && !p.is_stdlib && p.status === 'installed'"
                 class="btn btn-sm"
                 :disabled="busy[p.id]"
                 @click="uninstall(p.id)"
@@ -516,64 +480,9 @@ async function deleteUser(u: AdminUser) {
 
     <!-- Settings -->
     <section v-if="tab === 'settings'" class="admin__section">
-      <div v-if="settings" class="settings">
-        <div class="settings__group">
-          <h3>AI / Chat &amp; Agent</h3>
-          <p class="settings__hint">
-            Used by the Chat panel and agent tools. The key is stored locally in your
-            Crunch database and never leaves this machine except to call api.anthropic.com.
-          </p>
+      <AiSettingsPanel @error="error = $event" />
 
-          <label class="settings__field">
-            <span>Anthropic API key</span>
-            <div class="settings__row">
-              <input
-                v-model="apiKeyInput"
-                type="password"
-                autocomplete="off"
-                :placeholder="settings.anthropic_api_key_set ? settings.anthropic_api_key_masked : 'sk-ant-…'"
-              />
-              <button
-                v-if="settings.anthropic_api_key_set"
-                type="button"
-                class="btn btn-sm"
-                :disabled="settingsBusy"
-                @click="clearApiKey"
-              >
-                Clear
-              </button>
-            </div>
-            <small v-if="settings.anthropic_api_key_set">
-              Currently set: <code>{{ settings.anthropic_api_key_masked }}</code>.
-              Enter a new value to replace it.
-            </small>
-            <small v-else class="settings__warn">
-              Not configured — Chat / Agent calls will fail until you set this.
-            </small>
-          </label>
-
-          <label class="settings__field">
-            <span>Model</span>
-            <select v-model="modelInput">
-              <option v-for="m in settings.known_models" :key="m.id" :value="m.id">
-                {{ m.label }}
-              </option>
-            </select>
-            <small>Applied to every Chat and Agent request from now on.</small>
-          </label>
-
-          <div class="settings__row settings__row--end">
-            <span v-if="settingsToast" class="settings__toast">{{ settingsToast }}</span>
-            <button
-              class="btn btn-primary btn-sm"
-              :disabled="settingsBusy"
-              @click="saveSettings"
-            >
-              {{ settingsBusy ? "Saving…" : "Save settings" }}
-            </button>
-          </div>
-        </div>
-
+      <div v-if="settings" class="settings" style="margin-top: 16px">
         <div class="settings__group">
           <h3>Access</h3>
           <p class="settings__hint">
@@ -596,6 +505,7 @@ async function deleteUser(u: AdminUser) {
               {{ settings.public_registration_enabled ? "ENABLED" : "DISABLED" }}
             </span>
           </label>
+          <span v-if="settingsToast" class="settings__toast">{{ settingsToast }}</span>
         </div>
       </div>
     </section>
@@ -934,6 +844,41 @@ async function deleteUser(u: AdminUser) {
   border: 1px solid var(--border);
 }
 .admin__mono { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.settings__models {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+.settings__model-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  min-width: 0;
+}
+.settings__model-row:hover { background: var(--bg-hover); }
+.settings__model-row input:disabled { cursor: not-allowed; }
+.settings__model-main { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.settings__model-name {
+  font-size: 12.5px;
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings__model-blurb { font-size: 11px; color: var(--fg-subtle); line-height: 1.4; }
+.settings__model-caps {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-subtle);
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+.admin__stdlib { font-family: var(--font-sans); font-style: italic; color: var(--fg-subtle); }
 .admin__date { color: var(--fg-subtle); }
 
 .admin__status {

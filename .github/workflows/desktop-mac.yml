@@ -1,0 +1,60 @@
+name: Desktop Mac zips
+
+# Builds a downloadable Crunch.app zip per Mac architecture.
+#   macos-14 → Apple Silicon (arm64)
+#   macos-13 → Intel (x64)
+#
+# Artifacts are named Crunch-<version>-mac-<arch>.zip.
+# On a version tag they are also attached to the GitHub Release.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+            label: apple-silicon
+          - os: macos-13
+            arch: x64
+            label: intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install JS deps
+        run: |
+          npm ci --prefix frontend
+          npm ci --prefix backend
+          npm ci --prefix desktop
+
+      - name: Pack Mac zip (${{ matrix.label }})
+        run: npm run pack:mac
+        working-directory: desktop
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Crunch-mac-${{ matrix.label }}
+          path: desktop/release/Crunch-*-mac-*.zip
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/release/Crunch-*-mac-*.zip

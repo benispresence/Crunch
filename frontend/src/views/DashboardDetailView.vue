@@ -5,6 +5,7 @@ import DashboardFilterBar from "@/components/DashboardFilterBar.vue";
 import DashboardWidget from "@/components/DashboardWidget.vue";
 import RevisionHistoryDialog from "@/components/RevisionHistoryDialog.vue";
 import WidgetMappingDialog from "@/components/WidgetMappingDialog.vue";
+import { absoluteUrl, copyText, dashboardPath } from "@/utils/links";
 import { useDashboardsStore, type DashboardWidget as Widget } from "@/stores/dashboards";
 import { useWorkspaceStore } from "@/stores/workspace";
 
@@ -12,6 +13,8 @@ const route = useRoute();
 const router = useRouter();
 const dashboards = useDashboardsStore();
 const ws = useWorkspaceStore();
+
+const linkToast = ref("");
 
 const COLS = 12;
 const ROW_HEIGHT = 80;
@@ -40,6 +43,24 @@ const usedQueryIds = computed(
   () => new Set(draftWidgets.value.map((w) => w.query_id).filter((id): id is number => id != null)),
 );
 
+function normalizeDashboardUrl() {
+  const d = dashboards.current;
+  if (!d) return;
+  const target = dashboardPath(d.id, d.name);
+  if (route.path !== target && route.fullPath.split("?")[0] !== target) {
+    void router.replace(target);
+  }
+}
+
+async function copyDashboardLink() {
+  const d = dashboards.current;
+  if (!d) return;
+  const url = absoluteUrl(dashboardPath(d.id, d.name));
+  const ok = await copyText(url);
+  linkToast.value = ok ? "Link copied" : "Copy failed";
+  setTimeout(() => (linkToast.value = ""), 1500);
+}
+
 onMounted(async () => {
   await Promise.all([
     dashboards.open(dashboardId.value),
@@ -47,11 +68,28 @@ onMounted(async () => {
     ws.connections.length === 0 ? ws.loadConnections() : Promise.resolve(),
   ]);
   syncFromStore();
+  normalizeDashboardUrl();
 });
+
+watch(
+  () => route.params.id,
+  async (id) => {
+    const n = Number(id);
+    if (!Number.isFinite(n)) return;
+    await dashboards.open(n);
+    syncFromStore();
+    normalizeDashboardUrl();
+  },
+);
 
 watch(
   () => dashboards.current?.widgets,
   () => syncFromStore(),
+);
+
+watch(
+  () => dashboards.current?.name,
+  () => normalizeDashboardUrl(),
 );
 
 function syncFromStore() {
@@ -193,6 +231,14 @@ function closeMapping() {
         <h1>{{ dashboards.current?.name ?? "Dashboard" }}</h1>
       </div>
       <div class="detail__head-right">
+        <span v-if="linkToast" class="detail__link-toast">{{ linkToast }}</span>
+        <button
+          class="btn btn-ghost btn-sm"
+          title="Copy shareable link to this dashboard"
+          @click="copyDashboardLink"
+        >
+          Copy link
+        </button>
         <button class="btn btn-sm" @click="showAdder = true">+ Add chart</button>
         <button class="btn btn-ghost btn-sm" @click="showHistory = true">History</button>
         <button v-if="!editing" class="btn btn-sm" @click="editing = true">Edit layout</button>
@@ -323,7 +369,12 @@ function closeMapping() {
 }
 .detail__head-right {
   display: flex;
+  align-items: center;
   gap: 6px;
+}
+.detail__link-toast {
+  font-size: 11px;
+  color: var(--accent);
 }
 
 .detail__grid {

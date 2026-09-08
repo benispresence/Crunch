@@ -13,9 +13,9 @@ export interface DashboardSummary {
 export interface DashboardFilter {
   id: string;
   name: string;
-  type: "text" | "number" | "date" | "boolean";
-  default?: string | number | boolean | null;
-  widget?: "input" | "dropdown" | "date" | "toggle";
+  type: "text" | "number" | "date" | "boolean" | "field";
+  default?: string | number | boolean | null | { start?: string | null; end?: string | null } | string[];
+  widget?: "input" | "dropdown" | "date" | "daterange" | "month" | "toggle";
   options?: string[];
 }
 
@@ -88,7 +88,7 @@ export const useDashboardsStore = defineStore("dashboards", {
       const w = this.current.widgets.find((x) => x.id === widgetId);
       if (w) w.parameter_mappings = mapping;
     },
-    setFilterValue(id: string, value: string | number | boolean | null) {
+    setFilterValue(id: string, value: ParameterValues[string]) {
       this.filterValues = { ...this.filterValues, [id]: value };
     },
     /**

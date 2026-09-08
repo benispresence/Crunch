@@ -451,6 +451,30 @@ const insertPkg = db.prepare(
 );
 for (const p of DEFAULT_PACKAGES) insertPkg.run(p.name, p.importName);
 
+// Stdlib modules the sandbox allows out of the box. They ship with Python, so
+// they get installed_version 'stdlib' — there is no pip package and no version
+// to resolve, which is exactly what used to make them un-addable in the UI.
+// The engine (crunch.visualization.sandbox_modules) is the authority on what
+// counts as stdlib; this list only decides what appears pre-seeded.
+const STDLIB_PACKAGES = [
+  "time", "datetime", "calendar", "math", "statistics", "random",
+  "decimal", "fractions", "json", "csv", "re", "string", "textwrap",
+  "collections", "itertools", "functools", "operator", "copy",
+  "dataclasses", "enum", "typing", "uuid", "hashlib", "base64", "io",
+];
+const insertStdlibPkg = db.prepare(
+  `INSERT OR IGNORE INTO allowed_packages
+     (package_name, import_name, is_default, is_enabled, status, installed_version)
+   VALUES (?, ?, 1, 1, 'installed', 'stdlib')`,
+);
+for (const name of STDLIB_PACKAGES) insertStdlibPkg.run(name, name);
+
+// Existing installs seeded these before the stdlib column convention existed.
+db.prepare(
+  `UPDATE allowed_packages SET installed_version = 'stdlib', status = 'installed'
+   WHERE installed_version IS NULL AND package_name IN (${STDLIB_PACKAGES.map(() => "?").join(",")})`,
+).run(...STDLIB_PACKAGES);
+
 // First registered user becomes admin.
 const userCount = db.prepare("SELECT COUNT(*) as c FROM users").get() as { c: number };
 if (userCount.c === 0) {

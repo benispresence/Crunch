@@ -4,7 +4,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useTheme } from "@/composables/theme";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
-import ParametersPanel from "./ParametersPanel.vue";
+import { absoluteUrl, copyText, queryPath } from "@/utils/links";
+import CookieLoader from "./CookieLoader.vue";
+import FilterErrorHint from "./FilterErrorHint.vue";
 import ProposalCard from "./ProposalCard.vue";
 import RevisionHistoryDialog from "./RevisionHistoryDialog.vue";
 
@@ -64,6 +66,15 @@ const activeQuery = computed(() =>
 // One title for the whole query+chart unit. SqlEditor sits on top of
 // ChartPanel so showing the name once here serves both panes.
 const headerName = computed(() => activeQuery.value?.name ?? "Untitled query");
+
+const linkToast = ref("");
+async function copyQueryLink() {
+  const q = activeQuery.value;
+  if (!q) return;
+  const ok = await copyText(absoluteUrl(queryPath(q.id, q.name)));
+  linkToast.value = ok ? "Link copied" : "Copy failed";
+  setTimeout(() => (linkToast.value = ""), 1500);
+}
 
 // Inline title editing: click the name to rename a saved query in place.
 // The edit commits on blur or Enter and reverts on Escape. Only saved
@@ -309,6 +320,7 @@ function mountSqlEditor() {
   });
   sqlEditor.onDidChangeModelContent(() => {
     ws.sql = sqlEditor!.getValue();
+    paintSqlDecorations();
   });
   sqlEditor.addAction({
     id: "run-sql",
@@ -343,9 +355,63 @@ function mountPyEditor() {
   });
 }
 
+let sqlDecorations: string[] = [];
+
+function paintSqlDecorations() {
+  if (!sqlEditor) return;
+  const model = sqlEditor.getModel();
+  if (!model) return;
+  const text = model.getValue();
+  const decos: monaco.editor.IModelDeltaDecoration[] = [];
+  const varRe = /\{\{\s*[A-Za-z_][A-Za-z0-9_]*\s*\}\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = varRe.exec(text)) !== null) {
+    const start = model.getPositionAt(m.index);
+    const end = model.getPositionAt(m.index + m[0].length);
+    decos.push({
+      range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
+      options: { inlineClassName: "sql-filter-var" },
+    });
+  }
+  const optRe = /\[\[([\s\S]+?)\]\]/g;
+  while ((m = optRe.exec(text)) !== null) {
+    const start = model.getPositionAt(m.index);
+    const end = model.getPositionAt(m.index + m[0].length);
+    decos.push({
+      range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
+      options: { inlineClassName: "sql-filter-opt" },
+    });
+  }
+  sqlDecorations = sqlEditor.deltaDecorations(sqlDecorations, decos);
+}
+
+watch(
+  () => ws.pendingSqlInsert,
+  (snippet) => {
+    if (!snippet || !sqlEditor) return;
+    const sel = sqlEditor.getSelection() ?? sqlEditor.getModel()?.getFullModelRange();
+    const padded = snippet.startsWith("[[") ? ` ${snippet}` : snippet;
+    sqlEditor.executeEdits("insert-filter", [
+      {
+        range: sel
+          ? new monaco.Range(sel.startLineNumber, sel.startColumn, sel.endLineNumber, sel.endColumn)
+          : new monaco.Range(1, 1, 1, 1),
+        text: padded,
+        forceMoveMarkers: true,
+      },
+    ]);
+    ws.sql = sqlEditor.getValue();
+    ws.syncParametersFromSql();
+    ws.pendingSqlInsert = null;
+    paintSqlDecorations();
+    sqlEditor.focus();
+  },
+);
+
 onMounted(() => {
   mountSqlEditor();
   mountPyEditor();
+  paintSqlDecorations();
 });
 
 // Re-mount whichever editor host appears later (e.g. after a collapse toggle).
@@ -361,6 +427,7 @@ watch(
   () => ws.sql,
   (value) => {
     if (sqlEditor && sqlEditor.getValue() !== value) sqlEditor.setValue(value);
+    paintSqlDecorations();
   },
 );
 
@@ -486,6 +553,15 @@ const activeQueryProposal = computed(() => {
       </div>
 
       <div class="editor__actions">
+        <span v-if="linkToast" class="editor__link-toast">{{ linkToast }}</span>
+        <button
+          v-if="activeQuery"
+          class="btn btn-ghost btn-sm"
+          title="Copy shareable link — opens this query and its visualization"
+          @click="copyQueryLink"
+        >
+          Copy link
+        </button>
         <button
           v-if="tab === 'python' && !props.collapsed"
           class="btn btn-ghost btn-sm"
@@ -512,8 +588,11 @@ const activeQueryProposal = computed(() => {
           {{ saving ? "Saving..." : activeQuery ? "Save" : "Save as..." }}
         </button>
         <button class="btn btn-primary btn-sm" :disabled="running" @click="run">
-          <svg width="10" height="10" viewBox="0 0 10 10"><polygon points="2,1 9,5 2,9" fill="currentColor" /></svg>
-          {{ running ? "Running..." : "Run" }}
+          <CookieLoader v-if="running" label="" size="sm" />
+          <template v-else>
+            <svg width="10" height="10" viewBox="0 0 10 10"><polygon points="2,1 9,5 2,9" fill="currentColor" /></svg>
+          </template>
+          {{ running ? "Crunching…" : "Run" }}
         </button>
       </div>
     </div>
@@ -538,13 +617,12 @@ const activeQueryProposal = computed(() => {
       <code>df</code> = last query result · assign <code>fig</code> · use Plotly express or graph_objects
     </div>
 
-    <ParametersPanel v-if="!props.collapsed" />
-
     <div v-show="!props.collapsed && tab === 'sql'" ref="sqlHost" class="editor__host" />
     <div v-show="!props.collapsed && tab === 'python'" ref="pyHost" class="editor__host" />
 
     <div v-if="tab === 'python' && ws.pythonOutput?.error && !props.collapsed" class="editor__pyerr">
       {{ ws.pythonOutput.error }}
+      <FilterErrorHint :message="ws.pythonOutput.error" />
     </div>
 
     <div v-if="ws.pendingProposal && tab === 'sql' && !props.collapsed" class="proposal">
@@ -705,7 +783,8 @@ const activeQueryProposal = computed(() => {
   margin-left: -4px;
 }
 .editor__hint { color: var(--fg-subtle); font-size: 11px; }
-.editor__actions { display: flex; gap: 6px; flex-shrink: 0; }
+.editor__actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.editor__link-toast { font-size: 11px; color: var(--accent); }
 .editor__host { flex: 1; min-height: 0; }
 .editor__pyhint {
   padding: 4px 12px;
@@ -824,5 +903,24 @@ const activeQueryProposal = computed(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+</style>
+
+<style>
+/* Monaco decorations live outside the Vue scoped tree. */
+.sql-filter-var {
+  background: rgba(217, 119, 87, 0.22);
+  border-radius: 3px;
+  font-weight: 600;
+}
+.sql-filter-opt {
+  background: rgba(122, 162, 200, 0.16);
+  border-radius: 3px;
+}
+[data-theme="light"] .sql-filter-var {
+  background: rgba(217, 119, 87, 0.18);
+}
+[data-theme="light"] .sql-filter-opt {
+  background: rgba(90, 140, 180, 0.14);
 }
 </style>

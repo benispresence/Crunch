@@ -10,6 +10,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   if (!res.ok) {
     const text = await res.text();
+    try {
+      const j = JSON.parse(text) as { error?: unknown };
+      if (typeof j.error === "string" && j.error) throw new Error(j.error);
+    } catch (e) {
+      if (e instanceof SyntaxError) {
+        /* body wasn't JSON */
+      } else {
+        throw e;
+      }
+    }
     throw new Error(text || res.statusText);
   }
   if (res.status === 204) return undefined as T;

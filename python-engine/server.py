@@ -56,6 +56,16 @@ from crunch.query.template import (  # noqa: E402
 from crunch.query.validator import QueryValidator  # noqa: E402
 from crunch.visualization.code_executor import CodeExecutor  # noqa: E402
 from crunch.visualization.factory import ChartFactory  # noqa: E402
+from crunch.visualization.plotly_theme import install as install_plotly_theme  # noqa: E402
+from crunch.visualization.sandbox_modules import classify  # noqa: E402
+from crunch.visualization.theme_tokens import install_token_validator  # noqa: E402
+
+# Make the neutral template the process-wide Plotly default before any figure
+# is built — including figures from sandboxed user/agent code, which runs
+# in-process. The SPA layers the active light/dark palette on top.
+install_plotly_theme(set_default=True)
+# …and let "$accent"-style theme tokens through plotly's colour validation.
+install_token_validator()
 
 _DEV_ENGINE_TOKEN = "dev-engine-token"
 ENGINE_TOKEN = os.environ.get("PYTHON_ENGINE_TOKEN", _DEV_ENGINE_TOKEN)
@@ -176,6 +186,26 @@ class ParameterSpecModel(BaseModel):
     type: str = "text"
     default: Any = None
     required: bool = False
+    widget: str | None = None
+    target: str | None = None
+    operator: str | None = None
+    options: list[str] | None = None
+    display_name: str | None = None
+
+
+def _parameter_specs(models: list[ParameterSpecModel]) -> list[ParameterSpec]:
+    return [
+        ParameterSpec(
+            name=p.name,
+            type=p.type,
+            default=p.default,
+            required=p.required,
+            widget=p.widget,
+            target=p.target,
+            operator=p.operator,
+        )
+        for p in models
+    ]
 
 
 class ExecuteSqlRequest(BaseModel):
@@ -368,15 +398,7 @@ async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
         binds: dict[str, Any] = {}
     else:
         try:
-            specs = [
-                ParameterSpec(
-                    name=p.name,
-                    type=p.type,
-                    default=p.default,
-                    required=p.required,
-                )
-                for p in req.parameters
-            ]
+            specs = _parameter_specs(req.parameters)
             rendered_sql, binds = render_template(req.sql, specs, req.parameter_values)
         except TemplateError as exc:
             return ExecuteSqlResponse(success=False, error=str(exc))
@@ -468,6 +490,22 @@ class PackageRequest(BaseModel):
 @app.post("/packages/install")
 async def install_package(req: PackageRequest) -> dict[str, Any]:
     _check_token(req.token)
+
+    # Stdlib modules ship with Python: there is nothing to pip install and no
+    # version to report. `pip install time` fails, which used to leave the row
+    # stuck in "failed" and the module unimportable. Short-circuit instead.
+    kind = classify(req.package_name)
+    if kind == "blocked":
+        return {
+            "success": False,
+            "error": (
+                f"'{req.package_name}' is blocked in the visualization sandbox "
+                "and cannot be whitelisted."
+            ),
+        }
+    if kind == "stdlib":
+        return {"success": True, "version": "stdlib", "stdlib": True}
+
     spec = req.package_name + (req.version_spec or "")
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -490,6 +528,11 @@ async def install_package(req: PackageRequest) -> dict[str, Any]:
 @app.post("/packages/uninstall")
 async def uninstall_package(req: PackageRequest) -> dict[str, Any]:
     _check_token(req.token)
+    if classify(req.package_name) == "stdlib":
+        return {
+            "success": False,
+            "error": f"'{req.package_name}' is part of Python and cannot be uninstalled.",
+        }
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "pip", "uninstall", "-y", "--quiet", req.package_name,
@@ -525,15 +568,7 @@ async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
 
         df = pd.DataFrame(req.data) if req.data else pd.DataFrame()
         try:
-            specs = [
-                ParameterSpec(
-                    name=p.name,
-                    type=p.type,
-                    default=p.default,
-                    required=p.required,
-                )
-                for p in req.parameters
-            ]
+            specs = _parameter_specs(req.parameters)
             params = coerce_values(specs, req.parameter_values)
         except TemplateError as exc:
             return ExecutePythonResponse(success=False, error=str(exc))
@@ -542,7 +577,11 @@ async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
         result = await loop.run_in_executor(
             None,
             lambda: CodeExecutor.execute(
-                req.code, df, timeout=req.timeout_seconds, params=params,
+                req.code,
+                df,
+                timeout=req.timeout_seconds,
+                params=params,
+                allowed_packages=req.allowed_packages,
             ),
         )
     except Exception as exc:

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
+import { allowedImportNames } from "../services/packages.js";
 import { parameterSpecArraySchema, parameterValuesSchema } from "../services/parameters.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 
@@ -40,7 +41,6 @@ vizRouter.post("/python", async (req, res) => {
     .object({
       code: z.string(),
       data: z.record(z.array(z.unknown())).optional(),
-      allowed_packages: z.array(z.string()).optional(),
       timeout_seconds: z.number().int().positive().max(120).optional(),
       parameters: parameterSpecArraySchema.optional(),
       parameter_values: parameterValuesSchema.optional(),
@@ -54,6 +54,8 @@ vizRouter.post("/python", async (req, res) => {
     res.json(
       await pythonEngine.executePython({
         ...parsed.data,
+        // Server-derived, never client-supplied — see services/packages.ts.
+        allowed_packages: allowedImportNames(),
         parameters: (parsed.data.parameters ?? []) as unknown as Array<Record<string, unknown>>,
         parameter_values: parsed.data.parameter_values ?? {},
       }),

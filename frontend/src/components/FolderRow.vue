@@ -46,77 +46,114 @@ function totalCount(): number {
 
 <template>
   <div
-    :class="{ 'ftree__row--active': activeFolderId === node.id }"
-    class="ftree__row"
-    :style="{ paddingLeft: `${8 + node.depth * 12}px` }"
-    @click="emit('toggle', node.id)"
+    class="ftree__folder"
+    :class="{
+      'ftree__folder--open': isOpen,
+      'ftree__folder--active': activeFolderId === node.id,
+    }"
   >
-    <span class="ftree__caret">{{ isOpen ? "▾" : "▸" }}</span>
-    <input
-      v-if="renaming && renaming.id === node.id"
-      :value="renaming.name"
-      class="ftree__input"
-      autofocus
-      @click.stop
-      @input="(e) => (renaming!.name = (e.target as HTMLInputElement).value)"
-      @keyup.enter="emit('commit-rename')"
-      @keyup.escape="emit('cancel-rename')"
-      @blur="emit('commit-rename')"
-    />
-    <span v-else class="ftree__name">{{ node.name }}</span>
-    <span class="ftree__count">{{ totalCount() }}</span>
-    <button class="ftree__act" title="Sub-collection" @click.stop="emit('start-add', node.id)">+</button>
-    <button class="ftree__act" title="Rename" @click.stop="emit('start-rename', node)">✎</button>
-    <button class="ftree__act" title="Delete" @click.stop="emit('remove', node)">×</button>
-  </div>
+    <div
+      class="ftree__row ftree__row--folder"
+      :class="{ 'ftree__row--active': activeFolderId === node.id }"
+      :style="{ paddingLeft: `${8 + node.depth * 12}px` }"
+      @click="emit('toggle', node.id)"
+    >
+      <span class="ftree__caret">{{ isOpen ? "▾" : "▸" }}</span>
+      <input
+        v-if="renaming && renaming.id === node.id"
+        :value="renaming.name"
+        class="ftree__input"
+        autofocus
+        @click.stop
+        @input="(e) => (renaming!.name = (e.target as HTMLInputElement).value)"
+        @keyup.enter="emit('commit-rename')"
+        @keyup.escape="emit('cancel-rename')"
+        @blur="emit('commit-rename')"
+      />
+      <span v-else class="ftree__name">{{ node.name }}</span>
+      <span class="ftree__count">{{ totalCount() }}</span>
+      <button class="ftree__act" title="Sub-collection" @click.stop="emit('start-add', node.id)">+</button>
+      <button class="ftree__act" title="Rename" @click.stop="emit('start-rename', node)">✎</button>
+      <button class="ftree__act" title="Delete" @click.stop="emit('remove', node)">×</button>
+    </div>
 
-  <div
-    v-if="isOpen && adding && adding.parent === node.id"
-    class="ftree__row ftree__row--input"
-    :style="{ paddingLeft: `${8 + node.depth * 12 + 16}px` }"
-  >
-    <input
-      :value="adding.name"
-      class="ftree__input"
-      placeholder="New sub-collection…"
-      autofocus
-      @input="(e) => (adding!.name = (e.target as HTMLInputElement).value)"
-      @keyup.enter="emit('commit-add')"
-      @keyup.escape="emit('cancel-add')"
-      @blur="emit('commit-add')"
-    />
-  </div>
+    <div
+      v-if="isOpen && adding && adding.parent === node.id"
+      class="ftree__row ftree__row--input"
+      :style="{ paddingLeft: `${8 + node.depth * 12 + 16}px` }"
+    >
+      <input
+        :value="adding.name"
+        class="ftree__input"
+        placeholder="New sub-collection…"
+        autofocus
+        @input="(e) => (adding!.name = (e.target as HTMLInputElement).value)"
+        @keyup.enter="emit('commit-add')"
+        @keyup.escape="emit('cancel-add')"
+        @blur="emit('commit-add')"
+      />
+    </div>
 
-  <template v-if="isOpen">
-    <QueryRow
-      v-for="q in directQueries"
-      :key="q.id"
-      :query="q"
-      :depth="node.depth + 1"
-    />
-    <FolderRow
-      v-for="child in node.children"
-      :key="child.id"
-      :node="child"
-      :expanded="expanded"
-      :renaming="renaming"
-      :adding="adding"
-      :active-folder-id="activeFolderId"
-      :queries-in-folder="queriesInFolder"
-      @toggle="(id) => emit('toggle', id)"
-      @select="(id) => emit('select', id)"
-      @start-add="(id) => emit('start-add', id)"
-      @commit-add="emit('commit-add')"
-      @start-rename="(f) => emit('start-rename', f)"
-      @commit-rename="emit('commit-rename')"
-      @cancel-rename="emit('cancel-rename')"
-      @cancel-add="emit('cancel-add')"
-      @remove="(f) => emit('remove', f)"
-    />
-  </template>
+    <div v-if="isOpen" class="ftree__folder-body">
+      <QueryRow
+        v-for="q in directQueries"
+        :key="q.id"
+        :query="q"
+        :depth="node.depth + 1"
+      />
+      <FolderRow
+        v-for="child in node.children"
+        :key="child.id"
+        :node="child"
+        :expanded="expanded"
+        :renaming="renaming"
+        :adding="adding"
+        :active-folder-id="activeFolderId"
+        :queries-in-folder="queriesInFolder"
+        @toggle="(id) => emit('toggle', id)"
+        @select="(id) => emit('select', id)"
+        @start-add="(id) => emit('start-add', id)"
+        @commit-add="emit('commit-add')"
+        @start-rename="(f) => emit('start-rename', f)"
+        @commit-rename="emit('commit-rename')"
+        @cancel-rename="emit('cancel-rename')"
+        @cancel-add="emit('cancel-add')"
+        @remove="(f) => emit('remove', f)"
+      />
+    </div>
+  </div>
 </template>
 
 <style scoped>
+/* Theme-aware card so folders read as containers, not flat query rows. */
+.ftree__folder {
+  margin: 4px 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  overflow: hidden;
+  min-width: 0;
+}
+.ftree__folder:hover {
+  border-color: var(--border-strong);
+}
+.ftree__folder--open {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border) 40%, transparent);
+}
+.ftree__folder--active {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.ftree__folder-body {
+  border-top: 1px solid var(--border);
+  padding: 2px 0 4px;
+  background: var(--bg);
+}
+/* Nested folders sit inside body — slightly tighter margin. */
+.ftree__folder-body > .ftree__folder {
+  margin: 4px 6px;
+}
 .ftree__row {
   display: flex;
   align-items: center;
@@ -128,6 +165,12 @@ function totalCount(): number {
   color: var(--fg);
   min-width: 0;
 }
+.ftree__row--folder {
+  font-weight: 600;
+  background: transparent;
+  border-radius: 0;
+}
+.ftree__row--folder:hover { background: var(--bg-hover); }
 .ftree__row:hover { background: var(--bg-hover); }
 .ftree__row--active { background: var(--accent-subtle); color: var(--accent); }
 .ftree__row--input { padding-top: 2px; padding-bottom: 2px; }

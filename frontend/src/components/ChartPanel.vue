@@ -2,15 +2,26 @@
 import Plotly from "plotly.js-dist-min";
 import { onClickOutside } from "@vueuse/core";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { chartTemplate, themedSpec } from "@/composables/chartTheme";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import CookieLoader from "./CookieLoader.vue";
+import FilterErrorHint from "./FilterErrorHint.vue";
 import ProposalCard from "./ProposalCard.vue";
 
-const props = defineProps<{ collapsed?: boolean }>();
+const props = defineProps<{
+  collapsed?: boolean;
+  /**
+   * Bumped by the workspace whenever sidebar/chat/editor/results/full-view
+   * changes so Plotly always refits even if ResizeObserver misses a frame.
+   */
+  layoutTick?: number;
+}>();
 const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
 
 const ws = useWorkspaceStore();
 const chartHost = ref<HTMLDivElement | null>(null);
+const chartWrap = ref<HTMLDivElement | null>(null);
 const typePopover = ref<HTMLDivElement | null>(null);
 const typeButton = ref<HTMLButtonElement | null>(null);
 
@@ -23,15 +34,24 @@ watch(configOpen, (v) => localStorage.setItem(CONFIG_OPEN_KEY, v ? "1" : "0"));
 
 let renderTimer: number | null = null;
 let resizeObserver: ResizeObserver | null = null;
+let fitRaf = 0;
+let fitTimers: number[] = [];
+let lastFitW = 0;
+let lastFitH = 0;
 
-const baseLayout = {
-  paper_bgcolor: "rgba(0,0,0,0)",
-  plot_bgcolor: "rgba(0,0,0,0)",
-  font: { family: "Inter, sans-serif", color: "#a8a098", size: 11 },
+// Panel chrome only — every colour comes from the theme template that
+// themedLayout() injects (see composables/chartTheme.ts).
+const baseLayout: Record<string, unknown> = {
   margin: { t: 24, r: 16, b: 36, l: 44 },
-  xaxis: { gridcolor: "#36312b", zerolinecolor: "#36312b" },
-  yaxis: { gridcolor: "#36312b", zerolinecolor: "#36312b" },
-  colorway: ["#d97757", "#7aa2c8", "#7fb069", "#e8b04c", "#c8a2d4"],
+  autosize: true,
+};
+
+// Mode bar always available for zoom / pan / box-select / reset.
+const plotlyConfig = {
+  responsive: true,
+  displayModeBar: true as const,
+  displaylogo: false,
+  modeBarButtonsToRemove: ["sendDataToCloud" as const],
 };
 
 const groupedChartTypes = computed(() => {
@@ -137,6 +157,17 @@ const activeSpec = computed(() => {
 
 const hasActiveSpec = computed(() => !!activeSpec.value);
 
+const isChartBusy = computed(
+  () => ws.running || ws.chartRendering || ws.pythonRunning,
+);
+
+const busyLabel = computed(() => {
+  if (ws.running) return "Crunching query…";
+  if (ws.pythonRunning) return "Crunching Python chart…";
+  if (ws.chartRendering) return "Crunching chart…";
+  return "Crunching…";
+});
+
 function autofillRequiredFields(typeId: string) {
   const def = ws.chartTypes.find((c) => c.id === typeId);
   if (!def) return;
@@ -186,7 +217,9 @@ watch(() => ws.chartConfig, scheduleRender, { deep: true });
 
 watch(
   () => activeSpec.value,
-  (spec) => renderPlotly(chartHost.value, spec),
+  (spec) => {
+    void renderPlotly(chartHost.value, spec);
+  },
   // No deep — Plotly mutates the spec in place; deep-watching it loops.
 );
 
@@ -197,24 +230,130 @@ watch(
   },
 );
 
-function renderPlotly(host: HTMLDivElement | null, spec: { data: unknown[]; layout: Record<string, unknown> } | null | undefined) {
+// Light/dark toggle: repaint the same spec through the new template. No
+// re-query, no engine round-trip — Plotly.react diffs the layout in place.
+watch(chartTemplate, () => {
+  void renderPlotly(chartHost.value, activeSpec.value);
+});
+
+/**
+ * Theme the figure and strip baked-in size. Python figs often ship fixed
+ * width/height; we always size from the live container instead (see fitPlotly).
+ */
+function fluidThemedSpec(spec: { data: unknown[]; layout: Record<string, unknown> }) {
+  const themed = themedSpec(spec, baseLayout);
+  delete themed.layout.width;
+  delete themed.layout.height;
+  return themed;
+}
+
+function containerSize(): { w: number; h: number } | null {
+  const wrap = chartWrap.value;
+  if (!wrap) return null;
+  const w = Math.floor(wrap.clientWidth);
+  const h = Math.floor(wrap.clientHeight);
+  if (w < 4 || h < 4) return null;
+  return { w, h };
+}
+
+/**
+ * Force the figure to match the wrap pixel-for-pixel. Plots.resize alone is
+ * unreliable with absolute hosts + splitpane/flex transitions; explicit
+ * width/height via relayout always works and keeps the mode bar interactive.
+ */
+async function fitPlotly(force = false) {
+  const host = chartHost.value;
+  if (!host || !hasActiveSpec.value || props.collapsed) return;
+  const size = containerSize();
+  if (!size) return;
+  if (!force && size.w === lastFitW && size.h === lastFitH) return;
+  lastFitW = size.w;
+  lastFitH = size.h;
+  try {
+    await (Plotly as unknown as {
+      relayout: (el: HTMLElement, update: Record<string, unknown>) => Promise<unknown>;
+    }).relayout(host, {
+      width: size.w,
+      height: size.h,
+      autosize: false,
+    });
+  } catch {
+    try {
+      (Plotly as unknown as { Plots: { resize: (n: HTMLElement) => void } }).Plots.resize(host);
+    } catch {
+      /* not ready */
+    }
+  }
+}
+
+function clearFitTimers() {
+  if (fitRaf) {
+    cancelAnimationFrame(fitRaf);
+    fitRaf = 0;
+  }
+  for (const t of fitTimers) window.clearTimeout(t);
+  fitTimers = [];
+}
+
+/** Refit now and again after layout transitions settle. */
+function fitPlotlySoon(force = false) {
+  clearFitTimers();
+  const run = () => {
+    void fitPlotly(force);
+  };
+  // Immediate + post-paint + post-transition (splitpanes uses ~200ms ease).
+  run();
+  fitRaf = requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      run();
+      fitTimers.push(window.setTimeout(run, 50));
+      fitTimers.push(window.setTimeout(run, 120));
+      fitTimers.push(window.setTimeout(run, 280));
+      fitTimers.push(window.setTimeout(() => void fitPlotly(true), 400));
+    });
+  });
+}
+
+async function renderPlotly(
+  host: HTMLDivElement | null,
+  spec: { data: unknown[]; layout: Record<string, unknown> } | null | undefined,
+) {
   if (!host) return;
   if (!spec) {
     Plotly.purge(host);
+    lastFitW = 0;
+    lastFitH = 0;
     return;
   }
-  Plotly.react(
-    host,
-    spec.data as Parameters<typeof Plotly.react>[1],
-    { ...baseLayout, ...(spec.layout || {}) },
-    { displayModeBar: false, responsive: true },
-  );
+  const size = containerSize();
+  const { data, layout } = fluidThemedSpec(spec);
+  if (size) {
+    layout.width = size.w;
+    layout.height = size.h;
+    layout.autosize = false;
+    lastFitW = size.w;
+    lastFitH = size.h;
+  } else {
+    layout.autosize = true;
+  }
+  try {
+    await Plotly.react(
+      host,
+      data as Parameters<typeof Plotly.react>[1],
+      layout,
+      plotlyConfig,
+    );
+  } catch {
+    /* host may be mid-unmount */
+    return;
+  }
+  fitPlotlySoon(true);
 }
 
 watch(
   () => ws.chartMode,
   () => {
-    nextTick(() => resizeChart());
+    nextTick(() => fitPlotlySoon(true));
   },
 );
 
@@ -226,32 +365,50 @@ watch(
       return;
     }
     await nextTick();
-    await new Promise((r) => requestAnimationFrame(r));
-    resizeChart();
+    fitPlotlySoon(true);
   },
 );
 
-function resizeChart() {
-  if (!chartHost.value || !hasActiveSpec.value) return;
-  try {
-    (Plotly as unknown as { Plots: { resize: (n: HTMLElement) => void } }).Plots.resize(chartHost.value);
-  } catch {
-    /* host not yet sized */
+// Parent bumps this on every sidebar/chat/editor/results/full-view change.
+watch(
+  () => props.layoutTick,
+  () => {
+    nextTick(() => fitPlotlySoon(true));
+  },
+);
+
+// When busy ends, refit (container may have changed under the overlay).
+watch(isChartBusy, (busy, wasBusy) => {
+  if (wasBusy && !busy) fitPlotlySoon(true);
+});
+
+// Config drawer open/close changes available chart height.
+watch(configOpen, () => fitPlotlySoon(true));
+
+function bindResizeObserver(wrap: HTMLDivElement | null) {
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  if (!wrap) return;
+  // Observe wrap + its offsetParent chain so splitpane width changes are caught.
+  resizeObserver = new ResizeObserver(() => {
+    fitPlotlySoon(false);
+  });
+  resizeObserver.observe(wrap);
+  let el: HTMLElement | null = wrap.parentElement;
+  for (let i = 0; i < 4 && el; i++) {
+    resizeObserver.observe(el);
+    el = el.parentElement;
   }
 }
 
-// Re-attach observer and re-render when the host element re-mounts.
-watch(
-  chartHost,
-  (host, prev) => {
-    if (prev && resizeObserver) resizeObserver.unobserve(prev);
-    if (host) {
-      if (!resizeObserver) resizeObserver = new ResizeObserver(() => resizeChart());
-      resizeObserver.observe(host);
-      renderPlotly(host, activeSpec.value);
-    }
-  },
-);
+watch(chartWrap, (wrap) => {
+  bindResizeObserver(wrap);
+  if (wrap) fitPlotlySoon(true);
+});
+
+watch(chartHost, (host) => {
+  if (host) void renderPlotly(host, activeSpec.value);
+});
 
 function onDocumentClick(e: MouseEvent) {
   if (!typePickerOpen.value) return;
@@ -261,16 +418,21 @@ function onDocumentClick(e: MouseEvent) {
   typePickerOpen.value = false;
 }
 
+function onWindowResize() {
+  fitPlotlySoon(true);
+}
+
 onMounted(() => {
-  if (chartHost.value) {
-    resizeObserver = new ResizeObserver(() => resizeChart());
-    resizeObserver.observe(chartHost.value);
-    renderPlotly(chartHost.value, activeSpec.value);
-  }
+  bindResizeObserver(chartWrap.value);
+  if (chartHost.value) void renderPlotly(chartHost.value, activeSpec.value);
   document.addEventListener("mousedown", onDocumentClick);
+  window.addEventListener("resize", onWindowResize);
+  fitPlotlySoon(true);
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("resize", onWindowResize);
+  clearFitTimers();
   resizeObserver?.disconnect();
   resizeObserver = null;
   if (renderTimer != null) window.clearTimeout(renderTimer);
@@ -469,7 +631,10 @@ const emptyMessage = computed(() => {
         </div>
       </div>
 
-      <div v-if="ws.chartError && ws.chartMode === 'picker'" class="chart__error">{{ ws.chartError }}</div>
+      <div v-if="ws.chartError && ws.chartMode === 'picker'" class="chart__error">
+        {{ ws.chartError }}
+        <FilterErrorHint :message="ws.chartError" />
+      </div>
 
       <!-- Agent-driven chart proposal overlay (Cursor-style). Mirror of
            the chat card so the user can Accept/Reject without scrolling. -->
@@ -484,9 +649,16 @@ const emptyMessage = computed(() => {
         />
       </div>
 
-      <div class="chart__host-wrap">
-        <div ref="chartHost" class="chart__host"></div>
-        <div v-if="!hasActiveSpec" class="chart__empty">
+      <div ref="chartWrap" class="chart__host-wrap">
+        <div
+          ref="chartHost"
+          class="chart__host"
+          :class="{ 'chart__host--dim': isChartBusy && hasActiveSpec }"
+        ></div>
+        <div v-if="isChartBusy" class="chart__loading">
+          <CookieLoader :label="busyLabel" size="lg" />
+        </div>
+        <div v-else-if="!hasActiveSpec" class="chart__empty">
           <div class="chart__empty-icon">
             <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
               <rect x="6" y="20" width="5" height="10" rx="1" fill="currentColor" opacity="0.4" />
@@ -494,7 +666,10 @@ const emptyMessage = computed(() => {
               <rect x="22" y="8" width="5" height="22" rx="1" fill="currentColor" opacity="0.8" />
             </svg>
           </div>
-          <div class="chart__empty-msg">{{ emptyMessage }}</div>
+          <div class="chart__empty-msg">
+            {{ emptyMessage }}
+            <FilterErrorHint :message="emptyMessage" />
+          </div>
         </div>
       </div>
     </div>
@@ -508,10 +683,14 @@ const emptyMessage = computed(() => {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  flex: 1 1 0%;
   background: var(--bg);
   position: relative;
 }
-.chart--collapsed { height: auto; }
+.chart--collapsed {
+  height: auto;
+  flex: 0 0 auto;
+}
 .chart__bar {
   display: flex;
   align-items: center;
@@ -727,7 +906,7 @@ const emptyMessage = computed(() => {
 }
 
 .chart__body {
-  flex: 1;
+  flex: 1 1 0%;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -881,14 +1060,33 @@ const emptyMessage = computed(() => {
 }
 .chart__prop-title { font-weight: 600; }
 .chart__host-wrap {
-  flex: 1;
+  flex: 1 1 0%;
   min-height: 0;
   position: relative;
   background: var(--bg);
+  width: 100%;
 }
 .chart__host {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  transition: opacity 160ms ease;
+}
+.chart__host--dim {
+  opacity: 0.25;
+  pointer-events: none;
+}
+.chart__loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  /* Don't steal clicks if busy flag races; host is already dimmed. */
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
 }
 .chart__empty {
   position: absolute;

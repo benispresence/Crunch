@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useChatStore } from "@/stores/chat";
 import ChatMessage from "./ChatMessage.vue";
+import CookieLoader from "./CookieLoader.vue";
 
 const chat = useChatStore();
 const input = ref("");
@@ -9,10 +10,30 @@ const scroller = ref<HTMLDivElement | null>(null);
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const showHistory = ref(false);
 
+const modelMenuOpen = ref(false);
+
 onMounted(async () => {
   textarea.value?.focus();
-  await chat.loadConversations();
+  await Promise.all([chat.loadConversations(), chat.loadModels()]);
 });
+
+const EFFORT_HINT: Record<string, string> = {
+  low: "Fastest and cheapest. Short, scoped tasks.",
+  medium: "Balanced. Good for routine analysis.",
+  high: "Default. Best for most real work.",
+  xhigh: "Deeper reasoning. Complex or agentic tasks.",
+  max: "Maximum depth. Slow and expensive.",
+};
+
+function pickModel(id: string) {
+  chat.setModel(id);
+  modelMenuOpen.value = false;
+}
+
+async function toggleModelMenu() {
+  modelMenuOpen.value = !modelMenuOpen.value;
+  if (modelMenuOpen.value) await chat.loadModels();
+}
 
 function formatWhen(ts: number): string {
   const d = new Date(ts * 1000);
@@ -150,9 +171,64 @@ function resize() {
       </div>
 
       <ChatMessage v-for="turn in chat.turns" :key="turn.id" :turn="turn" />
+      <div
+        v-if="chat.sending && chat.turns.length > 0 && chat.turns[chat.turns.length - 1]?.role === 'user'"
+        class="chat__crunch"
+      >
+        <CookieLoader label="Crunching…" size="sm" />
+      </div>
     </div>
 
     <footer class="chat__compose">
+      <p v-for="(n, i) in chat.notices" :key="`n-${i}`" class="chat__notice">{{ n }}</p>
+
+      <div v-if="chat.models.length > 0" class="chat__run">
+        <div class="chat__model">
+          <button
+            class="chat__run-btn"
+            :title="chat.activeModel?.blurb"
+            @click="toggleModelMenu"
+          >
+            {{ chat.activeModel
+              ? (chat.activeModel.provider_short
+                ? `${chat.activeModel.provider_short} · ${chat.activeModel.label}`
+                : chat.activeModel.label)
+              : "Model" }}
+            <span class="chat__run-chev" :class="{ 'chat__run-chev--open': modelMenuOpen }">▾</span>
+          </button>
+          <div v-if="modelMenuOpen" class="chat__model-menu">
+            <div v-for="group in chat.modelsByLab" :key="group.label" class="chat__model-group">
+              <div v-if="chat.modelsByLab.length > 1" class="chat__model-lab">{{ group.label }}</div>
+              <button
+                v-for="m in group.models"
+                :key="m.id"
+                class="chat__model-item"
+                :class="{ 'chat__model-item--active': m.id === chat.model }"
+                @click="pickModel(m.id)"
+              >
+                <span class="chat__model-name">{{ m.label }}</span>
+                <span class="chat__model-blurb">{{ m.blurb }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Effort levels differ per model, and some models have none at all. -->
+        <label v-if="(chat.activeModel?.efforts.length ?? 0) > 0" class="chat__effort">
+          <span>Effort</span>
+          <select
+            :value="chat.effort ?? chat.activeModel?.default_effort ?? ''"
+            :title="EFFORT_HINT[chat.effort ?? chat.activeModel?.default_effort ?? 'high']"
+            @change="chat.setEffort(($event.target as HTMLSelectElement).value as any)"
+          >
+            <option v-for="e in chat.activeModel!.efforts" :key="e" :value="e">{{ e }}</option>
+          </select>
+        </label>
+        <span v-else class="chat__effort-none" title="This model has no effort control">
+          no effort control
+        </span>
+      </div>
+
       <div class="chat__input-wrap">
         <textarea
           ref="textarea"
@@ -185,7 +261,10 @@ function resize() {
         </button>
       </div>
       <div class="chat__hint">
-        <span v-if="chat.sending">Streaming… click ▪ to stop</span>
+        <span v-if="chat.sending" class="chat__hint-crunch">
+          <CookieLoader label="" size="sm" />
+          Streaming… click ▪ to stop
+        </span>
         <span v-else>Enter to send · Shift+Enter for newline</span>
       </div>
     </footer>
@@ -197,17 +276,25 @@ function resize() {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
   background: var(--bg);
-  border-left: 1px solid var(--border);
+  /* Border comes from AppShell.shell__chat when mounted globally. */
+  container-type: inline-size;
+  container-name: chat;
 }
 .chat__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  gap: 6px 8px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
   flex-shrink: 0;
+  min-width: 0;
 }
 .chat__title {
   display: flex;
@@ -216,6 +303,8 @@ function resize() {
   font-family: var(--font-serif);
   font-size: 14px;
   font-weight: 500;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .chat__dot {
   width: 7px;
@@ -224,7 +313,19 @@ function resize() {
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent);
 }
-.chat__head-actions { display: flex; gap: 4px; align-items: center; }
+.chat__head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat__head-actions .btn {
+  font-size: 11px;
+  padding: 3px 7px;
+}
 .chat__toggle--on { color: var(--accent); }
 .chat__auto--on { color: var(--error); }
 .chat__auto-dot {
@@ -240,7 +341,8 @@ function resize() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 200px;
+  min-width: 0;
+  max-width: min(220px, 40vw);
 }
 .chat__count {
   font-size: 10px;
@@ -309,34 +411,45 @@ function resize() {
 .chat__scroll {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   scroll-behavior: smooth;
+  min-width: 0;
 }
 
 .chat__empty {
-  padding: 48px 24px;
+  padding: clamp(24px, 8vh, 48px) clamp(14px, 4vw, 24px);
   text-align: center;
   color: var(--fg-muted);
+  max-width: 420px;
+  margin: 0 auto;
 }
 .chat__empty-logo {
-  width: 120px;
-  height: 120px;
+  width: clamp(64px, 22vw, 100px);
+  height: clamp(64px, 22vw, 100px);
   object-fit: contain;
   display: block;
-  margin: 0 auto 20px;
+  margin: 0 auto 16px;
+  opacity: 0.95;
 }
 .chat__empty-title {
   font-family: var(--font-serif);
-  font-size: 22px;
+  font-size: clamp(18px, 4.2vw, 22px);
   font-weight: 500;
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   color: var(--fg);
   letter-spacing: -0.01em;
+  line-height: 1.25;
 }
-.chat__empty-sub { font-size: 13px; margin: 0 0 24px; }
+.chat__empty-sub {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
 .chat__suggestions {
   display: grid;
   gap: 8px;
-  max-width: 320px;
+  width: 100%;
+  max-width: 340px;
   margin: 0 auto;
 }
 .chat__suggestion {
@@ -374,6 +487,92 @@ function resize() {
   transition: border-color 120ms;
 }
 .chat__input-wrap:focus-within { border-color: var(--accent-border); }
+.chat__notice {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--warn);
+  line-height: 1.4;
+}
+.chat__run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.chat__model { position: relative; }
+.chat__run-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.chat__run-btn:hover { color: var(--fg); border-color: var(--accent-border); }
+.chat__run-chev { font-size: 9px; transition: transform 150ms; }
+.chat__run-chev--open { transform: rotate(180deg); }
+.chat__model-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  min-width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 4px;
+  display: grid;
+  gap: 1px;
+}
+.chat__model-item {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 7px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.chat__model-item:hover { background: var(--bg-hover); }
+.chat__model-item--active { background: var(--accent-subtle); }
+.chat__model-item--active .chat__model-name { color: var(--accent); }
+.chat__model-name { font-size: 12px; }
+.chat__model-blurb { font-size: 10.5px; color: var(--fg-subtle); line-height: 1.35; }
+.chat__model-group + .chat__model-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
+.chat__model-lab {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-subtle);
+  padding: 4px 9px 2px;
+}
+.chat__effort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+.chat__effort select {
+  font-size: 11px;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+}
+.chat__effort-none {
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+  font-style: italic;
+}
 .chat__input-wrap textarea {
   border: 0;
   background: transparent;
@@ -421,5 +620,15 @@ function resize() {
   text-align: center;
   font-size: 11px;
   color: var(--fg-subtle);
+}
+.chat__hint-crunch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat__crunch {
+  padding: 8px 14px 12px;
+  display: flex;
+  justify-content: flex-start;
 }
 </style>

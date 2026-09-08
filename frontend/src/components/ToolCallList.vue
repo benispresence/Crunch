@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import {
+  toolDisplayName,
+  useEntityLabels,
+} from "@/composables/entityLabels";
 import { guessLanguage, highlightCode } from "@/composables/markdown";
 import type { ChatTurn, ToolCall } from "@/stores/chat";
+import CookieLoader from "./CookieLoader.vue";
 
 const props = defineProps<{ turn: ChatTurn }>();
+const labels = useEntityLabels();
 
 const expandedIds = ref<Set<string>>(new Set());
 
@@ -27,22 +33,90 @@ function toggle(id: string) {
   else expandedIds.value.add(id);
 }
 
+function fieldLabel(key: string): string {
+  const map: Record<string, string> = {
+    sql: "SQL",
+    new_sql: "New SQL",
+    code: "Code",
+    chart_python_code: "Python chart",
+    python_code: "Python",
+    query_id: "Query",
+    connection_id: "Connection",
+    dashboard_id: "Dashboard",
+    pipeline_id: "Pipeline",
+    table: "Table",
+    schema: "Schema",
+    name: "Name",
+    rows: "Rows",
+  };
+  return map[key] ?? key.replace(/_/g, " ");
+}
+
 function previewInput(input: unknown): string {
   if (input === undefined) return "";
   if (typeof input === "string") return input.slice(0, 80);
   if (input && typeof input === "object") {
-    // Surface the most interesting field for a one-line preview.
     const o = input as Record<string, unknown>;
-    if (typeof o.sql === "string") return o.sql.slice(0, 100);
-    if (typeof o.new_sql === "string") return o.new_sql.slice(0, 100);
-    if (typeof o.code === "string") return o.code.slice(0, 100);
-    if (typeof o.query_id === "number") return `query #${o.query_id}`;
-    if (typeof o.connection_id === "number") return `connection #${o.connection_id}`;
+    if (typeof o.sql === "string") return o.sql.replace(/\s+/g, " ").slice(0, 90);
+    if (typeof o.new_sql === "string") return o.new_sql.replace(/\s+/g, " ").slice(0, 90);
+    if (typeof o.code === "string") return o.code.replace(/\s+/g, " ").slice(0, 90);
+    if (typeof o.name === "string") return o.name;
+    if (typeof o.table === "string") return o.table;
+    if (typeof o.query_id === "number") return labels.queryLabel(o.query_id);
+    if (typeof o.connection_id === "number") return labels.connectionLabel(o.connection_id);
+    if (typeof o.dashboard_id === "number") return labels.dashboardLabel(o.dashboard_id);
+    if (typeof o.pipeline_id === "number") return labels.pipelineLabel(o.pipeline_id);
   }
   try {
-    return JSON.stringify(input).slice(0, 120);
+    return JSON.stringify(input).slice(0, 100);
   } catch {
     return "";
+  }
+}
+
+function formatFieldValue(key: string, v: unknown): { text: string; lang: string } | null {
+  if (key === "query_id" && typeof v === "number") {
+    return { text: labels.queryLabel(v), lang: "plaintext" };
+  }
+  if (key === "connection_id" && typeof v === "number") {
+    return { text: labels.connectionLabel(v), lang: "plaintext" };
+  }
+  if (key === "dashboard_id" && typeof v === "number") {
+    return { text: labels.dashboardLabel(v), lang: "plaintext" };
+  }
+  if (key === "pipeline_id" && typeof v === "number") {
+    return { text: labels.pipelineLabel(v), lang: "plaintext" };
+  }
+  return null;
+}
+
+interface SearchHit { title: string; url: string }
+
+/**
+ * Web search results get links instead of a JSON dump — the point of a search
+ * is that the user can go check the source.
+ */
+function searchHits(call: ToolCall): SearchHit[] | null {
+  if (call.name !== "web_search") return null;
+  const r = call.result as { results?: unknown } | undefined;
+  if (!r || !Array.isArray(r.results)) return null;
+  return (r.results as Array<Record<string, unknown>>)
+    .filter((h) => typeof h.url === "string" && h.url)
+    .map((h) => ({ title: String(h.title ?? h.url), url: String(h.url) }));
+}
+
+function searchError(call: ToolCall): string | null {
+  if (call.name !== "web_search") return null;
+  const r = call.result as { error?: unknown } | undefined;
+  return r?.error ? String(r.error) : null;
+}
+
+/** Host only — "docs.snowflake.com", not the full URL. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
   }
 }
 
@@ -58,19 +132,28 @@ interface RenderedField {
  */
 function renderPayload(payload: unknown): RenderedField[] {
   if (payload === undefined) return [];
-  if (payload === null) return [{ label: "value", lang: "plaintext", html: "null" }];
+  if (payload === null) return [{ label: "Value", lang: "plaintext", html: "null" }];
   if (typeof payload === "string") {
     const lang = guessLanguage(payload);
-    return [{ label: "value", lang, html: highlightCode(payload, lang) }];
+    return [{ label: "Value", lang, html: highlightCode(payload, lang) }];
   }
   if (typeof payload !== "object") {
-    return [{ label: "value", lang: "plaintext", html: escapeHtml(String(payload)) }];
+    return [{ label: "Value", lang: "plaintext", html: escapeHtml(String(payload)) }];
   }
   const out: RenderedField[] = [];
   const obj = payload as Record<string, unknown>;
   const keys = Object.keys(obj);
   for (const k of keys) {
     const v = obj[k];
+    const pretty = formatFieldValue(k, v);
+    if (pretty) {
+      out.push({
+        label: fieldLabel(k),
+        lang: pretty.lang,
+        html: escapeHtml(pretty.text),
+      });
+      continue;
+    }
     if (typeof v === "string") {
       const lang =
         k === "sql" || k === "new_sql"
@@ -78,19 +161,18 @@ function renderPayload(payload: unknown): RenderedField[] {
           : k === "code" || k === "chart_python_code" || k === "python_code"
           ? "python"
           : guessLanguage(v);
-      out.push({ label: k, lang, html: highlightCode(v, lang) });
+      out.push({ label: fieldLabel(k), lang, html: highlightCode(v, lang) });
     } else if (Array.isArray(v) && k === "rows") {
-      // Table preview: first 5 rows as JSON.
       const preview = v.slice(0, 5);
       const text = JSON.stringify(preview, null, 2);
       out.push({
-        label: `${k} (${v.length} total)`,
+        label: `Rows (${v.length})`,
         lang: "json",
         html: highlightCode(text, "json"),
       });
     } else {
       const text = JSON.stringify(v, null, 2);
-      out.push({ label: k, lang: "json", html: highlightCode(text, "json") });
+      out.push({ label: fieldLabel(k), lang: "json", html: highlightCode(text, "json") });
     }
   }
   return out;
@@ -122,7 +204,7 @@ function escapeHtml(s: string): string {
         </span>
         <span class="tools__bar-chips">
           <span v-for="[name, count] in grouped.slice(0, 4)" :key="name" class="tools__chip">
-            {{ name }}<span class="tools__chip-count">×{{ count }}</span>
+            {{ toolDisplayName(name) }}<span class="tools__chip-count">×{{ count }}</span>
           </span>
           <span v-if="grouped.length > 4" class="tools__chip-more">+{{ grouped.length - 4 }}</span>
         </span>
@@ -131,7 +213,7 @@ function escapeHtml(s: string): string {
         <div v-for="call in turn.toolCalls" :key="call.id" class="tool" :class="`tool--${call.status}`">
           <button class="tool__head" type="button" @click="toggle(call.id)">
             <span class="tool__status" />
-            <span class="tool__name">{{ call.name }}</span>
+            <span class="tool__name">{{ toolDisplayName(call.name) }}</span>
             <span class="tool__preview">{{ previewInput(call.input) }}</span>
             <span class="tool__chev" :class="{ 'tool__chev--open': expandedIds.has(call.id) }">›</span>
           </button>
@@ -153,8 +235,20 @@ function escapeHtml(s: string): string {
             </div>
             <div class="tool__section">
               <div class="tool__label">Result</div>
-              <div v-if="call.result === undefined" class="tool__empty">(running...)</div>
+              <div v-if="call.result === undefined" class="tool__empty tool__empty--run">
+                <CookieLoader label="Crunching…" size="sm" />
+              </div>
+              <p v-else-if="searchError(call)" class="tool__search-err">
+                Search failed: {{ searchError(call) }}
+              </p>
+              <ul v-else-if="searchHits(call)" class="tool__hits">
+                <li v-for="hit in searchHits(call)" :key="hit.url">
+                  <a :href="hit.url" target="_blank" rel="noopener noreferrer">{{ hit.title }}</a>
+                  <span class="tool__hit-host">{{ hostOf(hit.url) }}</span>
+                </li>
+              </ul>
               <div
+                v-else
                 v-for="(f, j) in renderPayload(call.result)"
                 :key="`out-${call.id}-${j}`"
                 class="tool__field"
@@ -175,7 +269,7 @@ function escapeHtml(s: string): string {
       <div v-for="call in turn.toolCalls" :key="call.id" class="tool" :class="`tool--${call.status}`">
         <button class="tool__head" type="button" @click="toggle(call.id)">
           <span class="tool__status" />
-          <span class="tool__name">{{ call.name }}</span>
+          <span class="tool__name">{{ toolDisplayName(call.name) }}</span>
           <span class="tool__preview">{{ previewInput(call.input) }}</span>
           <span class="tool__chev" :class="{ 'tool__chev--open': expandedIds.has(call.id) }">›</span>
         </button>
@@ -197,8 +291,20 @@ function escapeHtml(s: string): string {
           </div>
           <div class="tool__section">
             <div class="tool__label">Result</div>
-            <div v-if="call.result === undefined" class="tool__empty">(running...)</div>
+            <div v-if="call.result === undefined" class="tool__empty tool__empty--run">
+              <CookieLoader label="Crunching…" size="sm" />
+            </div>
+            <p v-else-if="searchError(call)" class="tool__search-err">
+              Search failed: {{ searchError(call) }}
+            </p>
+            <ul v-else-if="searchHits(call)" class="tool__hits">
+              <li v-for="hit in searchHits(call)" :key="hit.url">
+                <a :href="hit.url" target="_blank" rel="noopener noreferrer">{{ hit.title }}</a>
+                <span class="tool__hit-host">{{ hostOf(hit.url) }}</span>
+              </li>
+            </ul>
             <div
+              v-else
               v-for="(f, j) in renderPayload(call.result)"
               :key="`out-${call.id}-${j}`"
               class="tool__field"
@@ -221,12 +327,14 @@ function escapeHtml(s: string): string {
   display: grid;
   gap: 6px;
   margin: 8px 0 6px;
+  min-width: 0;
 }
 .tools__bar {
   width: 100%;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   padding: 8px 10px;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
@@ -235,6 +343,7 @@ function escapeHtml(s: string): string {
   color: var(--fg-muted);
   cursor: pointer;
   text-align: left;
+  min-width: 0;
 }
 .tools__bar:hover { background: var(--bg-hover); }
 .tools__bar--open { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
@@ -274,7 +383,6 @@ function escapeHtml(s: string): string {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--fg-muted);
-  font-family: var(--font-mono);
 }
 .tools__chip-count { color: var(--fg-subtle); margin-left: 3px; }
 .tools__chip-more { font-size: 10px; color: var(--fg-subtle); }
@@ -320,14 +428,21 @@ function escapeHtml(s: string): string {
 }
 .tool--ok .tool__status { background: var(--success); }
 .tool--error .tool__status { background: var(--error); }
-.tool__name { font-family: var(--font-mono); color: var(--fg); }
+.tool__name {
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
 .tool__preview {
   color: var(--fg-subtle);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: var(--font-mono);
   font-size: 11px;
+  min-width: 0;
 }
 .tool__chev {
   transition: transform 150ms;
@@ -375,6 +490,44 @@ function escapeHtml(s: string): string {
   font-size: 11px;
   color: var(--fg-subtle);
   font-style: italic;
+}
+.tool__empty--run {
+  font-style: normal;
+  display: flex;
+  padding: 4px 0;
+}
+.tool__hits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+}
+.tool__hits li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  min-width: 0;
+}
+.tool__hits a {
+  color: var(--accent);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool__hits a:hover { text-decoration: underline; }
+.tool__hit-host {
+  color: var(--fg-subtle);
+  font-size: 10.5px;
+  flex-shrink: 0;
+}
+.tool__search-err {
+  margin: 0;
+  font-size: 12px;
+  color: var(--error);
 }
 .tool__code {
   margin: 0;

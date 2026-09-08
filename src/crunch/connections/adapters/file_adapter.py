@@ -462,7 +462,11 @@ class FileAdapter(ConnectionAdapter):
             if limit and is_select and "LIMIT" not in upper:
                 cleaned = f"{cleaned} LIMIT {limit}"
 
-            result = conn.execute(cleaned)
+            # Same :name → ? rewrite the DuckDB adapter uses, so
+            # Metabase-style {{var}} filters actually bind here too.
+            from crunch.connections.adapters.duckdb_adapter import _to_positional
+            bound_sql, bind_list = _to_positional(cleaned, parameters or {})
+            result = conn.execute(bound_sql, bind_list)
 
             if result.description is None:
                 # Statement returned no result set

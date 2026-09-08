@@ -162,7 +162,8 @@ def _to_positional(sql: str, params: dict) -> tuple[str, list]:
     import re
 
     order: list[str] = []
-    pattern = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+    # Don't treat Postgres/DuckDB `::type` casts as bind names.
+    pattern = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
 
     def sub(m: "re.Match[str]") -> str:
         name = m.group(1)

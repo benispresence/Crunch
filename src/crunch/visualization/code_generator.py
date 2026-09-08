@@ -121,6 +121,20 @@ import plotly.graph_objects as go
         return code
 
     @classmethod
+    def _color_sequence_arg(cls, color_palette: str) -> str:
+        """Emit an explicit palette only when the user picked one.
+
+        The default ("plotly") is left out on purpose: with no
+        ``color_discrete_sequence``, the figure inherits the active theme's
+        colorway, which is tuned separately for light and dark. Baking
+        ``px.colors.qualitative.Plotly`` in would pin one set of colours to
+        both themes.
+        """
+        if not color_palette or color_palette == "plotly":
+            return ""
+        return f"    color_discrete_sequence=px.colors.qualitative.{color_palette.capitalize()},\n"
+
+    @classmethod
     def _generate_bar_chart(cls, config: ChartConfig, options: dict) -> str:
         """Generate bar chart code."""
         orientation = options.get("orientation", "v")
@@ -159,8 +173,7 @@ fig = px.bar(
     orientation="{orientation}",
     barmode="{bar_mode}",
     text_auto={show_values},
-    color_discrete_sequence=px.colors.qualitative.{color_palette.capitalize() if color_palette != "plotly" else "Plotly"},
-)
+{cls._color_sequence_arg(color_palette)})
 '''
         return code
 
@@ -182,8 +195,7 @@ fig = px.line(
         
         code += f'''
     markers={show_markers},
-    color_discrete_sequence=px.colors.qualitative.{color_palette.capitalize() if color_palette != "plotly" else "Plotly"},
-)
+{cls._color_sequence_arg(color_palette)})
 '''
         
         # Add line style if not solid
@@ -213,8 +225,7 @@ fig = px.scatter(
             code += f'\n    size="{config.size}",'
         
         code += f'''
-    color_discrete_sequence=px.colors.qualitative.{color_palette.capitalize() if color_palette != "plotly" else "Plotly"},
-)
+{cls._color_sequence_arg(color_palette)})
 '''
         return code
 
@@ -233,8 +244,7 @@ fig = px.area(
             code += f'\n    color="{config.color}",'
         
         code += f'''
-    color_discrete_sequence=px.colors.qualitative.{color_palette.capitalize() if color_palette != "plotly" else "Plotly"},
-)
+{cls._color_sequence_arg(color_palette)})
 '''
         return code
 
@@ -249,8 +259,7 @@ fig = px.pie(
     df,
     values="{config.values}",
     names="{config.labels}",
-    color_discrete_sequence=px.colors.qualitative.{color_palette.capitalize() if color_palette != "plotly" else "Plotly"},
-)
+{cls._color_sequence_arg(color_palette)})
 
 # Configure text display
 fig.update_traces(textinfo="{"percent+label" if show_percent else "label+value"}")
@@ -269,8 +278,7 @@ fig = px.pie(
     values="{config.values}",
     names="{config.labels}",
     hole=0.4,  # Creates the donut hole
-    color_discrete_sequence=px.colors.qualitative.{color_palette.capitalize() if color_palette != "plotly" else "Plotly"},
-)
+{cls._color_sequence_arg(color_palette)})
 
 # Configure text display
 fig.update_traces(textinfo="{"percent+label" if show_percent else "label+value"}")
@@ -294,8 +302,7 @@ fig = px.histogram(
             code += f'\n    nbins={bins},'
         
         code += f'''
-    color_discrete_sequence=px.colors.qualitative.{color_palette.capitalize() if color_palette != "plotly" else "Plotly"},
-)
+{cls._color_sequence_arg(color_palette)})
 '''
         return code
 
@@ -314,8 +321,7 @@ fig = px.box(
             code += f'\n    color="{config.color}",'
         
         code += f'''
-    color_discrete_sequence=px.colors.qualitative.{color_palette.capitalize() if color_palette != "plotly" else "Plotly"},
-)
+{cls._color_sequence_arg(color_palette)})
 '''
         return code
 
@@ -346,16 +352,16 @@ fig = px.imshow(
     @classmethod
     def _generate_table_chart(cls, config: ChartConfig, options: dict) -> str:
         """Generate table chart code."""
+        # Fills are left to the app's theme template — a hardcoded light
+        # fill would be unreadable in dark mode.
         code = '''# Create table visualization
 fig = go.Figure(go.Table(
     header=dict(
         values=list(df.columns),
-        fill_color='paleturquoise',
         align='left',
     ),
     cells=dict(
         values=[df[col] for col in df.columns],
-        fill_color='lavender',
         align='left',
     ),
 ))
@@ -371,9 +377,11 @@ fig = go.Figure(go.Table(
         
         if config.title:
             layout_items.append(f'    title="{config.title}"')
-        
-        layout_items.append('    template="plotly_white"')
-        
+
+        # No template / colours here on purpose: the app themes the figure to
+        # match the user's light or dark mode. Pinning one here would lock the
+        # chart to a single theme.
+
         x_label = config.x_label or options.get("x_label", "")
         y_label = config.y_label or options.get("y_label", "")
         

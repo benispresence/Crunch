@@ -6,6 +6,7 @@
 
 import { db } from "../../db/index.js";
 import { decryptConnectionConfig } from "../crypto.js";
+import { allowedImportNames } from "../packages.js";
 import { pythonEngine } from "../pythonEngine.js";
 import type { ToolHandler, ToolModule } from "./types.js";
 
@@ -40,7 +41,13 @@ const render_chart: ToolHandler = async (_ctx, input) => {
 const run_python: ToolHandler = async (_ctx, input) => {
   const code = input.code as string;
   const data = (input.data as Record<string, unknown[]> | undefined) ?? {};
-  return await pythonEngine.executePython({ code, data });
+  // Same whitelist the workspace editor gets — the agent doesn't get a wider
+  // sandbox than the user it acts for.
+  return await pythonEngine.executePython({
+    code,
+    data,
+    allowed_packages: allowedImportNames(),
+  });
 };
 
 export const dataTools: ToolModule = {
@@ -83,7 +90,7 @@ export const dataTools: ToolModule = {
     {
       name: "run_python",
       description:
-        "Run user Python code in the sandbox to transform data or build a custom plotly figure. Code receives variable `df` (pandas DataFrame) and should assign a plotly Figure to variable `fig`.",
+        "Run user Python code in the sandbox to transform data or build a custom plotly figure. Code receives variable `df` (pandas DataFrame) and should assign a plotly Figure to variable `fig`. Keep the figure theme-aware: no `template=`, background/font/grid colours, or width/height — the app themes and sizes it. To pin a colour that must still flip between light and dark, use a theme token (`\"$accent\"`, `\"$series0\"`, `theme_color(light_hex, dark_hex)`, or `theme_palette(...)`), never a raw hex.",
       input_schema: {
         type: "object",
         properties: {

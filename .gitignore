@@ -9,6 +9,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+!desktop/build/
+!desktop/build/**
 develop-eggs/
 dist/
 downloads/
@@ -101,6 +103,9 @@ dmypy.json
 node_modules/
 backend/dist/
 frontend/dist/
+desktop/node_modules/
+desktop/release/
+desktop/.pack/
 backend/*.sqlite
 backend/.env
 .vite/
@@ -109,6 +114,7 @@ backend/.env
 # NiceMeta runtime / agent state
 .claude/
 .nicegui/
+.playwright-mcp/
 # nicemeta-workspace/ is the user's git-backed collections workspace.
 # It manages its own git history (see Admin → Git), so don't commit it
 # into the main NiceMeta repo.

@@ -12,6 +12,7 @@
 import type { Tool } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { dataTools } from "./chatTools/data.js";
 import { dashboardTools } from "./chatTools/dashboards.js";
+import { folderTools } from "./chatTools/folders.js";
 import { navigateTools } from "./chatTools/navigate.js";
 import { pipelineTools } from "./chatTools/pipelines.js";
 import { queryTools } from "./chatTools/queries.js";
@@ -25,6 +26,7 @@ import {
 const MODULES: ToolModule[] = [
   dataTools,
   queryTools,
+  folderTools,
   dashboardTools,
   navigateTools,
   pipelineTools,

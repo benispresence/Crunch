@@ -94,6 +94,28 @@ export type Proposal =
       target: { name: string; sql: string };
     }
   | {
+      kind: "new_folder";
+      rationale?: string;
+      folder: {
+        name: string;
+        parent_id: number | null;
+        parent_path: string | null;
+        queries: Array<{
+          name: string; sql: string; connection_id: number; connection_name: string;
+          chart_type: string; chart_config: Record<string, unknown>;
+          chart_mode: string; chart_python_code: string | null;
+          copied_from: { id: number; name: string } | null;
+        }>;
+      };
+    }
+  | {
+      kind: "move_queries";
+      rationale?: string;
+      folder_id: number | null;
+      folder_path: string | null;
+      queries: Array<{ id: number; name: string; from_folder_id: number | null }>;
+    }
+  | {
       kind: "new_dashboard";
       rationale?: string;
       dashboard: {
@@ -216,6 +238,22 @@ export interface ChatTurn {
 }
 
 const AUTO_ACCEPT_KEY = "nicemeta.chat.autoAccept";
+const MODEL_KEY = "nicemeta.chat.model";
+const EFFORT_KEY = "nicemeta.chat.effort";
+
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface ModelOption {
+  id: string;
+  label: string;
+  blurb: string;
+  efforts: EffortLevel[];
+  default_effort: EffortLevel | null;
+  supports_thinking_off: boolean;
+  provider?: string;
+  provider_label?: string;
+  provider_short?: string;
+}
 
 interface ConversationSummary {
   id: number;
@@ -236,8 +274,33 @@ export const useChatStore = defineStore("chat", {
     // When on, every proposal is applied automatically as soon as the agent
     // emits it (no Accept click). Persisted per-browser.
     autoAccept: localStorage.getItem(AUTO_ACCEPT_KEY) === "1",
+    // Model + effort for the next message. Both are per-browser preferences;
+    // the server clamps whatever arrives to what the model actually accepts.
+    models: [] as ModelOption[],
+    model: localStorage.getItem(MODEL_KEY) ?? "",
+    effort: (localStorage.getItem(EFFORT_KEY) as EffortLevel | null) ?? null,
+    /** Server-side adjustments to the requested model/effort, shown inline. */
+    notices: [] as string[],
   }),
   getters: {
+    activeModel(state): ModelOption | null {
+      return state.models.find((m) => m.id === state.model) ?? state.models[0] ?? null;
+    },
+    modelsByLab(state): Array<{ label: string; models: ModelOption[] }> {
+      const groups: Array<{ label: string; models: ModelOption[] }> = [];
+      const index = new Map<string, number>();
+      for (const m of state.models) {
+        const label = m.provider_label || m.provider_short || "Models";
+        let i = index.get(label);
+        if (i === undefined) {
+          i = groups.length;
+          index.set(label, i);
+          groups.push({ label, models: [] });
+        }
+        groups[i]!.models.push(m);
+      }
+      return groups;
+    },
     /**
      * The first not-yet-resolved proposal across the whole conversation.
      * Panels (SqlEditor / ChartPanel / WorkspaceView) read this so the UI
@@ -300,9 +363,44 @@ export const useChatStore = defineStore("chat", {
       this.autoAccept = on;
       localStorage.setItem(AUTO_ACCEPT_KEY, on ? "1" : "0");
     },
+    async loadModels() {
+      try {
+        const r = await api.get<{ default_model: string; models: ModelOption[] }>(
+          "/chat/models",
+        );
+        this.models = r.models;
+        // A stored preference can point at a model the admin has since turned
+        // off — fall back rather than sending an id the server will reject.
+        if (!this.models.some((m) => m.id === this.model)) {
+          this.setModel(
+            this.models.some((m) => m.id === r.default_model)
+              ? r.default_model
+              : (this.models[0]?.id ?? ""),
+          );
+        }
+      } catch {
+        /* picker just stays empty; the server default still applies */
+      }
+    },
+    setModel(id: string) {
+      this.model = id;
+      localStorage.setItem(MODEL_KEY, id);
+      // Effort levels aren't shared across models — drop one the new model
+      // doesn't offer instead of sending it and getting it clamped.
+      const opt = this.models.find((m) => m.id === id);
+      if (opt && this.effort && !opt.efforts.includes(this.effort)) {
+        this.setEffort(opt.default_effort);
+      }
+    },
+    setEffort(level: EffortLevel | null) {
+      this.effort = level;
+      if (level) localStorage.setItem(EFFORT_KEY, level);
+      else localStorage.removeItem(EFFORT_KEY);
+    },
     async send(message: string) {
       if (!message.trim() || this.sending) return;
       this.sending = true;
+      this.notices = [];
       this.turns.push(this.makeTurn("user", message));
       this.turns.push(this.makeTurn("assistant"));
       // Critical: re-fetch via index so we get the reactive Pinia proxy,
@@ -357,6 +455,8 @@ export const useChatStore = defineStore("chat", {
             conversation_id: this.conversationId,
             message,
             thinking: this.showThinking,
+            model: this.model || undefined,
+            effort: this.effort ?? undefined,
             workspace,
           },
           { signal: controller.signal },
@@ -399,17 +499,34 @@ export const useChatStore = defineStore("chat", {
         case "text_delta":
           turn.text += String(d.text ?? "");
           break;
+        case "notice":
+          // Server clamped the requested model/effort — say so rather than
+          // silently running something other than what was picked.
+          if (d.text) this.notices.push(String(d.text));
+          break;
+        case "run_config":
+          break;
         case "tools_running":
           turn.toolsAggregated = Boolean(d.aggregated);
           break;
-        case "tool_call":
-          turn.toolCalls.push({
-            id: String(d.id),
-            name: String(d.name),
-            input: d.input,
-            status: "running",
-          });
+        case "tool_call": {
+          // Upsert, not push: server-side tools (web search) announce themselves
+          // when the block opens and then fill in their input once it's fully
+          // streamed, so the same id arrives twice.
+          const id = String(d.id);
+          const existing = turn.toolCalls.find((c) => c.id === id);
+          if (existing) {
+            if (d.input !== undefined) existing.input = d.input;
+          } else {
+            turn.toolCalls.push({
+              id,
+              name: String(d.name),
+              input: d.input,
+              status: "running",
+            });
+          }
           break;
+        }
         case "tool_result": {
           const id = String(d.id);
           const call = turn.toolCalls.find((c) => c.id === id);
@@ -506,6 +623,50 @@ export const useChatStore = defineStore("chat", {
         } else if (p.kind === "delete_query") {
           await api.del(`/queries/${p.query_id}`);
           rec.resultId = p.query_id;
+        } else if (p.kind === "new_folder") {
+          // Folder first — its id doesn't exist until now, which is exactly
+          // why the queries ride along on this proposal instead of being
+          // proposed separately.
+          const created = await api.post<{ id: number }>("/folders", {
+            name: p.folder.name,
+            parent_id: p.folder.parent_id ?? undefined,
+          });
+          rec.resultId = created.id;
+          const made: number[] = [];
+          for (const q of p.folder.queries) {
+            try {
+              const cq = await api.post<{ id: number }>("/queries", {
+                name: q.name,
+                sql: q.sql,
+                connection_id: q.connection_id,
+                folder_id: created.id,
+                chart_type: q.chart_type,
+                chart_config: q.chart_config,
+                chart_mode: q.chart_mode,
+                chart_python_code: q.chart_python_code ?? undefined,
+              });
+              made.push(cq.id);
+            } catch (e) {
+              throw new Error(
+                `folder created, but query "${q.name}" failed after ${made.length}`
+                + ` of ${p.folder.queries.length}: ${(e as Error).message}`,
+              );
+            }
+          }
+        } else if (p.kind === "move_queries") {
+          const moved: number[] = [];
+          for (const q of p.queries) {
+            try {
+              await api.put(`/queries/${q.id}`, { folder_id: p.folder_id });
+              moved.push(q.id);
+            } catch (e) {
+              throw new Error(
+                `moved ${moved.length} of ${p.queries.length}; "${q.name}" failed:`
+                + ` ${(e as Error).message}`,
+              );
+            }
+          }
+          rec.resultId = p.folder_id ?? undefined;
         } else if (p.kind === "new_dashboard") {
           // Two-step: create the dashboard, then bulk-add widgets and
           // attach filters. We pick up the new id from the POST and
@@ -595,6 +756,10 @@ export const useChatStore = defineStore("chat", {
         ) {
           ws.invalidateCache(rec.resultId);
           await ws.loadSavedQueries();
+        }
+        if (rec.proposal.kind === "new_folder" || rec.proposal.kind === "move_queries") {
+          // Both the tree and the query list change shape here.
+          await Promise.all([ws.loadFolders(), ws.loadSavedQueries()]);
         }
         if (rec.proposal.kind === "bulk_query_edit") {
           // Invalidate every edited query's cache so the row count

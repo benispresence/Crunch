@@ -5,16 +5,29 @@ import { api } from "@/api/client";
 import { useTheme } from "@/composables/theme";
 import { useAuthStore } from "@/stores/auth";
 
-defineProps<{ sidebarOpen?: boolean; chatOpen?: boolean }>();
+defineProps<{ sidebarOpen?: boolean; chatOpen?: boolean; vizFullView?: boolean }>();
 const emit = defineEmits<{
   (e: "update:sidebarOpen", v: boolean): void;
   (e: "update:chatOpen", v: boolean): void;
+  (e: "update:vizFullView", v: boolean): void;
 }>();
 
 const auth = useAuthStore();
 const router = useRouter();
 const route = useRoute();
 const { theme, toggle: toggleTheme } = useTheme();
+
+// Workspace deep links use name "workspace-query" — treat both as Workspace.
+const onWorkspace = computed(
+  () => route.name === "workspace" || route.name === "workspace-query",
+);
+const onDashboards = computed(
+  () => route.name === "dashboards" || route.name === "dashboard-detail",
+);
+const onPipelines = computed(
+  () => route.name === "pipelines" || route.name === "pipeline-detail",
+);
+const onDocs = computed(() => String(route.name ?? "").startsWith("docs"));
 
 function logout() {
   auth.logout();
@@ -110,20 +123,73 @@ async function submitChangePassword() {
         <span class="topbar__name">Crunch</span>
       </RouterLink>
       <nav class="topbar__nav">
-        <RouterLink to="/workspace" class="topbar__link">Workspace</RouterLink>
-        <RouterLink to="/dashboards" class="topbar__link">Dashboards</RouterLink>
-        <RouterLink to="/pipelines" class="topbar__link">Pipelines</RouterLink>
-        <RouterLink v-if="auth.user?.role === 'admin'" to="/admin" class="topbar__link">
+        <RouterLink
+          to="/workspace"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': onWorkspace }"
+        >
+          Workspace
+        </RouterLink>
+        <RouterLink
+          to="/dashboards"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': onDashboards }"
+        >
+          Dashboards
+        </RouterLink>
+        <RouterLink
+          to="/pipelines"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': onPipelines }"
+        >
+          Pipelines
+        </RouterLink>
+        <RouterLink
+          to="/docs/filters"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': onDocs }"
+        >
+          Docs
+        </RouterLink>
+        <RouterLink
+          v-if="auth.user?.role === 'admin'"
+          to="/admin"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': route.name === 'admin' }"
+        >
           Admin
         </RouterLink>
       </nav>
     </div>
 
     <div class="topbar__right">
+      <!-- Always visible on every page / deep-link URL -->
       <button
-        v-if="route.name === 'workspace'"
+        class="btn btn-ghost btn-icon"
+        :class="{ 'topbar__toggle--on': vizFullView }"
+        :title="vizFullView ? 'Show all panels' : 'Full visualization — hide sidebar, chat, editor & results'"
+        :aria-pressed="!!vizFullView"
+        @click="emit('update:vizFullView', !vizFullView)"
+      >
+        <!-- Maximize → full chart; stacked panes → restore all panels -->
+        <svg v-if="!vizFullView" width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path
+            d="M2.5 5.5V3.5a1 1 0 0 1 1-1h2M10.5 2.5h2a1 1 0 0 1 1 1v2M13.5 10.5v2a1 1 0 0 1-1 1h-2M5.5 13.5h-2a1 1 0 0 1-1-1v-2"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <svg v-else width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" stroke="currentColor" />
+          <path d="M2.5 6h11M2.5 10.5h11" stroke="currentColor" />
+        </svg>
+      </button>
+      <button
         class="btn btn-ghost btn-sm"
+        :class="{ 'topbar__toggle--on': chatOpen }"
         :title="chatOpen ? 'Hide chat' : 'Show chat'"
+        :aria-pressed="!!chatOpen"
         @click="emit('update:chatOpen', !chatOpen)"
       >
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
@@ -254,7 +320,13 @@ async function submitChangePassword() {
   transition: background 120ms, color 120ms;
 }
 .topbar__link:hover { background: var(--bg-hover); color: var(--fg); }
-.topbar__link.router-link-active {
+/* Prefer our section-level active class so /workspace/q/… still highlights Workspace. */
+.topbar__link.router-link-active:not(.topbar__link--active) {
+  background: transparent;
+  color: var(--fg-muted);
+}
+.topbar__link--active,
+.topbar__link.router-link-active.topbar__link--active {
   background: var(--accent-subtle);
   color: var(--accent);
 }
@@ -292,6 +364,10 @@ async function submitChangePassword() {
 .topbar__user {
   color: var(--fg-subtle);
   font-size: 12px;
+}
+.topbar__toggle--on {
+  background: var(--accent-subtle);
+  color: var(--accent);
 }
 .pw-overlay {
   position: fixed;

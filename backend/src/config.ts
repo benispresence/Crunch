@@ -4,6 +4,7 @@ import "dotenv/config";
 const DEV_JWT_SECRET = "dev-secret-change-me";
 const DEV_ENGINE_TOKEN = "dev-engine-token";
 
+const isDesktop = process.env.CRUNCH_DESKTOP === "1";
 const isDev = (process.env.NODE_ENV ?? "development") !== "production";
 const jwtSecret = process.env.JWT_SECRET ?? DEV_JWT_SECRET;
 const engineToken = process.env.PYTHON_ENGINE_TOKEN ?? DEV_ENGINE_TOKEN;
@@ -31,7 +32,10 @@ if (!isDev) {
 
 export const config = {
   port: Number(process.env.PORT ?? 3691),
+  // Desktop binds loopback only so the app isn't reachable on the LAN.
+  bindHost: process.env.BIND_HOST ?? (isDesktop ? "127.0.0.1" : ""),
   isDev,
+  isDesktop,
   jwtSecret,
   // Access-token lifetime. Long-lived tokens are a bigger blast radius
   // if one leaks; operators who want tighter sessions can shorten this
@@ -41,6 +45,9 @@ export const config = {
   pythonEngineToken: engineToken,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
   anthropicModel: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7",
+  xaiApiKey: process.env.XAI_API_KEY ?? "",
+  openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  googleApiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "",
   databaseFile: process.env.DATABASE_FILE ?? "./nicemeta.sqlite",
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
   // Browser-facing origin of the deployment, used to build OAuth redirect
@@ -67,6 +74,9 @@ export const config = {
   // for multi-tenant deployments — otherwise a user can point at
   // /etc/passwd or /home/*/.ssh and have it parsed as CSV.
   fileSourceRoot: process.env.NICEMETA_FILE_SOURCE_ROOT ?? "",
+  // When set (desktop app), Express also serves the built SPA so the
+  // Electron window can load a single origin.
+  frontendDist: process.env.FRONTEND_DIST ?? "",
 };
 
 if (!isDev && !config.dataKey) {

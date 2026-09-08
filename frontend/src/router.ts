@@ -9,6 +9,7 @@ const DashboardDetail = () => import("@/views/DashboardDetailView.vue");
 const Pipelines = () => import("@/views/PipelinesView.vue");
 const PipelineDetail = () => import("@/views/PipelineDetailView.vue");
 const Admin = () => import("@/views/AdminView.vue");
+const DocsFilters = () => import("@/views/DocsFiltersView.vue");
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -21,11 +22,26 @@ export const router = createRouter({
       children: [
         { path: "", redirect: "/workspace" },
         { path: "workspace", name: "workspace", component: Workspace },
+        // Deep link: open a saved query and run its visualization immediately.
+        // Optional slug is cosmetic; :queryId is authoritative.
+        {
+          path: "workspace/q/:queryId/:slug?",
+          name: "workspace-query",
+          component: Workspace,
+          props: true,
+        },
         { path: "dashboards", name: "dashboards", component: Dashboards },
-        { path: "dashboards/:id", name: "dashboard-detail", component: DashboardDetail },
+        // Deep link: open a dashboard (widgets load their charts on mount).
+        {
+          path: "dashboards/:id/:slug?",
+          name: "dashboard-detail",
+          component: DashboardDetail,
+        },
         { path: "pipelines", name: "pipelines", component: Pipelines },
         { path: "pipelines/:id", name: "pipeline-detail", component: PipelineDetail },
         { path: "admin", name: "admin", component: Admin, meta: { adminOnly: true } },
+        { path: "docs", redirect: "/docs/filters" },
+        { path: "docs/filters", name: "docs-filters", component: DocsFilters },
       ],
     },
   ],
@@ -33,7 +49,15 @@ export const router = createRouter({
 
 router.beforeEach((to) => {
   const auth = useAuthStore();
-  if (to.meta.requiresAuth && !auth.token) return { name: "login" };
-  if (to.name === "login" && auth.token) return { name: "workspace" };
+  if (to.meta.requiresAuth && !auth.token) {
+    return { name: "login", query: { redirect: to.fullPath } };
+  }
+  if (to.name === "login" && auth.token) {
+    const redirect = typeof to.query.redirect === "string" ? to.query.redirect : null;
+    if (redirect && redirect.startsWith("/") && !redirect.startsWith("//")) {
+      return redirect;
+    }
+    return { name: "workspace" };
+  }
   if (to.meta.adminOnly && auth.user?.role !== "admin") return { name: "workspace" };
 });

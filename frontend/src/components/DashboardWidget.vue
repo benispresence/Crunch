@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import Plotly from "plotly.js-dist-min";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { api } from "@/api/client";
+import { chartTemplate, themedSpec } from "@/composables/chartTheme";
 import { useDashboardsStore, type DashboardWidget } from "@/stores/dashboards";
+import type { ParameterValues } from "@/stores/workspace";
 import { useVisualizationsStore } from "@/stores/visualizations";
+import CookieLoader from "./CookieLoader.vue";
 
 const props = defineProps<{
   widget: DashboardWidget;
   editing: boolean;
   /** Parameter values resolved from the dashboard filter bar. Re-render
    *  is triggered whenever this changes so chips behave like Metabase's. */
-  parameterValues?: Record<string, string | number | boolean | null>;
+  parameterValues?: ParameterValues;
 }>();
 const emit = defineEmits<{
   (e: "remove"): void;
@@ -33,15 +36,23 @@ interface RenderResult {
   row_count?: number;
 }
 
-const baseLayout = {
-  paper_bgcolor: "rgba(0,0,0,0)",
-  plot_bgcolor: "rgba(0,0,0,0)",
-  font: { family: "Inter, sans-serif", color: "#a8a098", size: 11 },
-  margin: { t: 12, r: 12, b: 32, l: 40 },
-  xaxis: { gridcolor: "#36312b", zerolinecolor: "#36312b" },
-  yaxis: { gridcolor: "#36312b", zerolinecolor: "#36312b" },
-  colorway: ["#d97757", "#7aa2c8", "#7fb069", "#e8b04c", "#c8a2d4"],
-};
+// Widget chrome only — colours come from the theme template.
+const baseLayout = { margin: { t: 12, r: 12, b: 32, l: 40 } };
+
+/** Last spec we painted, so a theme toggle repaints without re-querying. */
+const lastSpec = shallowRef<{ data: unknown[]; layout: Record<string, unknown> } | null>(null);
+
+async function paint() {
+  const spec = lastSpec.value;
+  if (!host.value || !spec) return;
+  const themed = themedSpec(spec, baseLayout);
+  await Plotly.react(
+    host.value,
+    themed.data as Parameters<typeof Plotly.react>[1],
+    themed.layout,
+    { displayModeBar: false, responsive: true },
+  );
+}
 
 async function load() {
   loading.value = true;
@@ -62,12 +73,8 @@ async function load() {
     }
     if (r.success && r.spec && host.value) {
       rowCount.value = r.row_count ?? null;
-      await Plotly.react(
-        host.value,
-        r.spec.data as unknown[],
-        { ...baseLayout, ...r.spec.layout },
-        { displayModeBar: false, responsive: true },
-      );
+      lastSpec.value = r.spec;
+      await paint();
     } else {
       error.value = r.error ?? "render failed";
     }
@@ -86,6 +93,7 @@ function relayout() {
 
 onMounted(load);
 watch(() => `${props.widget.width}x${props.widget.height}`, () => requestAnimationFrame(relayout));
+watch(chartTemplate, () => void paint());
 // Re-render the chart whenever the inputs the user sees change — the
 // filter bar mutates this object so a chip flip flows straight through.
 watch(
@@ -131,7 +139,9 @@ const hasUnmappedFilters = computed(() => {
       </div>
     </div>
     <div ref="host" class="widget__chart">
-      <div v-if="loading" class="widget__state">Loading…</div>
+      <div v-if="loading" class="widget__state widget__state--loading">
+        <CookieLoader label="Crunching…" size="md" />
+      </div>
       <div v-else-if="error" class="widget__state widget__state--error">{{ error }}</div>
     </div>
     <div

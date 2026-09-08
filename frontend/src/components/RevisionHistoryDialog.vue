@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { api } from "@/api/client";
+import CookieLoader from "./CookieLoader.vue";
 
 /**
  * Reused timeline for a single query or dashboard. The owner picks the
@@ -94,7 +95,9 @@ async function revert(rev: Revision) {
         <button class="btn btn-ghost btn-icon" @click="emit('close')">×</button>
       </header>
 
-      <div v-if="loading" class="dialog__state">Loading history…</div>
+      <div v-if="loading" class="dialog__state dialog__state--loading">
+        <CookieLoader label="Crunching history…" size="md" />
+      </div>
       <div v-else-if="error" class="dialog__state dialog__state--error">{{ error }}</div>
       <div v-else-if="revisions.length === 0" class="dialog__state">
         No revisions yet — they appear here every time you save.
@@ -173,6 +176,11 @@ async function revert(rev: Revision) {
   font-size: 13px;
   color: var(--fg-muted);
   text-align: center;
+}
+.dialog__state--loading {
+  display: flex;
+  justify-content: center;
+  padding: 36px 18px;
 }
 .dialog__state--error { color: var(--error); }
 .dialog__list {

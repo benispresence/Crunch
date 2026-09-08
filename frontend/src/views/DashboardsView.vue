@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import { absoluteUrl, copyText, dashboardPath } from "@/utils/links";
 import { useDashboardsStore } from "@/stores/dashboards";
 
 const dashboards = useDashboardsStore();
 const router = useRouter();
+const linkToastId = ref<number | null>(null);
 
 const creating = ref(false);
 const newName = ref("");
@@ -16,14 +18,15 @@ onMounted(async () => {
 });
 
 async function create() {
-  if (!newName.value.trim()) return;
+  const name = newName.value.trim();
+  if (!name) return;
   try {
-    const id = await dashboards.create(newName.value.trim(), newDesc.value.trim() || undefined);
+    const id = await dashboards.create(name, newDesc.value.trim() || undefined);
     creating.value = false;
     newName.value = "";
     newDesc.value = "";
     error.value = "";
-    router.push({ name: "dashboard-detail", params: { id } });
+    router.push(dashboardPath(id, name));
   } catch (e) {
     error.value = (e as Error).message;
   }
@@ -32,6 +35,19 @@ async function create() {
 async function remove(id: number) {
   if (!confirm("Delete this dashboard?")) return;
   await dashboards.remove(id);
+}
+
+async function copyLink(id: number, name: string, e: Event) {
+  e.stopPropagation();
+  const ok = await copyText(absoluteUrl(dashboardPath(id, name)));
+  linkToastId.value = ok ? id : null;
+  setTimeout(() => {
+    if (linkToastId.value === id) linkToastId.value = null;
+  }, 1500);
+}
+
+function openDashboard(id: number, name: string) {
+  router.push(dashboardPath(id, name));
 }
 
 function fmt(ts: number): string {
@@ -70,14 +86,22 @@ function fmt(ts: number): string {
         v-for="d in dashboards.list"
         :key="d.id"
         class="dashboards__card"
-        @click="router.push({ name: 'dashboard-detail', params: { id: d.id } })"
+        @click="openDashboard(d.id, d.name)"
       >
         <div class="dashboards__card-head">
           <h3>{{ d.name }}</h3>
+          <button
+            class="btn btn-ghost btn-icon"
+            title="Copy link"
+            @click="copyLink(d.id, d.name, $event)"
+          >↗</button>
           <button class="btn btn-ghost btn-icon" @click.stop="remove(d.id)" title="Delete">×</button>
         </div>
         <p v-if="d.description" class="dashboards__card-desc">{{ d.description }}</p>
-        <div class="dashboards__card-meta">Updated {{ fmt(d.updated_at) }}</div>
+        <div class="dashboards__card-meta">
+          <span>Updated {{ fmt(d.updated_at) }}</span>
+          <span v-if="linkToastId === d.id" class="dashboards__link-toast">Link copied</span>
+        </div>
       </article>
     </div>
   </div>
@@ -164,14 +188,16 @@ function fmt(ts: number): string {
 }
 .dashboards__card-head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 4px;
 }
 .dashboards__card-head h3 {
   margin: 0;
   font-family: var(--font-serif);
   font-size: 16px;
   font-weight: 500;
+  flex: 1;
+  min-width: 0;
 }
 .dashboards__card-desc {
   color: var(--fg-muted);
@@ -179,7 +205,13 @@ function fmt(ts: number): string {
   font-size: 13px;
 }
 .dashboards__card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11px;
   color: var(--fg-subtle);
+}
+.dashboards__link-toast {
+  color: var(--accent);
 }
 </style>

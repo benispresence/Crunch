@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { markRaw } from "vue";
 import { api } from "@/api/client";
+import { inferParameterType } from "@/utils/dateFilters";
 
 export interface Connection {
   id: number;
@@ -17,20 +18,37 @@ export interface Folder {
   created_at: number;
 }
 
-export type ParameterType = "text" | "number" | "date" | "boolean";
-export type ParameterWidget = "input" | "dropdown" | "date" | "toggle";
+export type ParameterType = "text" | "number" | "date" | "boolean" | "field";
+export type ParameterWidget = "input" | "dropdown" | "date" | "daterange" | "month" | "toggle";
+
+export interface DateRangeValue {
+  start?: string | null;
+  end?: string | null;
+}
+
+export type ParameterValue =
+  | string
+  | number
+  | boolean
+  | null
+  | string[]
+  | DateRangeValue;
 
 export interface ParameterSpec {
   name: string;
   display_name?: string;
   type: ParameterType;
-  default?: string | number | boolean | null;
+  default?: ParameterValue;
   required?: boolean;
   widget?: ParameterWidget;
   options?: string[];
+  /** Mapped column for a Metabase-style field filter, e.g. hex.stakes.created_at. */
+  target?: string;
+  /** Field-filter comparison. Default eq (or IN for multi-select). */
+  operator?: "eq" | "ne" | "contains" | "between" | "gte" | "lte";
 }
 
-export type ParameterValues = Record<string, string | number | boolean | null>;
+export type ParameterValues = Record<string, ParameterValue>;
 
 export interface SavedQuery {
   id: number;
@@ -147,11 +165,14 @@ export const useWorkspaceStore = defineStore("workspace", {
     // we detect in the SQL). Values are the per-run user inputs.
     parameters: [] as ParameterSpec[],
     parameterValues: {} as ParameterValues,
+    /** Snippet the SQL editor should insert at the cursor (filter add). */
+    pendingSqlInsert: null as string | null,
     pythonOutput: null as { spec?: Record<string, unknown>; stdout?: string; error?: string } | null,
     pythonRunning: false,
     result: null as SqlResult | null,
     chart: null as ChartSpec | null,
     chartError: "" as string,
+    chartRendering: false,
     running: false,
     pendingProposal: null as { sql: string } | null,
     // Per-query result+chart cache. Cleared when the query's SQL or chart
@@ -254,6 +275,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.result.columns.forEach((col, i) => {
         data[col] = this.result!.rows.map((r) => r[i]);
       });
+      this.chartRendering = true;
       try {
         const r = await api.post<{
           success: boolean;
@@ -277,6 +299,8 @@ export const useWorkspaceStore = defineStore("workspace", {
         }
       } catch (e) {
         this.chartError = (e as Error).message;
+      } finally {
+        this.chartRendering = false;
       }
     },
     async runPython() {
@@ -366,6 +390,9 @@ export const useWorkspaceStore = defineStore("workspace", {
      * in document order. Mirrors what Metabase's editor does on every
      * keystroke.
      */
+    insertSql(snippet: string) {
+      this.pendingSqlInsert = snippet;
+    },
     syncParametersFromSql() {
       const found: string[] = [];
       const seen = new Set<string>();
@@ -381,7 +408,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       const keep: ParameterSpec[] = [];
       for (const name of found) {
         const existing = this.parameters.find((p) => p.name === name);
-        keep.push(existing ?? { name, type: "text" });
+        keep.push(existing ?? { name, type: inferParameterType(name) });
       }
       // Drop values for parameters that no longer exist.
       const next: ParameterValues = {};
@@ -497,6 +524,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.chartMode = "picker";
       this.parameters = [];
       this.parameterValues = {};
+      this.pendingSqlInsert = null;
     },
     async runSql() {
       if (!this.activeConnectionId) throw new Error("Pick a connection first");

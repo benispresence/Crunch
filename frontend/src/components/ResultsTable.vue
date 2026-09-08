@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useWorkspaceStore } from "@/stores/workspace";
+import CookieLoader from "./CookieLoader.vue";
+import FilterErrorHint from "./FilterErrorHint.vue";
 
 const props = defineProps<{ collapsed?: boolean }>();
 const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
@@ -41,12 +43,15 @@ function formatCell(value: unknown): string {
     </header>
 
     <template v-if="!props.collapsed">
-      <div v-if="ws.running" class="results__state">Running query…</div>
+      <div v-if="ws.running" class="results__state results__state--loading">
+        <CookieLoader label="Crunching query…" size="md" />
+      </div>
       <div v-else-if="!result" class="results__state results__state--muted">
         Run a query to see results here.
       </div>
       <div v-else-if="!result.success" class="results__state results__state--error">
         {{ result.error || "Query failed" }}
+        <FilterErrorHint :message="result.error" always />
       </div>
       <div v-else class="results__scroll">
         <table class="results__table">
@@ -120,6 +125,13 @@ function formatCell(value: unknown): string {
   padding: 24px;
   text-align: center;
   color: var(--fg-muted);
+}
+.results__state--loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 120px;
 }
 .results__state--muted { color: var(--fg-subtle); }
 .results__state--error { color: var(--error); white-space: pre-wrap; text-align: left; }
