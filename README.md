@@ -33,13 +33,29 @@ Cursor-style workspace and a built-in Anthropic-powered assistant.
 
 ## Quick start
 
-Pick one of the two paths:
+Pick one of the three paths:
 
-- [**Docker** — one command, no toolchain setup](#run-with-docker)
+- [**Mac app** — download and open, no toolchain setup](#mac-app)
+- [**Docker** — one command, runs anywhere](#run-with-docker)
 - [**Native** — full local dev loop with hot reload](#run-natively)
 
 You'll need an **Anthropic API key** for the AI assistant. The rest of the
 app works without one.
+
+---
+
+## Mac app
+
+Download the zip for your architecture from the
+[latest release](https://github.com/benispresence/Crunch/releases/latest) —
+`mac-arm64` for Apple Silicon, `mac-x64` for Intel — unzip, and drag
+`Crunch.app` to Applications. It boots the engine and API on loopback and
+keeps its database under Application Support.
+
+Coming from a Docker or native install? Use **File → Import from another
+Crunch instance** rather than copying the SQLite file: the app encrypts
+stored connection passwords with its own key, and the import re-encrypts
+them on the way in.
 
 ---
 
@@ -374,6 +390,13 @@ WHERE 1 = 1
   SQL bind parameters, so they can't be injected.
 - **`[[ … {{name}} … ]]`** — optional clause. The bracketed chunk vanishes
   when `name` is left blank; supply a value and it's substituted as a bind.
+- **Field filters** — map a variable to a column and `{{name}}` expands into a
+  whole parameterized clause instead of a scalar. Pick an operator (`eq`,
+  `ne`, `contains`, `between`, `gte`, `lte`) to get a range or substring
+  match; the values are still bound, never spliced.
+
+The in-app **Docs → Filters** page walks through the syntax with worked
+examples, and template errors link to it.
 
 Every `{{var}}` you type is auto-detected and shown in the **Variables**
 strip above the editor, where you set its type (`text`, `number`, `date`,
