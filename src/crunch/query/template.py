@@ -83,6 +83,13 @@ class TemplateError(ValueError):
     """A parameter is referenced by the template but not supplied or
     has the wrong type. The error message is safe to surface to users."""
 
+    DOCS_HINT = " See Docs → Filters in Crunch for examples."
+
+    def __init__(self, message: str) -> None:
+        if "Docs → Filters" not in message:
+            message = f"{message}{self.DOCS_HINT}"
+        super().__init__(message)
+
 
 @dataclass(frozen=True)
 class ParameterSpec:
@@ -104,6 +111,7 @@ class ParameterSpec:
     required: bool = False
     widget: str | None = None  # input | dropdown | date | daterange | month | toggle
     target: str | None = None  # mapped column, e.g. hex.stakes.created_at
+    operator: str | None = None  # eq | ne | contains | between | gte | lte
 
 
 def _is_field_filter(spec: ParameterSpec) -> bool:
@@ -500,6 +508,8 @@ def _render_field_filter(
             )
         )
 
+    op = (spec.operator or "eq").lower()
+
     if datey:
         rng = _range_from_value(raw, widget or "daterange")
         if rng is None:
@@ -519,19 +529,61 @@ def _render_field_filter(
         clause = " AND ".join(parts)
         return f"({clause})" if len(parts) > 1 else clause
 
+    if isinstance(raw, dict) or op == "between":
+        if not isinstance(raw, dict):
+            return None
+        start = None if _blank(raw.get("start")) else raw.get("start")
+        end = None if _blank(raw.get("end")) else raw.get("end")
+        parts: list[str] = []
+        if start is not None:
+            k = f"{spec.name}__start"
+            binds[k] = start
+            parts.append(f"{col} >= :{k}")
+        if end is not None:
+            k = f"{spec.name}__end"
+            binds[k] = end
+            parts.append(f"{col} <= :{k}")
+        if not parts:
+            return None
+        clause = " AND ".join(parts)
+        return f"({clause})" if len(parts) > 1 else clause
+
     if isinstance(raw, (list, tuple)):
         vals = [v for v in raw if not _blank(v)]
         if not vals:
             return None
+        if op == "contains":
+            likes: list[str] = []
+            for i, v in enumerate(vals):
+                k = f"{spec.name}__{i}"
+                binds[k] = f"%{v}%"
+                likes.append(f"{col} LIKE :{k}")
+            clause = " OR ".join(likes)
+            return f"({clause})" if len(likes) > 1 else clause
         if len(vals) == 1:
             binds[spec.name] = vals[0]
-            return f"{col} = :{spec.name}"
+            cmp = "<>" if op == "ne" else "="
+            return f"{col} {cmp} :{spec.name}"
         keys: list[str] = []
         for i, v in enumerate(vals):
             k = f"{spec.name}__{i}"
             binds[k] = v
             keys.append(f":{k}")
-        return f"{col} IN ({', '.join(keys)})"
+        inn = f"{col} IN ({', '.join(keys)})"
+        return f"NOT ({inn})" if op == "ne" else inn
+
+    if op == "contains":
+        binds[spec.name] = f"%{raw}%"
+        return f"{col} LIKE :{spec.name}"
+    if op in ("gte", "gt", ">="):
+        binds[spec.name] = raw
+        return f"{col} >= :{spec.name}"
+    if op in ("lte", "lt", "<="):
+        binds[spec.name] = raw
+        return f"{col} <= :{spec.name}"
+    if op == "ne":
+        binds[spec.name] = raw
+        return f"{col} <> :{spec.name}"
 
     binds[spec.name] = raw if not isinstance(raw, str) else raw
     return f"{col} = :{spec.name}"

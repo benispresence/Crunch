@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
+import { api } from "@/api/client";
 import {
   useWorkspaceStore,
   type ParameterSpec,
@@ -17,9 +19,11 @@ import {
   looksLikeDateColumn,
   stripRelativePrefix,
 } from "@/utils/dateFilters";
+import { FILTERS_DOCS_PATH } from "@/utils/filterErrors";
+import { fieldTableAndColumn, sqlIdent } from "@/utils/sqlIdent";
 
 /**
- * Filter bar that sits above the SQL editor.
+ * Filter bar for the whole saved query (SQL, chart, and Python viz).
  *
  * Type `{{name}}` in SQL (or click + Filter) and a chip appears here.
  * Changing a chip re-runs the query. Optional clauses use
@@ -35,7 +39,17 @@ const params = computed(() => ws.parameters);
 const adding = ref(false);
 const addLabel = ref("");
 const addName = ref("");
-const addKind = ref<"text" | "number" | "date" | "date_range" | "category" | "boolean">("text");
+type AddKind =
+  | "text"
+  | "number"
+  | "date"
+  | "boolean"
+  | "field_category"
+  | "field_daterange"
+  | "field_date"
+  | "field_month"
+  | "field_number";
+const addKind = ref<AddKind>("text");
 const addMode = ref<"value" | "equals" | "like" | "clause">("equals");
 const addColumn = ref("");
 const addInput = ref<HTMLInputElement | null>(null);
@@ -95,6 +109,14 @@ function isDatePointParam(p: ParameterSpec): boolean {
   const w = p.widget as ParameterWidget | undefined;
   if (w === "daterange" || w === "month") return false;
   return p.type === "date" || w === "date";
+}
+
+function isNumberRangeParam(p: ParameterSpec): boolean {
+  return isFieldParam(p) && p.operator === "between";
+}
+
+function isMultiDropdown(p: ParameterSpec): boolean {
+  return isFieldParam(p) && widgetOf(p) === "dropdown" && (p.options?.length ?? 0) > 0;
 }
 
 function widgetOf(p: ParameterSpec): ParameterWidget {
@@ -172,18 +194,18 @@ function cancelAdd() {
   adding.value = false;
 }
 
+function isFieldKind(kind: AddKind): boolean {
+  return kind.startsWith("field_");
+}
+
 const addNeedsColumn = computed(() => {
-  if (addKind.value === "date_range" || addKind.value === "category") return true;
+  if (isFieldKind(addKind.value)) return true;
   if (addKind.value === "boolean") return false;
   return addMode.value === "equals" || addMode.value === "like";
 });
 
-function snippetFor(name: string, column: string, kind: typeof addKind.value, mode: typeof addMode.value): string {
-  if (kind === "date_range" || kind === "category") {
-    return mode === "clause" || !column.trim()
-      ? `{{${name}}}`
-      : `AND {{${name}}}`;
-  }
+function snippetFor(name: string, column: string, kind: AddKind, mode: typeof addMode.value): string {
+  if (isFieldKind(kind)) return `{{${name}}}`;
   if (mode === "value" || mode === "clause") return `{{${name}}}`;
   const col = column.trim() || "column";
   if (mode === "like") {
@@ -195,30 +217,41 @@ function snippetFor(name: string, column: string, kind: typeof addKind.value, mo
 function confirmAdd() {
   const label = addLabel.value.trim() || addName.value.trim() || "filter";
   const name = slugify(addName.value.trim() || label);
-  const snippet = snippetFor(name, addColumn.value, addKind.value, addKind.value === "date_range" || addKind.value === "category" ? "clause" : addMode.value);
+  const kind = addKind.value;
+  if (isFieldKind(kind) && !addColumn.value.trim()) {
+    return;
+  }
+  const snippet = snippetFor(name, addColumn.value, kind, isFieldKind(kind) ? "clause" : addMode.value);
   ws.insertSql(snippet);
-  const isField = addKind.value === "date_range" || addKind.value === "category";
+  const isField = isFieldKind(kind);
   const type: ParameterType = isField
     ? "field"
-    : addKind.value === "date"
+    : kind === "date"
       ? "date"
-      : addKind.value === "boolean"
+      : kind === "boolean"
         ? "boolean"
-        : addKind.value === "number"
+        : kind === "number"
           ? "number"
           : "text";
-  const widget: ParameterWidget = isField
-    ? (addKind.value === "date_range" ? "daterange" : "dropdown")
-    : addKind.value === "boolean"
-      ? "toggle"
-      : addKind.value === "date"
-        ? "date"
-        : "input";
+  const widget: ParameterWidget = kind === "field_daterange"
+    ? "daterange"
+    : kind === "field_date"
+      ? "date"
+      : kind === "field_month"
+        ? "month"
+        : kind === "field_category"
+          ? "dropdown"
+          : kind === "boolean"
+            ? "toggle"
+            : kind === "date"
+              ? "date"
+              : "input";
   pendingMeta.value[name] = {
     display_name: label,
     type,
     widget,
     target: isField ? addColumn.value.trim() || undefined : undefined,
+    operator: kind === "field_number" ? "between" : undefined,
   };
   adding.value = false;
   settingsFor.value = name;
@@ -240,6 +273,55 @@ watch(
 );
 
 const resultColumns = computed(() => ws.result?.columns ?? []);
+
+function listValueFor(name: string): string[] {
+  const v = ws.parameterValues[name];
+  if (Array.isArray(v)) return v.map(String);
+  if (v == null || v === "") return [];
+  if (typeof v === "object") return [];
+  return [String(v)];
+}
+
+function toggleListValue(name: string, option: string) {
+  const cur = listValueFor(name);
+  const next = cur.includes(option) ? cur.filter((x) => x !== option) : [...cur, option];
+  setValue(name, next.length === 0 ? "" : next);
+}
+
+const loadingOptionsFor = ref<string | null>(null);
+const optionsError = ref("");
+
+async function loadOptionsFromField(p: ParameterSpec) {
+  if (!p.target || !ws.activeConnectionId) {
+    optionsError.value = "Pick a connection and set a mapped column first.";
+    return;
+  }
+  const parsed = fieldTableAndColumn(p.target);
+  const ident = sqlIdent(p.target);
+  if (!parsed || !ident) {
+    optionsError.value = "Mapped column must be table.column or schema.table.column.";
+    return;
+  }
+  loadingOptionsFor.value = p.name;
+  optionsError.value = "";
+  try {
+    const r = await api.post<{ success: boolean; rows: unknown[][]; error?: string }>("/queries/execute", {
+      connection_id: ws.activeConnectionId,
+      sql: `SELECT DISTINCT ${parsed.column} AS v FROM ${parsed.table} WHERE ${parsed.column} IS NOT NULL ORDER BY 1`,
+      limit: 200,
+    });
+    if (!r.success) {
+      optionsError.value = r.error || "Could not load values.";
+      return;
+    }
+    const options = [...new Set(r.rows.map((row) => String(row[0] ?? "")).filter(Boolean))];
+    patchParam(p.name, { widget: "dropdown", options });
+  } catch (e) {
+    optionsError.value = (e as Error).message;
+  } finally {
+    loadingOptionsFor.value = null;
+  }
+}
 
 function fillOptionsFromColumn(name: string, column: string) {
   if (!ws.result?.success) return;
@@ -306,7 +388,7 @@ function hasChipValue(p: ParameterSpec): boolean {
       <span class="filters__title">Filters</span>
 
       <div v-if="params.length === 0 && !adding" class="filters__empty">
-        Type <code v-pre>{{name}}</code> in SQL, or add one.
+        Type <code v-pre>{{name}}</code> in SQL, or add a field filter.
       </div>
 
       <div
@@ -335,6 +417,22 @@ function hasChipValue(p: ParameterSpec): boolean {
           </label>
         </template>
 
+        <template v-else-if="isMultiDropdown(p)">
+          <details class="filters__multi">
+            <summary>{{ listValueFor(p.name).length ? listValueFor(p.name).join(", ") : "any" }}</summary>
+            <div class="filters__multi-list">
+              <label v-for="o in (p.options ?? [])" :key="o">
+                <input
+                  type="checkbox"
+                  :checked="listValueFor(p.name).includes(o)"
+                  @change="toggleListValue(p.name, o)"
+                />
+                {{ o }}
+              </label>
+            </div>
+          </details>
+        </template>
+
         <template v-else-if="widgetOf(p) === 'dropdown'">
           <select
             class="filters__input"
@@ -344,6 +442,24 @@ function hasChipValue(p: ParameterSpec): boolean {
             <option value="">any</option>
             <option v-for="o in (p.options ?? [])" :key="o" :value="o">{{ o }}</option>
           </select>
+        </template>
+
+        <template v-else-if="isNumberRangeParam(p)">
+          <input
+            class="filters__input"
+            type="number"
+            placeholder="min"
+            :value="rangeFor(p.name).start"
+            @change="(e) => setRangePart(p.name, 'start', (e.target as HTMLInputElement).value)"
+          />
+          <span class="filters__dash">–</span>
+          <input
+            class="filters__input"
+            type="number"
+            placeholder="max"
+            :value="rangeFor(p.name).end"
+            @change="(e) => setRangePart(p.name, 'end', (e.target as HTMLInputElement).value)"
+          />
         </template>
 
         <template v-else-if="isMonthParam(p)">
@@ -442,21 +558,17 @@ function hasChipValue(p: ParameterSpec): boolean {
         Run on change
       </label>
 
+      <RouterLink class="filters__docs" :to="FILTERS_DOCS_PATH" title="How query filters work">Docs</RouterLink>
       <button class="filters__help" :class="{ 'filters__help--on': hintOpen }" @click="hintOpen = !hintOpen">
         ?
       </button>
     </div>
 
     <p v-if="hintOpen" class="filters__hint">
-      <code v-pre>{{name}}</code> is a bind parameter (never concatenated) — use it in
-      comparisons like <code v-pre>created_at &gt;= {{start_date}}</code>.
-      Wrap a predicate in <code v-pre>[[ AND col = {{name}} ]]</code> to drop it when the
-      chip is empty.
-      A <strong>field filter</strong> maps <code v-pre>{{name}}</code> to a column and
-      replaces the variable with a whole clause
-      (<code v-pre>WHERE {{created_at}}</code> → <code>column &gt;= … AND column &lt; …</code>).
-      Empty field filters become <code>1=1</code>. Date values are sent as real dates,
-      not strings, so Postgres accepts them.
+      These chips apply to the whole saved query (SQL, chart, and Python).
+      <code v-pre>{{name}}</code> is a bind value;
+      a <strong>field filter</strong> replaces <code v-pre>{{name}}</code> with a SQL clause on a mapped column.
+      <RouterLink :to="FILTERS_DOCS_PATH">Full guide</RouterLink>
     </p>
 
     <form v-if="adding" class="filters__composer" @submit.prevent="confirmAdd">
@@ -471,15 +583,18 @@ function hasChipValue(p: ParameterSpec): boolean {
       <label>
         <span>Type</span>
         <select v-model="addKind">
-          <option value="text">text</option>
-          <option value="number">number</option>
-          <option value="date">date</option>
-          <option value="date_range">date range (field)</option>
-          <option value="category">category (field)</option>
+          <option value="text">text variable</option>
+          <option value="number">number variable</option>
+          <option value="date">date variable</option>
           <option value="boolean">boolean</option>
+          <option value="field_category">field filter — category</option>
+          <option value="field_daterange">field filter — date range</option>
+          <option value="field_date">field filter — single date</option>
+          <option value="field_month">field filter — month</option>
+          <option value="field_number">field filter — number range</option>
         </select>
       </label>
-      <label v-if="addKind !== 'date_range' && addKind !== 'category' && addKind !== 'boolean'">
+      <label v-if="!isFieldKind(addKind) && addKind !== 'boolean'">
         <span>Insert</span>
         <select v-model="addMode">
           <option value="equals">optional equals</option>
@@ -488,12 +603,13 @@ function hasChipValue(p: ParameterSpec): boolean {
         </select>
       </label>
       <label v-if="addNeedsColumn">
-        <span>{{ addKind === 'date_range' || addKind === 'category' ? 'Column (mapped field)' : 'Column' }}</span>
+        <span>{{ isFieldKind(addKind) ? "Mapped column" : "Column" }}</span>
         <input
           v-model="addColumn"
-          :placeholder="addKind === 'date_range' || addKind === 'category' ? 'hex.stakes.created_at' : 'status'"
+          :placeholder="isFieldKind(addKind) ? 'schema.table.column' : 'status'"
           class="filters__mono"
           list="filter-cols"
+          :required="isFieldKind(addKind)"
         />
       </label>
       <button class="btn btn-primary btn-sm" type="submit">Add</button>
@@ -540,7 +656,7 @@ function hasChipValue(p: ParameterSpec): boolean {
               <option value="toggle">toggle</option>
             </select>
           </label>
-          <label v-if="isFieldParam(p) || p.type === 'field'">
+          <label v-if="isFieldParam(p) || p.type === 'field'" class="filters__map">
             <span>Mapped column</span>
             <input
               class="filters__mono"
@@ -549,6 +665,29 @@ function hasChipValue(p: ParameterSpec): boolean {
               list="filter-cols"
               @change="(e) => patchParam(p.name, { target: (e.target as HTMLInputElement).value.trim() || undefined, type: 'field' })"
             />
+            <button
+              v-if="p.target"
+              type="button"
+              class="btn btn-sm"
+              :disabled="loadingOptionsFor === p.name"
+              @click="loadOptionsFromField(p)"
+            >
+              {{ loadingOptionsFor === p.name ? "Loading…" : "Load values from database" }}
+            </button>
+          </label>
+          <label v-if="isFieldParam(p) || p.type === 'field'">
+            <span>Operator</span>
+            <select
+              :value="p.operator ?? 'eq'"
+              @change="(e) => patchParam(p.name, { operator: (e.target as HTMLSelectElement).value as ParameterSpec['operator'] })"
+            >
+              <option value="eq">equal / in</option>
+              <option value="ne">not equal</option>
+              <option value="contains">contains</option>
+              <option value="between">between</option>
+              <option value="gte">at least</option>
+              <option value="lte">at most</option>
+            </select>
           </label>
           <label v-if="!isDateRangeParam(p) && p.type !== 'boolean' && p.widget !== 'daterange'">
             <span>Default</span>
@@ -593,13 +732,16 @@ function hasChipValue(p: ParameterSpec): boolean {
                 <option v-for="c in resultColumns" :key="c" :value="c">{{ c }}</option>
               </select>
             </label>
+
           </div>
+          <p v-if="optionsError" class="filters__options-err">{{ optionsError }}</p>
           <p class="filters__sqlname">
             SQL name <code>{{ p.name }}</code>
             <template v-if="isFieldParam(p)">
               · field filter on <code>{{ p.target || "set a column" }}</code>
               — write <code v-pre>WHERE {{name}}</code>, not a comparison.
             </template>
+            · <RouterLink :to="FILTERS_DOCS_PATH">filter docs</RouterLink>
           </p>
         </div>
       </template>
@@ -739,6 +881,57 @@ function hasChipValue(p: ParameterSpec): boolean {
   color: var(--accent);
   background: var(--accent-subtle);
 }
+.filters__docs {
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 4px 8px;
+}
+.filters__docs:hover { text-decoration: underline; }
+.filters__multi {
+  position: relative;
+  font-size: 12px;
+}
+.filters__multi summary {
+  cursor: pointer;
+  padding: 2px 8px;
+  color: var(--fg);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  list-style: none;
+}
+.filters__multi summary::-webkit-details-marker { display: none; }
+.filters__multi-list {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  min-width: 180px;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  display: grid;
+  gap: 4px;
+  box-shadow: var(--shadow);
+}
+.filters__multi-list label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg);
+}
+.filters__options-err {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 12px;
+  color: var(--error);
+}
 .filters__autorun {
   margin-left: auto;
   display: inline-flex;
@@ -820,6 +1013,10 @@ function hasChipValue(p: ParameterSpec): boolean {
   font-size: 11px;
   color: var(--fg-subtle);
 }
+.filters__map {
+  grid-column: span 2;
+}
+.filters__map .btn { justify-self: start; }
 .filters__check {
   display: inline-flex !important;
   flex-direction: row !important;
@@ -846,4 +1043,14 @@ function hasChipValue(p: ParameterSpec): boolean {
   font-family: var(--font-mono);
   color: var(--accent);
 }
+.filters__sqlname a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.filters__sqlname a:hover { text-decoration: underline; }
+.filters__hint a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.filters__hint a:hover { text-decoration: underline; }
 </style>

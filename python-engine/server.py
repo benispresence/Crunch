@@ -188,6 +188,7 @@ class ParameterSpecModel(BaseModel):
     required: bool = False
     widget: str | None = None
     target: str | None = None
+    operator: str | None = None
     options: list[str] | None = None
     display_name: str | None = None
 
@@ -201,6 +202,7 @@ def _parameter_specs(models: list[ParameterSpecModel]) -> list[ParameterSpec]:
             required=p.required,
             widget=p.widget,
             target=p.target,
+            operator=p.operator,
         )
         for p in models
     ]

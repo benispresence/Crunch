@@ -9,6 +9,7 @@ const DashboardDetail = () => import("@/views/DashboardDetailView.vue");
 const Pipelines = () => import("@/views/PipelinesView.vue");
 const PipelineDetail = () => import("@/views/PipelineDetailView.vue");
 const Admin = () => import("@/views/AdminView.vue");
+const DocsFilters = () => import("@/views/DocsFiltersView.vue");
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -39,6 +40,8 @@ export const router = createRouter({
         { path: "pipelines", name: "pipelines", component: Pipelines },
         { path: "pipelines/:id", name: "pipeline-detail", component: PipelineDetail },
         { path: "admin", name: "admin", component: Admin, meta: { adminOnly: true } },
+        { path: "docs", redirect: "/docs/filters" },
+        { path: "docs/filters", name: "docs-filters", component: DocsFilters },
       ],
     },
   ],

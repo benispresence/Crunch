@@ -6,6 +6,7 @@ import { useRoute, useRouter } from "vue-router";
 import ChartPanel from "@/components/ChartPanel.vue";
 import ConnectionsPanel from "@/components/ConnectionsPanel.vue";
 import ResultsTable from "@/components/ResultsTable.vue";
+import ParametersPanel from "@/components/ParametersPanel.vue";
 import SqlEditor from "@/components/SqlEditor.vue";
 import { queryPath } from "@/utils/links";
 import { useAuthStore } from "@/stores/auth";
@@ -254,6 +255,7 @@ onMounted(async () => {
 
     <Pane :size="centerSize" :min-size="30">
       <div class="stack">
+        <ParametersPanel class="stack__filters" />
         <section
           class="stack__pane"
           :class="{ 'stack__pane--collapsed': editorCollapsed }"
@@ -303,6 +305,9 @@ onMounted(async () => {
   height: 100%;
   min-height: 0;
   background: var(--bg);
+}
+.stack__filters {
+  flex: 0 0 auto;
 }
 .stack__pane {
   display: flex;

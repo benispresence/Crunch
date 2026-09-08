@@ -44,6 +44,8 @@ export interface ParameterSpec {
   options?: string[];
   /** Mapped column for a Metabase-style field filter, e.g. hex.stakes.created_at. */
   target?: string;
+  /** Field-filter comparison. Default eq (or IN for multi-select). */
+  operator?: "eq" | "ne" | "contains" | "between" | "gte" | "lte";
 }
 
 export type ParameterValues = Record<string, ParameterValue>;

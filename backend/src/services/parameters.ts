@@ -57,6 +57,8 @@ export const parameterSpecSchema = z.object({
   // Mapped column for Metabase-style field filters, e.g. hex.stakes.created_at.
   // When set (or type is "field"), {{name}} is replaced with a SQL clause.
   target: z.string().optional(),
+  // Field-filter comparison: eq (default), ne, contains, between, gte, lte.
+  operator: z.enum(["eq", "ne", "contains", "between", "gte", "lte"]).optional(),
 });
 export type ParameterSpec = z.infer<typeof parameterSpecSchema>;
 

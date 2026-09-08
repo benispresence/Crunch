@@ -427,6 +427,48 @@ def test_target_on_date_spec_is_a_field_filter():
     assert binds["created__end"] == date(2024, 7, 1)
 
 
+def test_field_filter_not_equal_and_contains():
+    sql, binds = template.render(
+        "SELECT * FROM t WHERE {{cat}}",
+        [template.ParameterSpec(name="cat", type="field", target="category", operator="ne")],
+        {"cat": "x"},
+    )
+    assert sql == "SELECT * FROM t WHERE category <> :cat"
+    assert binds == {"cat": "x"}
+
+    sql, binds = template.render(
+        "SELECT * FROM t WHERE {{cat}}",
+        [template.ParameterSpec(name="cat", type="field", target="category", operator="contains")],
+        {"cat": "hoo"},
+    )
+    assert sql == "SELECT * FROM t WHERE category LIKE :cat"
+    assert binds == {"cat": "%hoo%"}
+
+
+def test_field_filter_number_between():
+    sql, binds = template.render(
+        "SELECT * FROM t WHERE {{amt}}",
+        [
+            template.ParameterSpec(
+                name="amt", type="field", target="amount", operator="between", widget="input"
+            )
+        ],
+        {"amt": {"start": 10, "end": 50}},
+    )
+    assert sql == "SELECT * FROM t WHERE (amount >= :amt__start AND amount <= :amt__end)"
+    assert binds == {"amt__start": 10, "amt__end": 50}
+
+
+def test_template_error_points_at_docs():
+    with pytest.raises(template.TemplateError) as exc:
+        template.render(
+            "SELECT {{x}}",
+            [template.ParameterSpec(name="x", required=True)],
+            {},
+        )
+    assert "Docs → Filters" in str(exc.value)
+
+
 def test_coerce_values_field_filter_range():
     from datetime import date
 

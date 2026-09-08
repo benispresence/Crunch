@@ -114,6 +114,7 @@ backend/.env
 # NiceMeta runtime / agent state
 .claude/
 .nicegui/
+.playwright-mcp/
 # nicemeta-workspace/ is the user's git-backed collections workspace.
 # It manages its own git history (see Admin → Git), so don't commit it
 # into the main NiceMeta repo.

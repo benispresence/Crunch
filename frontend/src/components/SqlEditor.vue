@@ -6,7 +6,7 @@ import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { absoluteUrl, copyText, queryPath } from "@/utils/links";
 import CookieLoader from "./CookieLoader.vue";
-import ParametersPanel from "./ParametersPanel.vue";
+import FilterErrorHint from "./FilterErrorHint.vue";
 import ProposalCard from "./ProposalCard.vue";
 import RevisionHistoryDialog from "./RevisionHistoryDialog.vue";
 
@@ -617,13 +617,12 @@ const activeQueryProposal = computed(() => {
       <code>df</code> = last query result · assign <code>fig</code> · use Plotly express or graph_objects
     </div>
 
-    <ParametersPanel v-if="tab === 'sql'" />
-
     <div v-show="!props.collapsed && tab === 'sql'" ref="sqlHost" class="editor__host" />
     <div v-show="!props.collapsed && tab === 'python'" ref="pyHost" class="editor__host" />
 
     <div v-if="tab === 'python' && ws.pythonOutput?.error && !props.collapsed" class="editor__pyerr">
       {{ ws.pythonOutput.error }}
+      <FilterErrorHint :message="ws.pythonOutput.error" />
     </div>
 
     <div v-if="ws.pendingProposal && tab === 'sql' && !props.collapsed" class="proposal">

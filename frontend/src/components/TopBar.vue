@@ -27,6 +27,7 @@ const onDashboards = computed(
 const onPipelines = computed(
   () => route.name === "pipelines" || route.name === "pipeline-detail",
 );
+const onDocs = computed(() => String(route.name ?? "").startsWith("docs"));
 
 function logout() {
   auth.logout();
@@ -142,6 +143,13 @@ async function submitChangePassword() {
           :class="{ 'topbar__link--active': onPipelines }"
         >
           Pipelines
+        </RouterLink>
+        <RouterLink
+          to="/docs/filters"
+          class="topbar__link"
+          :class="{ 'topbar__link--active': onDocs }"
+        >
+          Docs
         </RouterLink>
         <RouterLink
           v-if="auth.user?.role === 'admin'"

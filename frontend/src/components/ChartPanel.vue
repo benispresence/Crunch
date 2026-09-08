@@ -6,6 +6,7 @@ import { chartTemplate, themedSpec } from "@/composables/chartTheme";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
 import CookieLoader from "./CookieLoader.vue";
+import FilterErrorHint from "./FilterErrorHint.vue";
 import ProposalCard from "./ProposalCard.vue";
 
 const props = defineProps<{
@@ -630,7 +631,10 @@ const emptyMessage = computed(() => {
         </div>
       </div>
 
-      <div v-if="ws.chartError && ws.chartMode === 'picker'" class="chart__error">{{ ws.chartError }}</div>
+      <div v-if="ws.chartError && ws.chartMode === 'picker'" class="chart__error">
+        {{ ws.chartError }}
+        <FilterErrorHint :message="ws.chartError" />
+      </div>
 
       <!-- Agent-driven chart proposal overlay (Cursor-style). Mirror of
            the chat card so the user can Accept/Reject without scrolling. -->
@@ -662,7 +666,10 @@ const emptyMessage = computed(() => {
               <rect x="22" y="8" width="5" height="22" rx="1" fill="currentColor" opacity="0.8" />
             </svg>
           </div>
-          <div class="chart__empty-msg">{{ emptyMessage }}</div>
+          <div class="chart__empty-msg">
+            {{ emptyMessage }}
+            <FilterErrorHint :message="emptyMessage" />
+          </div>
         </div>
       </div>
     </div>

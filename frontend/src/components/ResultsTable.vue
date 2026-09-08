@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import CookieLoader from "./CookieLoader.vue";
+import FilterErrorHint from "./FilterErrorHint.vue";
 
 const props = defineProps<{ collapsed?: boolean }>();
 const emit = defineEmits<{ (e: "toggle-collapse"): void }>();
@@ -50,6 +51,7 @@ function formatCell(value: unknown): string {
       </div>
       <div v-else-if="!result.success" class="results__state results__state--error">
         {{ result.error || "Query failed" }}
+        <FilterErrorHint :message="result.error" always />
       </div>
       <div v-else class="results__scroll">
         <table class="results__table">
