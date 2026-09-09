@@ -10,6 +10,14 @@
  *
  * Flags:
  *   --skip-python-bundle  use whatever python3 is on the user's PATH at runtime
+ *   --arch=<arm64|x64>    build for that architecture instead of this machine's
+ *
+ * Cross-building is how CI produces both zips: GitHub's macos-13 (Intel)
+ * runners are being retired, so an arm64 runner builds the x64 zip too.
+ * Everything bundled is arch-specific — the Node and CPython downloads
+ * below, and backend/node_modules (better-sqlite3 is native) — so a
+ * cross-build also needs `npm_config_arch` set for `npm ci`, which is
+ * what the workflow does.
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -22,7 +30,16 @@ const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 const repo = path.resolve(desktopDir, "..");
 const packDir = path.join(desktopDir, ".pack");
 const skipPython = process.argv.includes("--skip-python-bundle");
-const arch = process.arch === "arm64" ? "arm64" : "x64";
+
+function targetArch() {
+  const flag = process.argv.find((a) => a.startsWith("--arch="))?.slice(7);
+  const want = flag ?? process.env.CRUNCH_PACK_ARCH ?? process.arch;
+  if (want !== "arm64" && want !== "x64") {
+    throw new Error(`unsupported --arch=${want} (expected arm64 or x64)`);
+  }
+  return want;
+}
+const arch = targetArch();
 
 function run(cmd, args, cwd, env = process.env) {
   return new Promise((resolve, reject) => {
@@ -119,10 +136,10 @@ if (!skipPython) {
   }
 }
 
-console.log("→ electron-builder (zip for this Mac:", arch, ")");
+console.log("→ electron-builder (zip for", arch, ")");
 await run(
   path.join(desktopDir, "node_modules", ".bin", "electron-builder"),
-  ["--mac", "zip", "--publish", "never"],
+  ["--mac", "zip", `--${arch}`, "--publish", "never"],
   desktopDir,
   { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: "false" },
 );
@@ -131,10 +148,11 @@ const label = arch === "arm64" ? "apple-silicon" : "intel";
 const zips = fs.readdirSync(path.join(desktopDir, "release"))
   .filter((f) => f.endsWith(".zip"))
   .map((f) => path.join(desktopDir, "release", f));
-console.log("\nDownloadable file(s) for this machine (" + label + "):");
+console.log("\nDownloadable file(s) for " + label + ":");
 for (const z of zips) {
   const mb = (fs.statSync(z).size / (1024 * 1024)).toFixed(1);
   console.log("  " + z + "  (" + mb + " MB)");
 }
 console.log("Send that zip. Recipients unzip, then right-click Crunch.app → Open.");
-console.log("Intel and Apple Silicon are different zips — pack on each arch (or GitHub Actions).");
+console.log("Intel and Apple Silicon are different zips — pass --arch=x64 / --arch=arm64");
+console.log("for the other one (or let GitHub Actions build both).");

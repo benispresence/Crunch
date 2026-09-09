@@ -92,8 +92,8 @@ docker compose -f docker/docker-compose.yml --env-file docker/.env up --build
 # open http://localhost:8080
 ```
 
-On macOS you can instead download `Crunch-v1.1.1-mac-arm64.zip` (Apple
-Silicon) or `Crunch-v1.1.1-mac-x64.zip` (Intel) from this release.
+On macOS you can instead download `Crunch-1.1.1-mac-arm64.zip` (Apple
+Silicon) or `Crunch-1.1.1-mac-x64.zip` (Intel) from this release.
 
 See [README.md](README.md) for the native development setup (three
 hot-reloading services) and the full data-source / driver matrix.
