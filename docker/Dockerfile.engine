@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -e . && \
     pip install --no-cache-dir -r python-engine/requirements.txt
 
-COPY python-engine/server.py ./python-engine/server.py
+COPY python-engine/server.py python-engine/pipeline_jobs.py ./python-engine/
 COPY config ./config
 
 ENV PYTHONUNBUFFERED=1 \

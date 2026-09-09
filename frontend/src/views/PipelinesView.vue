@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import { useChatStore } from "@/stores/chat";
 import PipelineTimeline from "@/components/PipelineTimeline.vue";
 import { usePipelinesStore } from "@/stores/pipelines";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -30,6 +31,18 @@ const filterTag = ref("");
 const attentionFilter = ref<string | null>(null);
 
 const newPrompt = ref("");
+const creationError = ref("");
+const proposing = ref(false);
+async function proposeFromPrompt() {
+  if (!newPrompt.value.trim()) return;
+  proposing.value = true;
+  creationError.value = "";
+  window.dispatchEvent(new Event("crunch-open-chat"));
+  try {
+    await useChatStore().send(`Create a pipeline proposal from this request. Inspect saved connections and schemas, ask about missing requirements, and propose an editable draft. Do not run or publish it yet. Request: ${newPrompt.value}`);
+  } catch(e) { creationError.value = String(e); }
+  finally { proposing.value = false; }
+}
 const newName = ref("");
 const newDestId = ref<number | null>(null);
 const newSourceType = ref<"rest_api" | "sql" | "file" | "kafka" | "custom">("custom");
@@ -142,6 +155,9 @@ const counts = computed(() => pipelines.counts);
         rows="3"
         placeholder="Copy orders from our production Postgres into analytics every hour…"
       />
+      <button type="button" class="btn btn-primary" :disabled="proposing || !newPrompt.trim()" @click="proposeFromPrompt">{{ proposing ? 'Preparing proposal…' : 'Create with AI' }}</button>
+      <p v-if="creationError" role="alert">{{ creationError }}</p>
+      <h3>Or configure manually</h3>
       <div class="pipes__create-grid">
         <label>
           <span>Name</span>

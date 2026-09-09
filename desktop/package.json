@@ -1,9 +1,9 @@
 {
   "name": "crunch-desktop",
   "productName": "Crunch",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
-  "description": "Crunch desktop shell — local BI workspace in an app window",
+  "description": "Crunch desktop shell \u2014 local BI workspace in an app window",
   "main": "src/main.mjs",
   "type": "module",
   "scripts": {
@@ -18,7 +18,7 @@
   "build": {
     "appId": "local.crunch.app",
     "productName": "Crunch",
-    "copyright": "Copyright © Crunch contributors",
+    "copyright": "Copyright \u00a9 Crunch contributors",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -69,6 +69,10 @@
       {
         "from": "scripts/import-instance.mjs",
         "to": "import-instance.mjs"
+      },
+      {
+        "from": "../python-engine/pipeline_jobs.py",
+        "to": "python-engine/pipeline_jobs.py"
       }
     ],
     "artifactName": "${productName}-${version}-mac-${arch}.${ext}",

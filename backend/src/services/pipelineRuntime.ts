@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * Persisted pipeline queue, versions, overview DTOs, and execution.
  *
@@ -62,6 +63,7 @@ export interface EnqueueRequest {
   userId: number;
   trigger: RunTrigger;
   versionId?: number | null;
+  snapshotOverride?: VersionSnapshot;
   isTest?: boolean;
   retryOfRunId?: number | null;
   processingIntervalStart?: number | null;
@@ -118,6 +120,7 @@ export function recordActivity(
     actorUserId?: number | null;
     runId?: number | null;
     versionId?: number | null;
+  snapshotOverride?: VersionSnapshot;
     detail?: Record<string, unknown>;
   },
 ): void {
@@ -200,6 +203,10 @@ export function publishVersion(
 ): { version_id: number; version_number: number; snapshot: VersionSnapshot } {
   const row = getPipelineRow(database, pipelineId, userId);
   if (!row) throw new Error("pipeline not found");
+  const issues = validatePipelineConfig({name: String(row.name), extract_strategy: row.extract_strategy as ExtractStrategy, write_behavior: row.write_behavior as WriteBehavior, primary_key: row.primary_key as string | null, cursor_field: row.cursor_field as string | null, destination_connection_id: row.destination_connection_id as number | null, schedule: row.schedule as string | null});
+  if (issues.length) throw new Error(issues.map(i => i.message).join("; "));
+  if (!String(row.python_code).trim()) throw new Error("Pipeline code is required");
+  if (row.schedule) nextRunEpoch(String(row.schedule), String(row.timezone || "UTC"));
   const snapshot = buildVersionSnapshot({
     python_code: String(row.python_code ?? ""),
     config: pipelineConfigObject(row),
@@ -302,42 +309,16 @@ export function restoreVersionAsDraft(
   const ver = getVersion(database, pipelineId, versionId);
   if (!ver) throw new Error("version not found");
   const cfg = parseJson<Record<string, unknown>>(String(ver.config_json), {});
-  const sourceConfig = cfg.source_config ?? {};
-  database
-    .prepare(
-      `UPDATE pipelines SET
-         python_code = ?,
-         source_config_json = ?,
-         source_type = COALESCE(?, source_type),
-         destination_connection_id = COALESCE(?, destination_connection_id),
-         destination_dataset = COALESCE(?, destination_dataset),
-         extract_strategy = ?,
-         write_behavior = ?,
-         schedule = ?,
-         timezone = ?,
-         quality_checks_json = ?,
-         primary_key = COALESCE(?, primary_key),
-         cursor_field = COALESCE(?, cursor_field),
-         code_mode = 'custom',
-         updated_at = strftime('%s', 'now')
-       WHERE id = ? AND user_id = ?`,
-    )
-    .run(
-      ver.python_code,
-      JSON.stringify(sourceConfig),
-      cfg.source_type ?? null,
-      cfg.destination_connection_id ?? null,
-      cfg.destination_dataset ?? null,
-      ver.extract_strategy,
-      ver.write_behavior,
-      ver.schedule,
-      ver.timezone,
-      ver.quality_checks_json,
-      cfg.primary_key ?? null,
-      cfg.cursor_field ?? null,
-      pipelineId,
-      userId,
-    );
+  const columns: Record<string, string> = {source_config: "source_config_json", quality_checks: "quality_checks_json", tags: "tags_json"};
+  const allowed = Object.keys(pipelineConfigObject(getPipelineRow(database, pipelineId, userId)!));
+  const fields: string[] = ["python_code = ?"];
+  const values: unknown[] = [ver.python_code];
+  for (const key of allowed) {
+    if (!(key in cfg)) continue;
+    fields.push(`${columns[key] ?? key} = ?`);
+    values.push(columns[key] ? JSON.stringify(cfg[key]) : cfg[key]);
+  }
+  database.prepare(`UPDATE pipelines SET ${fields.join(", ")}, updated_at = strftime('%s', 'now') WHERE id = ? AND user_id = ?`).run(...values, pipelineId, userId);
   recordActivity(database, {
     pipelineId,
     action: "restore",
@@ -430,9 +411,7 @@ export function prepareRuntimeSource(
     {},
   );
   const sourceConnId =
-    (snapshot?.config?.source_connection_id as number | null | undefined) ??
-    (pipeline.source_connection_id as number | null | undefined) ??
-    null;
+    (snapshot ? snapshot.config.source_connection_id : pipeline.source_connection_id) as number | null;
   let sourceConnection: Record<string, unknown> | null = null;
   if (sourceConnId != null) {
     sourceConnection = resolveConnection(database, Number(sourceConnId), userId);
@@ -498,16 +477,7 @@ export function enqueueRun(
     versionId = orig?.version_id ?? versionId;
   } else if (!isTest && versionId == null) {
     versionId = (pipeline.published_version_id as number | null) ?? null;
-    if (versionId == null) {
-      const published = publishVersion(
-        database,
-        req.pipelineId,
-        req.userId,
-        "Auto-published on first run",
-      );
-      versionId = published.version_id;
-      pipeline.published_version_id = versionId;
-    }
+    if (versionId == null) throw new Error("Publish a validated version before running");
   }
   if (isTest) {
     if (pipeline.scratch_destination_connection_id == null) {
@@ -518,6 +488,7 @@ export function enqueueRun(
   let snapshot: VersionSnapshot | null = null;
   if (versionId != null) {
     const ver = getVersion(database, req.pipelineId, versionId);
+    if (!ver) throw new Error("version not found");
     if (ver) {
       snapshot = {
         python_code: String(ver.python_code),
@@ -543,6 +514,17 @@ export function enqueueRun(
     });
   }
 
+  if (req.snapshotOverride) snapshot = req.snapshotOverride;
+  if (isTest && snapshot) {
+    const cfg = snapshot.config;
+    const scratch = Number(cfg.scratch_destination_connection_id);
+    const production = Number(cfg.destination_connection_id);
+    if (!scratch || scratch === production) throw new Error("Tests require a separate scratch connection with credentials restricted to test data");
+    const a = resolveConnection(database, scratch, req.userId);
+    const b = resolveConnection(database, production, req.userId);
+    if (a.type === b.type && a.host === b.host && a.database === b.database) throw new Error("Scratch and production must use different databases");
+    if (!cfg.scratch_destination_dataset) throw new Error("Scratch dataset is required");
+  }
   const info = database
     .prepare(
       `INSERT INTO pipeline_runs (
@@ -675,6 +657,7 @@ export async function dispatchQueued(database: Database.Database): Promise<void>
     .prepare(
       `SELECT * FROM pipeline_runs
        WHERE status IN ('queued', 'retrying')
+         AND NOT EXISTS (SELECT 1 FROM pipeline_runs active WHERE active.pipeline_id = pipeline_runs.pipeline_id AND active.status = 'running')
          AND cancel_requested = 0
          AND (next_retry_at IS NULL OR next_retry_at <= strftime('%s', 'now'))
        ORDER BY id ASC
@@ -687,8 +670,11 @@ export async function dispatchQueued(database: Database.Database): Promise<void>
       maxConcurrent: workerState.maxConcurrent,
     });
     if (decision === "enqueue") break;
+    if (workerState.inFlight.has(Number(run.pipeline_id))) continue;
+    const claimed = database.prepare("UPDATE pipeline_runs SET status = 'running' WHERE id = ? AND status IN ('queued','retrying')").run(run.id);
+    if (!claimed.changes) continue;
     workerState.inFlight.add(Number(run.pipeline_id));
-    void executeRun(database, run).finally(() => {
+    void executeRun(database, run).catch((e) => { finishRun(database, Number(run.id), Number(run.pipeline_id), {status: "failed", error: String(e), log: "", rows: null}); }).finally(() => {
       workerState.inFlight.delete(Number(run.pipeline_id));
       void dispatchQueued(database);
     });
@@ -716,12 +702,13 @@ async function executeRun(
   }
   const userId = Number(pipeline.user_id);
   const snapshot = parseJson<VersionSnapshot | null>(String(run.snapshot_json ?? "null"), null);
+  const runtime = snapshot?.config ?? pipelineConfigObject(pipeline);
   const code = snapshot?.python_code ?? String(pipeline.python_code ?? "");
   const isTest = !!run.is_test;
 
   let destId = isTest
-    ? Number(pipeline.scratch_destination_connection_id)
-    : Number(pipeline.destination_connection_id);
+    ? Number(runtime.scratch_destination_connection_id)
+    : Number(runtime.destination_connection_id);
   if (snapshot?.config?.destination_connection_id != null && !isTest) {
     destId = Number(snapshot.config.destination_connection_id);
   }
@@ -773,55 +760,47 @@ async function executeRun(
     .run(runId, attemptNumber);
   const attemptId = Number(attemptInfo.lastInsertRowid);
 
-  let spawned: SpawnedPipeline | null = null;
-  try {
-    spawned = spawnPipelineProcess({
-      code,
-      destination,
-      source_config: sourceConfig,
-      source_connection: sourceConnection,
-      stream_max_seconds: Number(pipeline.stream_max_seconds ?? 60),
-      stream_max_messages: Number(pipeline.stream_max_messages ?? 10_000),
-      timeout_seconds: 1800,
-    });
-  } catch (e) {
-    finishAttempt(database, attemptId, {
-      status: "failed",
-      log: "",
-      error: (e as Error).message,
-      pid: null,
-    });
-    maybeRetryOrFinish(database, run, pipeline, (e as Error).message, "");
-    return;
+  const jobId = String(run.engine_job_id || randomUUID());
+  database.prepare("UPDATE pipeline_runs SET engine_job_id = ?, started_at = strftime('%s', 'now') WHERE id = ?").run(jobId, runId);
+  const job = {
+    job_id: jobId, code, destination, source_config: sourceConfig, source_connection: sourceConnection,
+    stream_max_seconds: Number(runtime.stream_max_seconds ?? 60),
+    stream_max_messages: Number(runtime.stream_max_messages ?? 10000), timeout_seconds: 1800,
+    runtime_config: {...runtime, destination_dataset: isTest ? runtime.scratch_destination_dataset : runtime.destination_dataset,
+      pipeline_identity: `pipeline_${pipelineId}${isTest ? "_test" : ""}`,
+      processing_interval_start: run.processing_interval_start, processing_interval_end: run.processing_interval_end},
+  };
+  let result: import("./pipelineProcess.js").PipelineJobResult | null = null;
+  let exitCode = 0;
+  let pid: number | null = null;
+  if (process.env.CRUNCH_PIPELINE_LOCAL_TEST === "1") {
+    const spawned = spawnPipelineProcess(job);
+    pid = spawned.pid;
+    liveChildren.set(runId, spawned);
+    database.prepare("UPDATE pipeline_runs SET pid = ?, job_dir = ? WHERE id = ?").run(pid, spawned.jobDir, runId);
+    exitCode = await waitForChild(spawned.child);
+    result = readJobResult(spawned.jobPath);
+    cleanupJobDir(spawned.jobDir);
+    liveChildren.delete(runId);
+  } else {
+    if (!run.engine_job_id) await pythonEngine.submitPipeline(job);
+    while (true) {
+      const state = await pythonEngine.pipelineStatus(jobId);
+      if (state.status !== "running") {
+        result = state.result ?? {success: false, error: state.status === "interrupted" ? "Worker interrupted; verify destination before retrying" : state.status, log: "", rows_loaded: 0, duration_ms: 0, steps: [], output_tables: [], checkpoints: []};
+        break;
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
   }
-
-  liveChildren.set(runId, spawned);
-  database
-    .prepare(
-      `UPDATE pipeline_runs SET status = 'running', pid = ?, job_dir = ?,
-         started_at = strftime('%s', 'now')
-       WHERE id = ?`,
-    )
-    .run(spawned.pid, spawned.jobDir, runId);
-  database.prepare("UPDATE pipeline_run_attempts SET pid = ? WHERE id = ?").run(spawned.pid, attemptId);
-
-  const exitCode = await waitForChild(spawned.child);
-  liveChildren.delete(runId);
-  const cancelled = !!(
-    database.prepare("SELECT cancel_requested FROM pipeline_runs WHERE id = ?").get(runId) as
-      | { cancel_requested: number }
-      | undefined
-  )?.cancel_requested;
-
-  const result = readJobResult(spawned.jobPath);
-  cleanupJobDir(spawned.jobDir);
+  const cancelled = !!(database.prepare("SELECT cancel_requested FROM pipeline_runs WHERE id = ?").get(runId) as {cancel_requested: number})?.cancel_requested;
 
   if (cancelled) {
     finishAttempt(database, attemptId, {
       status: "cancelled",
       log: result?.log ?? "",
       error: "cancelled",
-      pid: spawned.pid,
+      pid: pid,
     });
     finishRun(database, runId, pipelineId, {
       status: "cancelled",
@@ -833,7 +812,7 @@ async function executeRun(
       pipelineId,
       action: "cancel",
       runId,
-      detail: { pid: spawned.pid, exit_code: exitCode },
+      detail: { pid: pid, exit_code: exitCode },
     });
     return;
   }
@@ -845,15 +824,16 @@ async function executeRun(
     status: success ? "success" : "failed",
     log,
     error,
-    pid: spawned.pid,
+    pid: pid,
   });
 
   if (success) {
     const checks = evaluateRunChecks(
       database,
-      pipeline,
+      {...pipeline, quality_checks_json: JSON.stringify(snapshot?.quality_checks ?? []), is_test: isTest},
       result?.rows_loaded ?? 0,
       flattenOutputRows(result),
+      (result?.output_tables ?? []).flatMap(t => (t as {check_results?: CheckResult[]}).check_results ?? []),
     );
     database
       .prepare(
@@ -883,38 +863,34 @@ function evaluateRunChecks(
   pipeline: Record<string, unknown>,
   rowsLoaded: number,
   capturedRows: Record<string, unknown>[],
+  destinationChecks: CheckResult[] = [],
 ): CheckResult[] {
   const checks = parseJson<QualityCheck[]>(String(pipeline.quality_checks_json ?? "[]"), []);
   if (checks.length === 0) return [];
   const previous = database
     .prepare(
       `SELECT rows_loaded FROM pipeline_runs
-       WHERE pipeline_id = ? AND status = 'success' AND rows_loaded IS NOT NULL
+       WHERE pipeline_id = ? AND is_test = 0 AND status = 'success' AND rows_loaded IS NOT NULL
        ORDER BY id DESC LIMIT 1`,
     )
     .get(pipeline.id) as { rows_loaded: number } | undefined;
   const results: CheckResult[] = [];
   for (const check of checks) {
     if (check.type === "row_count") {
-      const countRows =
-        capturedRows.length > 0
-          ? capturedRows
-          : Array.from({ length: Math.min(rowsLoaded, 10_000) }, (_, i) => ({ _i: i }));
-      results.push(
-        evaluateQualityChecks({
-          rows: countRows,
-          checks: [check],
-          previousRowCount: previous?.rows_loaded ?? null,
-        })[0]!,
-      );
+      const previousCount = pipeline.is_test ? null : previous?.rows_loaded;
+      const change = previousCount ? Math.abs(rowsLoaded - previousCount) / previousCount : 0;
+      const passed = change <= (check.max_relative_change ?? .5);
+      results.push({type: "row_count", passed, message: `Loaded ${rowsLoaded} rows; previous ${previousCount ?? "no baseline"}`});
       continue;
     }
+    const measured = destinationChecks.filter(c => c.type === check.type && c.column === check.column);
+    if (measured.length) { results.push(...measured); continue; }
     if (capturedRows.length === 0) {
       results.push({
         type: check.type,
         column: check.column,
-        passed: false,
-        message: `no output rows captured to evaluate ${check.type}${check.column ? ` on ${check.column}` : ""}`,
+        passed: null,
+        message: `Not evaluated: no output rows captured to evaluate ${check.type}${check.column ? ` on ${check.column}` : ""}`,
       });
       continue;
     }
@@ -989,6 +965,8 @@ function finishRun(
        WHERE id = ?`,
     )
     .run(r.status, r.rows, r.log, r.error, runId);
+  const test = database.prepare("SELECT is_test FROM pipeline_runs WHERE id = ?").get(runId) as {is_test: number};
+  if (test?.is_test) return;
   database
     .prepare(
       `UPDATE pipelines SET last_run_id = ?, last_run_status = ?, last_run_at = strftime('%s', 'now')
@@ -1014,12 +992,17 @@ export async function cancelRun(
     .prepare("SELECT * FROM pipeline_runs WHERE id = ? AND pipeline_id = ?")
     .get(runId, pipelineId) as Record<string, unknown> | undefined;
   if (!run) throw new Error("run not found");
+  if (!getPipelineRow(database, pipelineId, userId)) throw new Error("pipeline not found");
+  if (!["queued", "running", "retrying"].includes(String(run.status))) return {id: runId, status: run.status, pid_alive: false};
   database
     .prepare("UPDATE pipeline_runs SET cancel_requested = 1 WHERE id = ?")
     .run(runId);
   const spawned = liveChildren.get(runId);
   if (spawned) {
     killPid(spawned.pid, 500);
+  } else if (run.engine_job_id && process.env.CRUNCH_PIPELINE_LOCAL_TEST !== "1") {
+    const result = await pythonEngine.cancelPipeline(String(run.engine_job_id));
+    if (result.status !== "cancelled") throw new Error("Cancellation could not be verified; inspect the worker");
   } else if (run.pid) {
     killPid(Number(run.pid), 500);
   }
@@ -1066,6 +1049,7 @@ export function retryRun(
   if (!orig) throw new Error("run not found");
   const pipeline = getPipelineRow(database, pipelineId, userId);
   if (!pipeline) throw new Error("pipeline not found");
+  if (!["failed", "cancelled"].includes(String(orig.status))) throw new Error("Only failed or cancelled runs can be retried");
   const published = (pipeline.published_version_id as number | null) ?? 0;
   const origVersion = (orig.version_id as number | null) ?? 0;
   const kind = classifyRetryKind({
@@ -1077,7 +1061,11 @@ export function retryRun(
     userId,
     trigger: "retry",
     versionId: origVersion || null,
+    snapshotOverride: parseJson<VersionSnapshot | undefined>(String(orig.snapshot_json ?? "null"), undefined),
     retryOfRunId: runId,
+    isTest: !!orig.is_test,
+    processingIntervalStart: orig.processing_interval_start as number | null,
+    processingIntervalEnd: orig.processing_interval_end as number | null,
   });
   return { ...enqueued, retry_kind: kind };
 }
@@ -1124,6 +1112,9 @@ export function enqueueBackfill(
     write_behavior: pipeline.write_behavior as string,
     load_mode: pipeline.load_mode as string,
   });
+  const ver = getVersion(database, pipelineId, Number(pipeline.published_version_id));
+  const cfg = parseJson<Record<string, unknown>>(String(ver?.config_json ?? "{}"), {});
+  if (cfg.source_type !== "sql" || !cfg.cursor_field || !String(ver?.python_code ?? "").includes("ctx.in_interval")) throw new Error("Backfill requires a generated SQL pipeline with a cursor and interval support");
   const plan = buildBackfillPlan({
     intervalStart: start,
     intervalEnd: end,
@@ -1144,21 +1135,13 @@ export function enqueueBackfill(
 }
 
 export function recoverQueue(database: Database.Database): void {
-  const active = database
-    .prepare(
-      `SELECT id, status, pid FROM pipeline_runs
-       WHERE status IN ('queued', 'running', 'retrying')`,
-    )
-    .all() as Array<{ id: number; status: string; pid: number | null }>;
-  const recovered = recoverRunsOnRestart(active, isPidAlive);
-  for (const r of recovered) {
-    if (r.nextStatus === "queued" && r.requeue) {
-      database
-        .prepare(
-          `UPDATE pipeline_runs SET status = 'queued', pid = NULL, next_retry_at = NULL
-           WHERE id = ?`,
-        )
-        .run(r.id);
+  const active = database.prepare("SELECT * FROM pipeline_runs WHERE status = 'running'").all() as Record<string, unknown>[];
+  for (const run of active) {
+    if (run.engine_job_id && process.env.CRUNCH_PIPELINE_LOCAL_TEST !== "1") {
+      workerState.inFlight.add(Number(run.pipeline_id));
+      void executeRun(database, run).catch(e => finishRun(database, Number(run.id), Number(run.pipeline_id), {status: "failed", error: String(e), log: "", rows: null})).finally(() => workerState.inFlight.delete(Number(run.pipeline_id)));
+    } else if (!liveChildren.has(Number(run.id))) {
+      finishRun(database, Number(run.id), Number(run.pipeline_id), {status: "failed", error: "Interrupted execution; inspect destination before retrying", log: "", rows: null});
     }
   }
 }
@@ -1183,12 +1166,13 @@ function fireBetween(schedule: string, prev: Date, now: Date, timezone: string):
 
 export function enqueueDueSchedules(database: Database.Database): number {
   const now = new Date();
-  const prev = new Date(workerState.lastTickAt * 1000);
+  const saved = database.prepare("SELECT value FROM settings WHERE key = 'pipeline_scheduler_tick'").get() as {value: string} | undefined;
+  const prev = new Date(Number(saved?.value ?? workerState.lastTickAt) * 1000);
   workerState.lastTickAt = Math.floor(now.getTime() / 1000);
   const due = database
     .prepare(
-      `SELECT id, user_id, schedule, timezone FROM pipelines
-       WHERE schedule_enabled = 1 AND schedule IS NOT NULL AND schedule != ''`,
+      `SELECT p.id, p.user_id, v.schedule, v.timezone FROM pipelines p JOIN pipeline_versions v ON v.id = p.published_version_id
+       WHERE p.schedule_enabled = 1 AND v.schedule IS NOT NULL AND v.schedule != ''`,
     )
     .all() as Array<{ id: number; user_id: number; schedule: string; timezone: string | null }>;
   let n = 0;
@@ -1205,6 +1189,7 @@ export function enqueueDueSchedules(database: Database.Database): number {
       console.warn(`[scheduler] pipeline ${row.id} enqueue failed: ${(e as Error).message}`);
     }
   }
+  database.prepare("INSERT INTO settings (key,value) VALUES ('pipeline_scheduler_tick',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(workerState.lastTickAt));
   return n;
 }
 
@@ -1248,27 +1233,27 @@ export function buildOverview(
   for (const row of rows) {
     const recent = database
       .prepare(
-        `SELECT id, status FROM pipeline_runs WHERE pipeline_id = ? ORDER BY id DESC LIMIT 10`,
+        `SELECT id, status FROM pipeline_runs WHERE pipeline_id = ? AND is_test = 0 ORDER BY id DESC LIMIT 10`,
       )
       .all(row.id) as Array<{ id: number; status: string }>;
     const lastSuccess = database
       .prepare(
         `SELECT finished_at, started_at, rows_loaded FROM pipeline_runs
-         WHERE pipeline_id = ? AND status = 'success' ORDER BY id DESC LIMIT 1`,
+         WHERE pipeline_id = ? AND is_test = 0 AND status = 'success' ORDER BY id DESC LIMIT 1`,
       )
       .get(row.id) as
       | { finished_at: number | null; started_at: number; rows_loaded: number | null }
       | undefined;
     const lastFail = database
       .prepare(
-        `SELECT id FROM pipeline_runs WHERE pipeline_id = ? AND status = 'failed'
+        `SELECT id FROM pipeline_runs WHERE pipeline_id = ? AND is_test = 0 AND status = 'failed' AND id > COALESCE((SELECT MAX(s.id) FROM pipeline_runs s WHERE s.pipeline_id = pipeline_runs.pipeline_id AND s.is_test = 0 AND s.status = 'success'), 0)
          ORDER BY id DESC LIMIT 1`,
       )
       .get(row.id) as { id: number } | undefined;
     const lastRun = database
       .prepare(
         `SELECT status, started_at, finished_at, rows_loaded FROM pipeline_runs
-         WHERE pipeline_id = ? ORDER BY id DESC LIMIT 1`,
+         WHERE pipeline_id = ? AND is_test = 0 ORDER BY id DESC LIMIT 1`,
       )
       .get(row.id) as
       | { status: string; started_at: number; finished_at: number | null; rows_loaded: number | null }
@@ -1294,6 +1279,12 @@ export function buildOverview(
           .prepare("SELECT id, version_number FROM pipeline_versions WHERE id = ?")
           .get(row.published_version_id) as { id: number; version_number: number } | undefined)
       : undefined;
+    if (pub) {
+      const version = getVersion(database, Number(row.id), pub.id)!;
+      const publishedConfig = parseJson<Record<string, unknown>>(String(version.config_json), {});
+      row.schedule = version.schedule; row.timezone = version.timezone;
+      row.freshness_threshold_seconds = publishedConfig.freshness_threshold_seconds;
+    }
     let next: number | null = null;
     if (row.schedule && row.schedule_enabled) {
       try {
@@ -1306,7 +1297,7 @@ export function buildOverview(
       String(
         (database
           .prepare(
-            `SELECT check_results_json FROM pipeline_runs WHERE pipeline_id = ?
+            `SELECT check_results_json FROM pipeline_runs WHERE pipeline_id = ? AND is_test = 0
              ORDER BY id DESC LIMIT 1`,
           )
           .get(row.id) as { check_results_json: string } | undefined)?.check_results_json ?? "[]",
@@ -1343,7 +1334,7 @@ export function buildOverview(
         running,
         queued,
         freshnessThresholdSeconds: (row.freshness_threshold_seconds as number | null) ?? null,
-        checksFailed: lastChecks.some((c) => !c.passed),
+        checksFailed: lastChecks.some((c) => c.passed === false),
         now,
       }),
     );
@@ -1406,15 +1397,15 @@ export function pipelineLineage(
   };
 }
 
-export function validatePipeline(
+export async function validatePipeline(
   database: Database.Database,
   pipelineId: number,
   userId: number,
-): {
+): Promise<{
   ok: boolean;
   issues: ReturnType<typeof validatePipelineConfig>;
   connectivity: { ok: boolean; message: string };
-} {
+}> {
   const row = getPipelineRow(database, pipelineId, userId);
   if (!row) throw new Error("pipeline not found");
   const load = normalizeLoadBehavior({
@@ -1435,8 +1426,16 @@ export function validatePipeline(
   let connectivity = { ok: false, message: "no destination" };
   if (row.destination_connection_id != null) {
     try {
-      resolveConnection(database, Number(row.destination_connection_id), userId);
-      connectivity = { ok: true, message: "destination credentials resolved" };
+      const destination = resolveConnection(database, Number(row.destination_connection_id), userId);
+      const result = await pythonEngine.executeSql({connection: destination, sql: "SELECT 1", limit: 1});
+      if (!result.success) throw new Error(result.error || "Destination connection failed");
+      if (row.source_connection_id) {
+        const source = resolveConnection(database, Number(row.source_connection_id), userId);
+        const r = await pythonEngine.executeSql({connection: source, sql: "SELECT 1", limit: 1});
+        if (!r.success) throw new Error(r.error || "Source connection failed");
+      }
+      prepareRuntimeSource(database, row, null, userId);
+      connectivity = { ok: true, message: "Connected to configured database connections; external API availability is checked during testing" };
     } catch (e) {
       connectivity = { ok: false, message: (e as Error).message };
     }

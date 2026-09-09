@@ -141,8 +141,8 @@ configuration changes will not overwrite custom Python.
 import dlt
 from typing import Iterator
 
-PIPELINE_NAME = "{t["name"]}"
-DATASET = "{t["dataset"]}"
+PIPELINE_NAME = ctx.identity
+DATASET = ctx.dataset
 
 # `ctx` is injected by the Crunch runner — it exposes the resolved
 # destination credentials so dlt connects without you re-typing them.
@@ -236,11 +236,12 @@ def items({items_arg}) -> Iterator[dict]:
 def run() -> dict:
     pipeline = dlt.pipeline(
         pipeline_name=PIPELINE_NAME,
+        pipelines_dir=ctx.state_dir,
         destination=ctx.dlt_destination(),
         dataset_name=DATASET,
     )
     info = pipeline.run(items())
-    return {{"rows_loaded": _row_count(pipeline, info)}}
+    return ctx.report(pipeline, _row_count(pipeline, info))
 '''
 
 
@@ -271,17 +272,23 @@ def rows() -> Iterator[dict]:
     engine = ctx.source_engine or create_engine(url)
     with engine.connect() as conn:
         for r in conn.execute(text("""{src_query}""")):
-            yield dict(r._mapping)
+            row = dict(r._mapping)
+            if ctx.in_interval(row, {cursor_field!r}):
+                yield row
 
 
 def run() -> dict:
     pipeline = dlt.pipeline(
         pipeline_name=PIPELINE_NAME,
+        pipelines_dir=ctx.state_dir,
         destination=ctx.dlt_destination(),
         dataset_name=DATASET,
     )
-    info = pipeline.run(rows(){cursor_arg})
-    return {{"rows_loaded": _row_count(pipeline, info)}}
+    resource = rows()
+    if not (ctx.runtime_config or {{}}).get("processing_interval_start") and {bool(cursor_arg)!r}:
+        resource.apply_hints(incremental=dlt.sources.incremental({cursor_field!r}))
+    info = pipeline.run(resource)
+    return ctx.report(pipeline, _row_count(pipeline, info))
 '''
 
 
@@ -309,11 +316,12 @@ def file_rows() -> Iterator[dict]:
 def run() -> dict:
     pipeline = dlt.pipeline(
         pipeline_name=PIPELINE_NAME,
+        pipelines_dir=ctx.state_dir,
         destination=ctx.dlt_destination(),
         dataset_name=DATASET,
     )
     info = pipeline.run(file_rows())
-    return {{"rows_loaded": _row_count(pipeline, info)}}
+    return ctx.report(pipeline, _row_count(pipeline, info))
 '''
 
 
@@ -359,11 +367,12 @@ def events() -> Iterator[dict]:
 def run() -> dict:
     pipeline = dlt.pipeline(
         pipeline_name=PIPELINE_NAME,
+        pipelines_dir=ctx.state_dir,
         destination=ctx.dlt_destination(),
         dataset_name=DATASET,
     )
     info = pipeline.run(events())
-    return {{"rows_loaded": _row_count(pipeline, info)}}
+    return ctx.report(pipeline, _row_count(pipeline, info))
 '''
 
 
@@ -381,9 +390,10 @@ def my_resource() -> Iterator[dict]:
 def run() -> dict:
     pipeline = dlt.pipeline(
         pipeline_name=PIPELINE_NAME,
+        pipelines_dir=ctx.state_dir,
         destination=ctx.dlt_destination(),
         dataset_name=DATASET,
     )
     info = pipeline.run(my_resource())
-    return {{"rows_loaded": _row_count(pipeline, info)}}
+    return ctx.report(pipeline, _row_count(pipeline, info))
 '''

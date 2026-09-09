@@ -24,7 +24,7 @@ export interface PipelineRun {
     evidence: Array<{ line: string; source: string }>;
     actions: string[];
   } | null;
-  check_results?: Array<{ type: string; passed: boolean; message: string }>;
+  check_results?: Array<{ type: string; passed: boolean | null; message: string }>;
   output_metrics?: { rows_loaded: number | null; output_tables: unknown[] };
 }
 
@@ -76,7 +76,11 @@ export const usePipelinesStore = defineStore("pipelines", {
       this.counts = r.counts;
       this.list = r.pipelines;
     },
+    async refreshCurrent(id: number) {
+      this.current = await api.get<SavedPipeline>(`/pipelines/${id}`);
+    },
     async open(id: number) {
+      if (this.current?.id !== id) { this.runDetail = null; this.activity = []; }
       this.current = await api.get<SavedPipeline>(`/pipelines/${id}`);
       await Promise.all([this.loadRuns(id), this.loadNextRuns(id), this.loadVersions(id)]);
     },
@@ -155,7 +159,7 @@ export const usePipelinesStore = defineStore("pipelines", {
       return api.post(`/pipelines/${pipelineId}/runs/${runId}/cancel`, {});
     },
     async retryRun(pipelineId: number, runId: number) {
-      return api.post(`/pipelines/${pipelineId}/runs/${runId}/retry`, {});
+      return api.post<PipelineRun>(`/pipelines/${pipelineId}/runs/${runId}/retry`, {});
     },
     async pause(id: number, paused = true) {
       await api.post(`/pipelines/${id}/pause`, { paused });

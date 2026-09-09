@@ -397,7 +397,7 @@ export interface QualityCheck {
 export interface CheckResult {
   type: QualityCheckType;
   column?: string;
-  passed: boolean;
+  passed: boolean | null;
   message: string;
 }
 
@@ -946,8 +946,8 @@ export function buildSqlAlchemyUrl(conn: Record<string, unknown>): string {
   }
   const dt = String(conn.type ?? "").toLowerCase();
   const database = conn.database ?? ":memory:";
-  const user = conn.user ?? "";
-  const password = conn.password ?? "";
+  const user = encodeURIComponent(String(conn.user ?? ""));
+  const password = encodeURIComponent(String(conn.password ?? ""));
   const host = conn.host ?? "localhost";
   const port = conn.port;
   if (dt === "sqlite") return `sqlite:///${database}`;

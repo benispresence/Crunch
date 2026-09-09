@@ -6,6 +6,9 @@ import TopBar from "@/components/TopBar.vue";
 
 const sidebarOpen = ref(true);
 const chatOpen = ref(true);
+const openPipelineChat = () => { chatOpen.value = true; };
+onMounted(() => window.addEventListener("crunch-open-chat", openPipelineChat));
+onBeforeUnmount(() => window.removeEventListener("crunch-open-chat", openPipelineChat));
 // Workspace: hide chrome + collapse editor/results so the chart is full view.
 const vizFullView = ref(false);
 
@@ -124,6 +127,7 @@ onBeforeUnmount(() => {
         <RouterView v-slot="{ Component }">
           <component
             :is="Component"
+            :key="$route.name?.toString().startsWith('pipeline') ? String($route.params.id || 'list') : undefined"
             v-model:sidebarOpen="sidebarOpen"
             v-model:chatOpen="chatOpen"
             v-model:vizFullView="vizFullView"

@@ -454,14 +454,9 @@ export const useChatStore = defineStore("chat", {
           has_unsaved_changes: unsaved,
           last_result_columns: ws.result?.columns ?? undefined,
           last_result_row_count: ws.result?.row_count,
-          active_pipeline_id: pipelinesStore.current?.id ?? (
-            typeof route.params.id === "string" && route.name?.toString().startsWith("pipeline")
-              ? Number(route.params.id)
-              : null
-          ),
-          active_pipeline_name: pipelinesStore.current?.name ?? null,
-          active_run_id: pipelinesStore.runDetail?.id
-            ?? (typeof route.params.runId === "string" ? Number(route.params.runId) : null),
+          active_pipeline_id: route.name?.toString().startsWith("pipeline") && route.params.id ? Number(route.params.id) : null,
+          active_pipeline_name: route.name?.toString().startsWith("pipeline") && Number(route.params.id) === pipelinesStore.current?.id ? pipelinesStore.current?.name : null,
+          active_run_id: route.name === "pipeline-run" && route.params.runId ? Number(route.params.runId) : null,
         };
         const stream = api.stream(
           "/chat/send",

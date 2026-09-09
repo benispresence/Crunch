@@ -239,6 +239,7 @@ async function startStack() {
     PORT: String(apiPort),
     PYTHON_ENGINE_HOST: "127.0.0.1",
     PYTHON_ENGINE_PORT: String(enginePort),
+    CRUNCH_PIPELINE_JOB_DIR: path.join(dataDir, "pipeline-jobs"),
     PYTHON_ENGINE_URL: `http://127.0.0.1:${enginePort}`,
     ENGINE_ENV: app.isPackaged ? "production" : "development",
     FRONTEND_DIST: frontendDist(),

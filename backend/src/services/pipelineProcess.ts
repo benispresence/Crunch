@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 
 export interface PipelineJob {
+  runtime_config?: Record<string, unknown>;
   code: string;
   destination: Record<string, unknown>;
   source_config?: Record<string, unknown>;
@@ -83,7 +84,7 @@ export function spawnPipelineProcess(job: PipelineJob): SpawnedPipeline {
     cwd: root,
     env: { ...process.env, PYTHONPATH: src + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : "") },
     detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "ignore", "ignore"],
   });
   if (child.pid == null) {
     throw new Error("failed to spawn pipeline process");

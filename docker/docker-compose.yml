@@ -28,6 +28,7 @@ services:
       dockerfile: docker/Dockerfile.engine
     image: crunch/engine:local
     environment:
+      CRUNCH_PIPELINE_JOB_DIR: "/pipeline-jobs"
       ENGINE_ENV: "production"
       PYTHON_ENGINE_HOST: "0.0.0.0"
       PYTHON_ENGINE_PORT: "8765"
@@ -35,6 +36,8 @@ services:
       PYTHON_ENGINE_TOKEN: "${PYTHON_ENGINE_TOKEN:?set PYTHON_ENGINE_TOKEN in docker/.env}"
       # Lock down CORS to the backend service inside the compose network.
       ENGINE_ALLOWED_ORIGIN: "http://backend:3691"
+    volumes:
+      - crunch-pipeline-jobs:/pipeline-jobs
     expose:
       - "8765"
     networks:
@@ -90,6 +93,8 @@ services:
     restart: unless-stopped
 
 volumes:
+  crunch-pipeline-jobs:
+    name: crunch-pipeline-jobs
   crunch-data:
     name: crunch-data
   crunch-workspace:

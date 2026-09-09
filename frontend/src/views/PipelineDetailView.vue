@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import * as monaco from "monaco-editor";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import PipelineLogViewer from "@/components/PipelineLogViewer.vue";
 import { useTheme } from "@/composables/theme";
@@ -26,13 +26,42 @@ const runError = ref("");
 const selectedRunId = ref<number | null>(null);
 const tab = ref<"overview" | "runs" | "definition" | "versions" | "settings">("overview");
 const diffText = ref("");
+const diffHost = ref<HTMLDivElement | null>(null);
+let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
+const validationMessage = ref("");
+const dirty = computed(() => draft.value && pipelines.current && JSON.stringify(draft.value) !== JSON.stringify(pipelines.current));
+let poll: ReturnType<typeof setInterval> | null = null;
+let refreshing = false;
+const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
+async function refreshRuns() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    await pipelines.loadRuns(pipelineId.value);
+    if (selectedRunId.value) await pipelines.loadRun(pipelineId.value, selectedRunId.value);
+    await pipelines.refreshCurrent(pipelineId.value);
+  } catch (e) { runError.value = String(e); }
+  finally { refreshing = false; }
+}
+async function validateDraft() {
+  if (!await saveDraft()) return;
+  try {
+    const r = await pipelines.validate(pipelineId.value);
+    validationMessage.value = r.ok ? r.connectivity.message : JSON.stringify(r.issues) + " " + r.connectivity.message;
+  } catch(e) { runError.value = String(e); }
+}
+async function cancel() {
+  if (!selectedRunId.value) return;
+  try { await pipelines.cancelRun(pipelineId.value, selectedRunId.value); await refreshRuns(); }
+  catch(e) { runError.value = String(e); }
+}
 const backfillStart = ref("");
 const backfillEnd = ref("");
 const backfillWarning = ref("");
 
 onMounted(async () => {
   await Promise.all([ws.loadConnections(), pipelines.open(pipelineId.value)]);
-  if (pipelines.current) draft.value = { ...pipelines.current };
+  if (pipelines.current) draft.value = clone(pipelines.current);
   const runId = route.params.runId ? Number(route.params.runId) : null;
   if (runId) {
     tab.value = "runs";
@@ -41,9 +70,15 @@ onMounted(async () => {
   }
   await new Promise((r) => requestAnimationFrame(r));
   mountEditor();
+  poll = setInterval(() => { void refreshRuns(); }, 2000);
+  await pipelines.loadActivity(pipelineId.value);
 });
 
-onBeforeUnmount(() => { editor?.dispose(); });
+onBeforeUnmount(() => {
+  editor?.dispose();
+  const models = diffEditor?.getModel(); diffEditor?.dispose(); models?.original.dispose(); models?.modified.dispose();
+  if (poll) clearInterval(poll);
+});
 
 function mountEditor() {
   if (!editorHost.value || editor) return;
@@ -78,18 +113,21 @@ async function saveDraft() {
   runError.value = "";
   try {
     await pipelines.update(pipelineId.value, draft.value);
-    draft.value = { ...(pipelines.current as SavedPipeline) };
+    draft.value = clone(pipelines.current as SavedPipeline);
+    return true;
   } catch (e) {
     runError.value = (e as Error).message;
+    return false;
   } finally {
     saving.value = false;
   }
 }
 
 async function publish() {
-  await saveDraft();
+  if (!await saveDraft()) return;
   try {
     await pipelines.publish(pipelineId.value);
+    await pipelines.loadActivity(pipelineId.value);
   } catch (e) {
     runError.value = (e as Error).message;
   }
@@ -107,11 +145,11 @@ async function runPublished() {
 }
 
 async function testDraft() {
-  await saveDraft();
+  if (!await saveDraft()) return;
   try {
     const r = await pipelines.testDraft(pipelineId.value);
-    selectedRunId.value = r.id;
-    tab.value = "runs";
+    await pipelines.loadRuns(pipelineId.value);
+    await selectRun(r);
   } catch (e) {
     runError.value = (e as Error).message;
   }
@@ -142,8 +180,10 @@ async function selectRun(run: PipelineRun) {
 
 async function retry() {
   if (!selectedRunId.value) return;
-  await pipelines.retryRun(pipelineId.value, selectedRunId.value);
-  await pipelines.loadRuns(pipelineId.value);
+  try {
+    const r = await pipelines.retryRun(pipelineId.value, selectedRunId.value);
+    await pipelines.loadRuns(pipelineId.value); await selectRun(r);
+  } catch(e) { runError.value = String(e); }
 }
 async function pauseSchedule() {
   await pipelines.pause(pipelineId.value, true);
@@ -159,15 +199,21 @@ async function askAiInvestigate() {
 }
 async function restore(versionId: number) {
   await pipelines.restoreVersion(pipelineId.value, versionId);
-  if (pipelines.current) draft.value = { ...pipelines.current };
+  if (pipelines.current) draft.value = clone(pipelines.current);
   tab.value = "definition";
 }
 async function showDiff(fromId: number, toId: number) {
   const d = await pipelines.versionDiff(pipelineId.value, fromId, toId);
   diffText.value = [
     ...d.config_diff.map((c) => `${c.path}: ${JSON.stringify(c.before)} → ${JSON.stringify(c.after)}`),
-    d.code_diff.changed ? "code changed" : "code unchanged",
+
   ].join("\n");
+  await nextTick();
+  if (diffHost.value) {
+    const old = diffEditor?.getModel(); diffEditor?.dispose(); old?.original.dispose(); old?.modified.dispose();
+    diffEditor = monaco.editor.createDiffEditor(diffHost.value, {readOnly: true, automaticLayout: true, theme: monacoTheme.value});
+    diffEditor.setModel({original: monaco.editor.createModel(d.code_diff.before, "python"), modified: monaco.editor.createModel(d.code_diff.after, "python")});
+  }
 }
 
 async function requestBackfill() {
@@ -186,10 +232,10 @@ async function confirmBackfill() {
 
 function fmtDate(ts: number | null | undefined): string {
   if (!ts) return "—";
-  return new Date(ts * 1000).toLocaleString();
+  return new Date(ts * 1000).toLocaleString(undefined, {timeZone: draft.value?.timezone || "UTC", timeZoneName: "short"});
 }
 function fmtDuration(start: number, end: number | null): string {
-  if (!end) return "running…";
+  if (!end) return "—";
   const secs = end - start;
   if (secs < 60) return `${secs}s`;
   return `${Math.floor(secs / 60)}m ${secs % 60}s`;
@@ -207,6 +253,10 @@ function statusColor(s: string | null | undefined): string {
   }
 }
 
+function versionLabel(id?: number | null) { return id ? `v${pipelines.versions.find(v => v.id === id)?.version_number ?? "?"}` : "Draft test"; }
+watch(() => route.params.runId, async (id) => {
+  if (id) { selectedRunId.value = Number(id); tab.value = "runs"; await pipelines.loadRun(pipelineId.value, Number(id)); }
+});
 const currentRun = computed(() => pipelines.runDetail ?? null);
 const p = computed(() => pipelines.current);
 
@@ -222,7 +272,7 @@ function ensureSourceConfig() {
     <header class="detail__head">
       <div class="detail__head-left">
         <button class="btn btn-ghost btn-sm" @click="router.push({ name: 'pipelines' })">← Pipelines</button>
-        <input v-model="draft.name" class="detail__name" />
+        <input v-model="draft.name" class="detail__name" /><span v-if="dirty" class="muted">Unsaved changes</span>
         <span v-if="p?.execution_health" class="detail__status" :class="`detail__status--${statusColor(p.execution_health)}`">
           {{ p.execution_health }}
         </span>
@@ -234,11 +284,12 @@ function ensureSourceConfig() {
         <button class="btn btn-ghost btn-sm" :disabled="saving" @click="saveDraft">
           {{ saving ? "Saving…" : "Save draft" }}
         </button>
-        <button class="btn btn-sm" @click="testDraft">Test draft</button>
-        <button class="btn btn-sm" @click="publish">Publish</button>
+        <button class="btn btn-sm" :disabled="saving" @click="validateDraft">Validate</button>
+        <button class="btn btn-sm" :disabled="saving" @click="testDraft">Test draft</button>
+        <button class="btn btn-sm" :disabled="saving" @click="publish">Publish</button>
         <button
           class="btn btn-primary btn-sm"
-          :disabled="pipelines.running || !draft.destination_connection_id"
+          :disabled="pipelines.running || !p?.published_version_id"
           @click="runPublished"
         >
           {{ pipelines.running ? "Queuing…" : "Run published version" }}
@@ -246,7 +297,8 @@ function ensureSourceConfig() {
       </div>
     </header>
 
-    <p v-if="runError" class="detail__error">{{ runError }}</p>
+    <p v-if="validationMessage" role="status">{{ validationMessage }}</p>
+    <p v-if="runError" role="alert" class="detail__error">{{ runError }}</p>
 
     <div class="detail__tabs">
       <button class="detail__tab" :class="{ 'detail__tab--active': tab === 'overview' }" @click="tab = 'overview'">Overview</button>
@@ -279,7 +331,7 @@ function ensureSourceConfig() {
       </div>
       <dl class="meta">
         <div><dt>Last successful update</dt><dd>{{ fmtDate(p?.last_successful_update ?? null) }}</dd></div>
-        <div><dt>Next run</dt><dd>{{ fmtDate(pipelines.nextRuns[0] ?? p?.next_run ?? null) }} ({{ draft.timezone || "UTC" }})</dd></div>
+        <div><dt>Next run</dt><dd>{{ fmtDate(pipelines.nextRuns[0] ?? p?.next_run ?? null) }}</dd></div>
         <div><dt>Current activity</dt><dd>{{ p?.attention || p?.last_run_status || "idle" }}</dd></div>
         <div><dt>Published version</dt><dd>{{ p?.published_version ? `v${p.published_version.version_number}` : "none" }}</dd></div>
       </dl>
@@ -330,7 +382,7 @@ function ensureSourceConfig() {
           <span>{{ fmtDuration(run.started_at, run.finished_at) }}</span>
           <span>{{ run.rows_loaded ?? "—" }} rows</span>
           <span>{{ run.triggered_by }}</span>
-          <span v-if="run.version_id">v{{ run.version_id }}</span>
+          <span v-if="run.version_id">{{ versionLabel(run.version_id) }}</span>
         </li>
       </ul>
 
@@ -345,21 +397,22 @@ function ensureSourceConfig() {
             </li>
           </ul>
           <div class="fail-actions">
-            <button class="btn btn-sm" @click="retry">Retry</button>
+            <button v-if="currentRun && ['failed', 'cancelled'].includes(currentRun.status)" class="btn btn-sm" @click="retry">Retry original version</button>
             <button class="btn btn-sm" @click="askAiInvestigate">Ask AI to investigate</button>
             <button class="btn btn-sm" @click="viewLogs">View logs</button>
             <button class="btn btn-sm" @click="pauseSchedule">Pause schedule</button>
           </div>
         </div>
         <div v-else class="fail-actions">
-          <button class="btn btn-sm" @click="retry">Retry</button>
+          <button v-if="currentRun && ['failed', 'cancelled'].includes(currentRun.status)" class="btn btn-sm" @click="retry">Retry original version</button>
           <button class="btn btn-sm" @click="askAiInvestigate">Ask AI to investigate</button>
           <button class="btn btn-sm" @click="viewLogs">View logs</button>
           <button class="btn btn-sm" @click="pauseSchedule">Pause schedule</button>
         </div>
+        <button v-if="['queued', 'running', 'retrying'].includes(currentRun.status)" class="btn btn-sm" @click="cancel">Cancel run</button>
         <h4>Run #{{ currentRun.id }} — {{ currentRun.status }}</h4>
         <dl class="meta">
-          <div><dt>Version</dt><dd>{{ currentRun.version_id ?? "draft" }}</dd></div>
+          <div><dt>Version</dt><dd>{{ versionLabel(currentRun.version_id) }}</dd></div>
           <div><dt>Trigger</dt><dd>{{ currentRun.triggered_by }}</dd></div>
           <div><dt>Attempts</dt><dd>{{ currentRun.attempt_number ?? 1 }}</dd></div>
           <div><dt>Queued</dt><dd>{{ fmtDate((currentRun.timestamps as any)?.queued_at) }}</dd></div>
@@ -379,6 +432,9 @@ function ensureSourceConfig() {
             </li>
           </ul>
         </div>
+        <ul v-if="currentRun.check_results?.length" class="checks">
+          <li v-for="(c,i) in currentRun.check_results" :key="i">{{ c.passed === null ? 'Not evaluated' : c.passed ? 'Passed' : 'Failed' }} — {{ c.message }}</li>
+        </ul>
         <PipelineLogViewer
           :log="currentRun.log || ''"
           :status="currentRun.status"
@@ -419,7 +475,7 @@ function ensureSourceConfig() {
         </li>
         <li v-if="pipelines.versions.length === 0" class="muted">No published versions yet.</li>
       </ul>
-      <pre v-if="diffText" class="diff">{{ diffText }}</pre>
+      <pre v-if="diffText" class="diff">{{ diffText }}</pre><div ref="diffHost" style="height: 360px; flex-shrink: 0" aria-label="Version code comparison"></div>
       <h3>Activity</h3>
       <button class="btn btn-ghost btn-sm" @click="pipelines.loadActivity(pipelineId)">Refresh activity</button>
       <ul class="activity">
@@ -511,7 +567,7 @@ function ensureSourceConfig() {
           <input v-model="draft.cursor_field" />
         </label>
       </div>
-      <h3>Schedule</h3>
+      <h3>Schedule</h3><p class="muted">Runs execute one at a time per pipeline. Missed schedule windows are coalesced into one run after downtime. Publish to apply schedule changes.</p>
       <div class="grid">
         <label class="field">
           <span>Cron</span>

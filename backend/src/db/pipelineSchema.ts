@@ -166,6 +166,7 @@ export function upgradePipelineTables(database: Database.Database): void {
   r("steps_json", "steps_json TEXT NOT NULL DEFAULT '[]'");
   r("next_retry_at", "next_retry_at INTEGER");
   r("snapshot_json", "snapshot_json TEXT");
+  r("engine_job_id", "engine_job_id TEXT");
   r("job_dir", "job_dir TEXT");
 
   database.exec(`

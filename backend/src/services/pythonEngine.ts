@@ -64,6 +64,9 @@ export interface ChartTypeMeta {
 }
 
 export const pythonEngine = {
+  submitPipeline: (job: Record<string, unknown>) => call<{job_id: string}>({path: "/pipelines/spawn", body: job}),
+  pipelineStatus: (id: string) => call<{status: string; result?: import("./pipelineProcess.js").PipelineJobResult}>({path: `/pipelines/jobs/${encodeURIComponent(id)}/status`, body: {}}),
+  cancelPipeline: (id: string) => call<{status: string; pid_alive?: boolean}>({path: `/pipelines/jobs/${encodeURIComponent(id)}/cancel`, body: {}}),
   validateSql: (sql: string) =>
     call<{ valid: boolean; error?: string }>({ path: "/sql/validate", body: { sql } }),
 

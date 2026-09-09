@@ -264,9 +264,14 @@ pipelinesRouter.post("/", async (req, res) => {
       parsed.data.processing_interval ?? null,
       sealed.sealed,
     );
-  const row = db
-    .prepare(`SELECT ${SELECT_COLS} FROM pipelines WHERE id = ?`)
-    .get(info.lastInsertRowid) as PipelineRow;
+  const row = db.prepare(`SELECT ${SELECT_COLS} FROM pipelines WHERE id = ?`).get(info.lastInsertRowid) as PipelineRow;
+  if (row.code_mode === "template" && !row.python_code.trim()) {
+    try {
+      const generated = await pythonEngine.generatePipelineTemplate(buildTemplateSpec(row, req.user!.sub));
+      db.prepare("UPDATE pipelines SET python_code = ? WHERE id = ?").run(generated.code, row.id);
+      row.python_code = generated.code;
+    } catch(e) { res.status(502).json({error: `Draft saved, but generation failed: ${String(e)}`, pipeline_id: row.id}); return; }
+  }
   res.json(rowToPipeline(row));
 });
 
@@ -401,8 +406,10 @@ pipelinesRouter.post("/:id/test", async (req, res) => {
   }
 });
 
-pipelinesRouter.post("/:id/publish", (req, res) => {
+pipelinesRouter.post("/:id/publish", async (req, res) => {
   try {
+    const validation = await validatePipeline(db, Number(req.params.id), req.user!.sub);
+    if (!validation.ok) { res.status(400).json({error: "Validation failed", validation}); return; }
     const r = publishVersion(
       db,
       Number(req.params.id),
@@ -519,9 +526,9 @@ pipelinesRouter.post("/:id/pause", (req, res) => {
   }
 });
 
-pipelinesRouter.post("/:id/validate", (req, res) => {
+pipelinesRouter.post("/:id/validate", async (req, res) => {
   try {
-    res.json(validatePipeline(db, Number(req.params.id), req.user!.sub));
+    res.json(await validatePipeline(db, Number(req.params.id), req.user!.sub));
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }
@@ -575,7 +582,7 @@ pipelinesRouter.get("/:id/ai-safe", (req, res) => {
 pipelinesRouter.get("/:id/next-runs", (req, res) => {
   const row = db
     .prepare(
-      "SELECT schedule, schedule_enabled, timezone FROM pipelines WHERE id = ? AND user_id = ?",
+      "SELECT v.schedule, p.schedule_enabled, v.timezone FROM pipelines p LEFT JOIN pipeline_versions v ON v.id = p.published_version_id WHERE p.id = ? AND p.user_id = ?",
     )
     .get(req.params.id, req.user!.sub) as
     | { schedule: string | null; schedule_enabled: number; timezone: string | null }

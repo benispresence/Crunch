@@ -246,7 +246,7 @@ export function trimRunHistory(pipelineId: number): number {
   const r = db
     .prepare(
       `DELETE FROM pipeline_runs
-       WHERE pipeline_id = ?
+       WHERE pipeline_id = ? AND status IN ('success','failed','cancelled')
        AND id NOT IN (
          SELECT id FROM pipeline_runs
          WHERE pipeline_id = ?

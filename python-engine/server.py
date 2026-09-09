@@ -267,6 +267,10 @@ class PipelineExecuteRequest(BaseModel):
     stream_max_seconds: int = 60
     stream_max_messages: int = 10000
     timeout_seconds: int = 1800
+    job_id: str | None = None
+    source_config: dict[str, Any] = {}
+    source_connection: dict[str, Any] | None = None
+    runtime_config: dict[str, Any] = {}
 
 
 class PipelineExecuteResponse(BaseModel):
@@ -625,112 +629,35 @@ async def pipeline_template(req: PipelineTemplateRequest) -> dict[str, str]:
     return {"code": code}
 
 
-_PIPELINE_JOBS: dict[str, "subprocess.Popen[bytes]"] = {}
-
-
-def _spawn_pipeline_job(req: PipelineExecuteRequest) -> tuple[str, "subprocess.Popen[bytes]", str]:
-    import json as _json
-    import os
-    import subprocess
-    import tempfile
-
-    job = {
-        "code": req.code,
-        "destination": req.destination.model_dump(),
-        "stream_max_seconds": req.stream_max_seconds,
-        "stream_max_messages": req.stream_max_messages,
-        "timeout_seconds": req.timeout_seconds,
-    }
-    fd, path = tempfile.mkstemp(prefix="crunch-pipe-", suffix=".json")
-    os.write(fd, _json.dumps(job).encode("utf-8"))
-    os.close(fd)
-    os.chmod(path, 0o600)
-    env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "crunch.pipelines.runner", path],
-        cwd=str(ROOT),
-        env=env,
-        start_new_session=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    job_id = str(proc.pid)
-    _PIPELINE_JOBS[job_id] = proc
-    return job_id, proc, path
-
+# Job files outlive Express restarts. Opaque IDs, authenticated operations, no
+# credentials or filesystem paths returned to the caller.
+from pipeline_jobs import PipelineJobs
+_pipeline_jobs = PipelineJobs(ROOT)
 
 @app.post("/pipelines/spawn")
-async def pipeline_spawn(req: PipelineExecuteRequest) -> dict[str, object]:
-    """Start a killable subprocess for a pipeline run. Returns job_id + pid."""
+async def pipeline_spawn(req: PipelineExecuteRequest) -> dict[str, Any]:
     _check_token(req.token)
-    job_id, proc, path = _spawn_pipeline_job(req)
-    return {"job_id": job_id, "pid": proc.pid, "job_path": path}
+    return _pipeline_jobs.submit(req.model_dump(exclude={"token"}))
 
+@app.post("/pipelines/jobs/{job_id}/status")
+async def pipeline_status(job_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    _check_token(str(req.get("token", "")))
+    return _pipeline_jobs.status(job_id)
 
 @app.post("/pipelines/jobs/{job_id}/cancel")
-async def pipeline_cancel(job_id: str, req: dict[str, str] | None = None) -> dict[str, object]:
-    import os
-    import signal as _signal
+async def pipeline_cancel(job_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    _check_token(str(req.get("token", "")))
+    return await asyncio.to_thread(_pipeline_jobs.cancel, job_id)
 
-    proc = _PIPELINE_JOBS.get(job_id)
-    if proc is None or proc.pid is None:
-        return {"ok": False, "error": "job not found", "pid_alive": False}
-    try:
-        os.killpg(proc.pid, _signal.SIGTERM)
-    except ProcessLookupError:
-        return {"ok": True, "pid_alive": False, "status": "already_exited"}
-    return {"ok": True, "pid": proc.pid, "pid_alive": proc.poll() is None}
-
-
-@app.post("/pipelines/execute", response_model=PipelineExecuteResponse)
-async def pipeline_execute(req: PipelineExecuteRequest) -> PipelineExecuteResponse:
-    """Run a pipeline in a killable subprocess (not in-thread)."""
-    import json as _json
-    import os
-    import signal as _signal
-    import subprocess
-
+@app.post("/pipelines/execute")
+async def pipeline_execute(req: PipelineExecuteRequest) -> dict[str, Any]:
     _check_token(req.token)
-    job_id, proc, path = _spawn_pipeline_job(req)
-    try:
-        proc.wait(timeout=req.timeout_seconds + 30)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, _signal.SIGKILL)  # type: ignore[arg-type]
-        except Exception:
-            proc.kill()
-        return PipelineExecuteResponse(
-            success=False,
-            rows_loaded=0,
-            log="",
-            error=(
-                f"pipeline exceeded {req.timeout_seconds + 30}s wall-clock "
-                "limit (engine-side abort)"
-            ),
-            duration_ms=(req.timeout_seconds + 30) * 1000,
-        )
-    result_path = path + ".result.json"
-    if os.path.exists(result_path):
-        payload = _json.loads(open(result_path, encoding="utf-8").read())
-        try:
-            os.remove(path)
-            os.remove(result_path)
-        except OSError:
-            pass
-        return PipelineExecuteResponse(
-            success=bool(payload.get("success")),
-            rows_loaded=int(payload.get("rows_loaded") or 0),
-            log=str(payload.get("log") or ""),
-            error=payload.get("error"),
-            duration_ms=float(payload.get("duration_ms") or 0),
-        )
-    return PipelineExecuteResponse(
-        success=False,
-        rows_loaded=0,
-        log="",
-        error=f"pipeline process exited {proc.returncode} without a result file",
-        duration_ms=0,
-    )
+    job = _pipeline_jobs.submit(req.model_dump(exclude={"token"}))
+    while True:
+        result = _pipeline_jobs.status(str(job["job_id"]))
+        if result["status"] != "running":
+            return result.get("result") or {"success": False, "error": result["status"]}
+        await asyncio.sleep(.25)
 
 
 if __name__ == "__main__":

@@ -41,8 +41,91 @@ class PipelineContext:
     destination_config: dict[str, Any]
     stream_max_seconds: int = 60
     stream_max_messages: int = 10000
+    runtime_config: dict[str, Any] | None = None
     source_engine: Any = None  # populated for SQL-source pipelines
     source_config: dict[str, Any] | None = None
+
+    @property
+    def dataset(self):
+        return (self.runtime_config or {}).get("destination_dataset") or "crunch_pipeline"
+
+    @property
+    def state_dir(self):
+        import tempfile
+        from pathlib import Path
+        return (self.runtime_config or {}).get("state_dir") or str(Path(tempfile.gettempdir()) / "crunch-pipeline-state")
+
+    @property
+    def identity(self):
+        return (self.runtime_config or {}).get("pipeline_identity") or "pipeline"
+
+    def in_interval(self, row, column):
+        from datetime import datetime, timezone
+        config = self.runtime_config or {}
+        start, end = config.get("processing_interval_start"), config.get("processing_interval_end")
+        if start is None:
+            return True
+        value = row.get(column)
+        if isinstance(value, datetime):
+            value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+            value = value.timestamp()
+        elif isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            value = (parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed).timestamp()
+        if value is None:
+            raise ValueError("Backfill cursor is missing")
+        return start <= value < end
+
+    def report(self, pipeline, rows_loaded):
+        """Compute column checks in the destination, without sampling or copying data."""
+        tables = []
+        checks = (self.runtime_config or {}).get("quality_checks") or []
+        for table in pipeline.default_schema.data_tables():
+            name = table["name"]
+            results = []
+            with pipeline.sql_client() as client:
+                qualified = client.make_qualified_table_name(name)
+                for check in checks:
+                    kind, column = check.get("type"), check.get("column")
+                    if kind == "row_count":
+                        continue
+                    result = {"type": kind, "column": column, "passed": None}
+                    try:
+                        if column not in table.get("columns", {}):
+                            raise ValueError("Column not found in output table")
+                        col = client.capabilities.escape_identifier(column)
+                        if kind == "unique":
+                            query = f"SELECT COUNT(*) - COUNT(DISTINCT {col}) FROM {qualified} WHERE {col} IS NOT NULL"
+                        elif kind == "not_null":
+                            query = f"SELECT COUNT(*) FROM {qualified} WHERE {col} IS NULL"
+                        elif kind == "accepted_values":
+                            values = check.get("values") or []
+                            literals = ", ".join(client.capabilities.escape_literal(v) for v in values)
+                            if not literals:
+                                raise ValueError("Accepted values must not be empty")
+                            query = f"SELECT COUNT(*) FROM {qualified} WHERE {col} IS NULL OR {col} NOT IN ({literals})"
+                        elif kind == "freshness":
+                            query = f"SELECT MAX({col}) FROM {qualified}"
+                        else:
+                            raise ValueError("Unsupported check")
+                        with client.execute_query(query) as cursor:
+                            value = cursor.fetchone()[0]
+                        if kind == "freshness":
+                            from datetime import datetime, timezone
+                            if isinstance(value, str):
+                                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                            if isinstance(value, datetime):
+                                value = (value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value).timestamp()
+                            import time
+                            result["passed"] = value is not None and time.time() - float(value) <= check.get("max_age_seconds", 0)
+                        else:
+                            result["passed"] = value == 0
+                        result["message"] = f"{name}.{column}: {kind} {'passed' if result['passed'] else 'failed'}"
+                    except Exception as exc:
+                        result["message"] = f"Not evaluated on {name}: {exc}"
+                    results.append(result)
+            tables.append({"name": name, "dataset": self.dataset, "check_results": results})
+        return {"rows_loaded": rows_loaded, "output_tables": tables}
 
     def dlt_destination(self) -> Any:
         """Return a dlt destination instance pre-configured with the

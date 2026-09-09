@@ -77,10 +77,10 @@ const inspect_connection_schema: ToolHandler = async (ctx, input) => {
   }
 };
 
-const validate_pipeline: ToolHandler = (ctx, input) => {
+const validate_pipeline: ToolHandler = async (ctx, input) => {
   const id = input.pipeline_id as number;
   try {
-    return validatePipeline(db, id, ctx.userId);
+    return await validatePipeline(db, id, ctx.userId);
   } catch (e) {
     return { error: (e as Error).message, success: false };
   }
@@ -166,6 +166,9 @@ const propose_new_pipeline: ToolHandler = (_ctx, input) => ({
       description: (input.description as string | undefined) ?? null,
       source_type: (input.source_type as string | undefined) ?? "custom",
       source_config: (input.source_config as Record<string, unknown> | undefined) ?? {},
+      source_connection_id: input.source_connection_id ?? null,
+      scratch_destination_connection_id: input.scratch_destination_connection_id ?? null,
+      scratch_destination_dataset: input.scratch_destination_dataset ?? null,
       destination_connection_id: (input.destination_connection_id as number | undefined) ?? null,
       destination_dataset: (input.destination_dataset as string | undefined) ?? null,
       load_mode: (input.load_mode as string | undefined) ?? "replace",
@@ -210,7 +213,7 @@ const propose_pipeline_edit: ToolHandler = (ctx, input) => {
     "load_mode", "extract_strategy", "write_behavior",
     "primary_key", "cursor_field",
     "schedule", "schedule_enabled", "timezone",
-    "python_code", "code_mode", "quality_checks", "tags",
+    "python_code", "code_mode", "quality_checks", "tags", "timezone", "source_connection_id", "scratch_destination_connection_id", "scratch_destination_dataset",
   ]) {
     if (input[k] !== undefined) patch[k] = input[k];
   }
@@ -350,6 +353,9 @@ export const pipelineTools: ToolModule = {
           description: { type: "string" },
           source_type: { type: "string", description: "rest_api | sql | file | kafka | custom" },
           source_config: { type: "object" },
+          source_connection_id: { type: "number" },
+          scratch_destination_connection_id: { type: "number" },
+          scratch_destination_dataset: { type: "string" },
           destination_connection_id: { type: "number" },
           destination_dataset: { type: "string" },
           load_mode: { type: "string", description: "legacy combined mode; prefer extract_strategy + write_behavior" },
@@ -382,6 +388,9 @@ export const pipelineTools: ToolModule = {
           description: { type: "string" },
           source_type: { type: "string" },
           source_config: { type: "object" },
+          source_connection_id: { type: "number" },
+          scratch_destination_connection_id: { type: "number" },
+          scratch_destination_dataset: { type: "string" },
           destination_connection_id: { type: "number" },
           destination_dataset: { type: "string" },
           load_mode: { type: "string" },

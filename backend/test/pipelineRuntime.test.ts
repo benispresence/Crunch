@@ -1,3 +1,4 @@
+process.env.CRUNCH_PIPELINE_LOCAL_TEST = "1";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import Database from "better-sqlite3";
@@ -39,6 +40,8 @@ function openDb(pythonCode: string, sourceConfig: Record<string, unknown> = { pa
        scratch_destination_connection_id
      ) VALUES (1, 1, 'orders', 'custom', ?, 1, 'raw', 'replace', ?, 'custom', 'incremental', 'merge', 1)`,
   ).run(JSON.stringify(sourceConfig), pythonCode);
+  db.prepare("UPDATE pipelines SET primary_key = 'id', cursor_field = 'updated_at' WHERE id = 1").run();
+  publishVersion(db, 1, 1, "Initial fixture");
   return db;
 }
 
@@ -98,6 +101,7 @@ describe("pipelineRuntime queue and versions", { concurrency: 1 }, () => {
       versionId: pub1.version_id,
     });
     const pub2 = publishVersion(db, 1, 1, "v2");
+    await cancelRun(db, 1, Number(runN.id), 1);
     const retried = retryRun(db, 1, Number(runN.id), 1);
     // Original version (v1) is retried; a new run uses published v2.
     assert.equal(Number(retried.version_id), pub1.version_id);
@@ -188,6 +192,7 @@ describe("pipelineRuntime queue and versions", { concurrency: 1 }, () => {
 
   it("backfill records the processing interval and surfaces overwrite/duplicate implications", async () => {
     const db = openDb("def run():\n    return {'rows_loaded': 1}\n");
+    db.prepare("UPDATE pipelines SET source_type = 'sql', python_code = ? WHERE id = 1").run("def run():\n    return {'rows_loaded': int(ctx.in_interval({'updated_at': 1500}, 'updated_at'))}\n");
     publishVersion(db, 1, 1, "bf");
     const preview = enqueueBackfill(db, 1, 1, 1_000, 2_000, false) as {
       needs_confirm?: boolean;
@@ -300,5 +305,42 @@ describe("pipelineRuntime queue and versions", { concurrency: 1 }, () => {
     assert.equal(required!.passed, false, required!.message);
     await shutdownRuns(db);
     db.close();
+  });
+});
+
+describe("v1.2 regression outcomes", {concurrency: 1}, () => {
+  it("published checks and limits survive draft edits and same-pipeline runs serialize", async () => {
+    const db = openDb("def run():\n    import time\n    time.sleep(.2)\n    return {'rows_loaded': ctx.stream_max_messages}\n");
+    db.prepare("UPDATE pipelines SET stream_max_messages = 20000, quality_checks_json = ? WHERE id=1").run(JSON.stringify([{type: "row_count", max_relative_change: 0}]));
+    publishVersion(db, 1, 1);
+    db.prepare("UPDATE pipelines SET stream_max_messages = 1, quality_checks_json = '[]' WHERE id=1").run();
+    setSchedulerConcurrency(4);
+    const a = enqueueRun(db, {pipelineId: 1, userId: 1, trigger: "manual"});
+    const b = enqueueRun(db, {pipelineId: 1, userId: 1, trigger: "manual"});
+    assert.equal(getRun(db, Number(b.id))?.status, "queued");
+    const first = await waitForRun(db, Number(a.id));
+    const second = await waitForRun(db, Number(b.id));
+    assert.equal(first.rows_loaded, 20000);
+    assert.equal(second.rows_loaded, 20000);
+    assert.equal(JSON.parse(String(second.check_results_json))[0].passed, true);
+    await shutdownRuns(db); db.close();
+  });
+  it("scratch test cannot target production and cannot update production freshness", async () => {
+    const db = openDb("def run():\n    return {'rows_loaded': 5}\n");
+    assert.throws(() => enqueueRun(db, {pipelineId:1,userId:1,trigger:"test",isTest:true}), /separate scratch/);
+    db.prepare("INSERT INTO connections(id,user_id,name,type,config_json) VALUES (2,1,'scratch','sqlite',?)").run(JSON.stringify({database:"/private/tmp/crunch-scratch-regression.sqlite"}));
+    db.prepare("UPDATE pipelines SET scratch_destination_connection_id=2,scratch_destination_dataset='test_data' WHERE id=1").run();
+    const run = enqueueRun(db, {pipelineId:1,userId:1,trigger:"test",isTest:true});
+    const done = await waitForRun(db, Number(run.id));
+    assert.equal(done.status,"success");
+    assert.equal((db.prepare("SELECT last_successful_update FROM pipelines WHERE id=1").get() as {last_successful_update:unknown}).last_successful_update,null);
+    await shutdownRuns(db); db.close();
+  });
+  it("backfills unsupported scripts are rejected and publish is explicit", async () => {
+    const db = openDb("def run():\n    return 0\n");
+    assert.throws(() => enqueueBackfill(db,1,1,100,200,true), /interval support/);
+    db.prepare("UPDATE pipelines SET published_version_id=NULL WHERE id=1").run();
+    assert.throws(() => enqueueRun(db,{pipelineId:1,userId:1,trigger:"manual"}), /Publish/);
+    await shutdownRuns(db); db.close();
   });
 });

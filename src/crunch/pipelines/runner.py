@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         stream_max_seconds=int(job.get("stream_max_seconds") or 60),
         stream_max_messages=int(job.get("stream_max_messages") or 10_000),
         source_config=source_config,
+        runtime_config=job.get("runtime_config") or {},
         source_engine=source_engine,
     )
     timeout = int(job.get("timeout_seconds") or 1800)
@@ -83,7 +84,9 @@ def main(argv: list[str] | None = None) -> int:
         "rows": captured_rows,
     }
     result_path = Path(str(job_path) + ".result.json")
-    result_path.write_text(json.dumps(payload))
+    temporary = Path(str(result_path) + ".tmp")
+    temporary.write_text(json.dumps(payload, default=str))
+    temporary.replace(result_path)
     return 0 if result.success else 1
 
 
