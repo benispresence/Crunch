@@ -1,8 +1,16 @@
 name: Desktop Mac zips
 
 # Builds a downloadable Crunch.app zip per Mac architecture.
-#   macos-14 → Apple Silicon (arm64)
-#   macos-13 → Intel (x64)
+#
+# Both zips are built on macos-14 (Apple Silicon): the x64 one is a
+# cross-build. GitHub is retiring the macos-13 Intel image and jobs
+# targeting it can sit queued indefinitely — that left v1.1.1 with only
+# an arm64 zip until this was changed.
+#
+# Cross-building needs the target arch in two places: npm_config_arch,
+# so prebuild-install fetches the right better-sqlite3 binary for the
+# bundled backend/node_modules, and CRUNCH_PACK_ARCH, which pack-mac.mjs
+# uses for the bundled Node/CPython and the electron-builder target.
 #
 # Artifacts are named Crunch-<version>-mac-<arch>.zip.
 # On a version tag they are also attached to the GitHub Release.
@@ -25,7 +33,7 @@ jobs:
           - os: macos-14
             arch: arm64
             label: apple-silicon
-          - os: macos-13
+          - os: macos-14
             arch: x64
             label: intel
     runs-on: ${{ matrix.os }}
@@ -37,14 +45,42 @@ jobs:
           node-version: "22"
 
       - name: Install JS deps
+        env:
+          # better-sqlite3 is native and gets bundled into the app; this
+          # makes prebuild-install fetch the target arch's binary rather
+          # than the runner's.
+          npm_config_arch: ${{ matrix.arch }}
         run: |
           npm ci --prefix frontend
           npm ci --prefix backend
           npm ci --prefix desktop
 
       - name: Pack Mac zip (${{ matrix.label }})
+        env:
+          CRUNCH_PACK_ARCH: ${{ matrix.arch }}
         run: npm run pack:mac
         working-directory: desktop
+
+      # A cross-build that silently bundles the runner's own binaries
+      # would produce a zip that dies on launch, so check the three
+      # arch-specific payloads before the zip is published.
+      - name: Verify the bundled binaries are ${{ matrix.arch }}
+        env:
+          EXPECT: ${{ matrix.arch == 'x64' && 'x86_64' || 'arm64' }}
+        run: |
+          set -euo pipefail
+          app="$(find desktop/release -maxdepth 2 -name 'Crunch.app' -print -quit)"
+          [ -n "$app" ] || { echo "no Crunch.app under desktop/release"; exit 1; }
+          echo "checking $app (expecting $EXPECT)"
+          res="$app/Contents/Resources"
+          for f in "$res/node/bin/node" \
+                   "$res/python/bin/python3" \
+                   "$res/backend/node_modules/better-sqlite3/build/Release/better_sqlite3.node"; do
+            [ -e "$f" ] || { echo "missing: $f"; exit 1; }
+            echo "  $(basename "$f") -> $(file -b "$f")"
+            file -b "$f" | grep -q "$EXPECT" || { echo "WRONG ARCH: $f"; exit 1; }
+          done
+          echo "all bundled binaries are $EXPECT" 
 
       - name: Upload zip
         uses: actions/upload-artifact@v4
