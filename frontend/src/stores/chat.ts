@@ -185,12 +185,17 @@ export type Proposal =
         destination_connection_id: number | null;
         destination_dataset: string | null;
         load_mode: string;
+        extract_strategy?: string;
+        write_behavior?: string;
         primary_key: string | null;
         cursor_field: string | null;
         schedule: string | null;
         schedule_enabled: boolean;
         python_code: string;
         code_mode: string;
+        timezone?: string;
+        quality_checks?: unknown[];
+        tags?: string[];
       };
     }
   | {
@@ -432,6 +437,7 @@ export const useChatStore = defineStore("chat", {
         const dashboards = useDashboardsStore();
         const route = router.currentRoute.value;
         const activeDashboard = dashboards.current;
+        const pipelinesStore = usePipelinesStore();
         const workspace = {
           active_route: route.name as string | undefined,
           active_query_id: ws.activeQueryId,
@@ -448,6 +454,14 @@ export const useChatStore = defineStore("chat", {
           has_unsaved_changes: unsaved,
           last_result_columns: ws.result?.columns ?? undefined,
           last_result_row_count: ws.result?.row_count,
+          active_pipeline_id: pipelinesStore.current?.id ?? (
+            typeof route.params.id === "string" && route.name?.toString().startsWith("pipeline")
+              ? Number(route.params.id)
+              : null
+          ),
+          active_pipeline_name: pipelinesStore.current?.name ?? null,
+          active_run_id: pipelinesStore.runDetail?.id
+            ?? (typeof route.params.runId === "string" ? Number(route.params.runId) : null),
         };
         const stream = api.stream(
           "/chat/send",

@@ -4,24 +4,15 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import PipelineLogViewer from "@/components/PipelineLogViewer.vue";
 import { useTheme } from "@/composables/theme";
+import { useChatStore } from "@/stores/chat";
 import { usePipelinesStore, type PipelineRun } from "@/stores/pipelines";
 import { useWorkspaceStore, type SavedPipeline } from "@/stores/workspace";
-
-/**
- * Pipeline detail = config form + Monaco Python editor + run history.
- *
- * The editor is the heart of the page; it mirrors what queries +
- * visualizations get — same Monaco theme, same Ctrl-Enter to run.
- * When the pipeline is in ``code_mode='template'`` and any of the
- * form fields that feed the template change, we regenerate the body
- * via the engine and replace the editor contents. Switching to
- * "custom" freezes the user's edits.
- */
 
 const route = useRoute();
 const router = useRouter();
 const ws = useWorkspaceStore();
 const pipelines = usePipelinesStore();
+const chat = useChatStore();
 const { theme } = useTheme();
 const monacoTheme = computed(() => (theme.value === "light" ? "nicemeta-light" : "nicemeta-dark"));
 
@@ -33,28 +24,26 @@ const draft = ref<Partial<SavedPipeline> | null>(null);
 const saving = ref(false);
 const runError = ref("");
 const selectedRunId = ref<number | null>(null);
-
-const tab = ref<"config" | "code" | "history">("code");
-
-const cronHint = ref("");
+const tab = ref<"overview" | "runs" | "definition" | "versions" | "settings">("overview");
+const diffText = ref("");
+const backfillStart = ref("");
+const backfillEnd = ref("");
+const backfillWarning = ref("");
 
 onMounted(async () => {
-  await Promise.all([
-    ws.loadConnections(),
-    pipelines.open(pipelineId.value),
-  ]);
-  // Seed the draft with the current saved state.
-  if (pipelines.current) {
-    draft.value = { ...pipelines.current };
+  await Promise.all([ws.loadConnections(), pipelines.open(pipelineId.value)]);
+  if (pipelines.current) draft.value = { ...pipelines.current };
+  const runId = route.params.runId ? Number(route.params.runId) : null;
+  if (runId) {
+    tab.value = "runs";
+    selectedRunId.value = runId;
+    await pipelines.loadRun(pipelineId.value, runId);
   }
-  // Mount Monaco lazily so the panel grows into its container first.
   await new Promise((r) => requestAnimationFrame(r));
   mountEditor();
 });
 
-onBeforeUnmount(() => {
-  editor?.dispose();
-});
+onBeforeUnmount(() => { editor?.dispose(); });
 
 function mountEditor() {
   if (!editorHost.value || editor) return;
@@ -74,61 +63,16 @@ function mountEditor() {
     if (!draft.value) return;
     draft.value.python_code = editor!.getValue();
   });
-  editor.addAction({
-    id: "run-pipeline",
-    label: "Run pipeline",
-    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
-    run: () => void runPipeline(),
-  });
 }
-
 watch(monacoTheme, (t) => monaco.editor.setTheme(t));
-
-/** Re-derive the auto-generated template when any field that feeds it
- *  changes — but only while the user is in template mode. Otherwise
- *  we'd clobber custom edits on every keystroke. */
-const templateInputs = computed(() => {
-  if (!draft.value) return "";
-  return JSON.stringify({
-    name: draft.value.name,
-    source_type: draft.value.source_type,
-    source_config: draft.value.source_config,
-    destination_connection_id: draft.value.destination_connection_id,
-    destination_dataset: draft.value.destination_dataset,
-    load_mode: draft.value.load_mode,
-    primary_key: draft.value.primary_key,
-    cursor_field: draft.value.cursor_field,
-  });
-});
-
-const templateRegenTimer = ref<number | null>(null);
-
 watch(
-  templateInputs,
-  () => {
-    if (!draft.value || draft.value.code_mode !== "template") return;
-    if (templateRegenTimer.value != null) {
-      window.clearTimeout(templateRegenTimer.value);
-    }
-    // Debounce so typing the destination_dataset isn't a regen storm.
-    templateRegenTimer.value = window.setTimeout(() => {
-      void regenerateTemplate();
-    }, 400);
+  () => draft.value?.python_code,
+  (code) => {
+    if (editor && code != null && editor.getValue() !== code) editor.setValue(code);
   },
 );
 
-async function regenerateTemplate() {
-  if (!draft.value) return;
-  try {
-    const code = await pipelines.previewTemplate(draft.value);
-    draft.value.python_code = code;
-    if (editor) editor.setValue(code);
-  } catch (e) {
-    runError.value = (e as Error).message;
-  }
-}
-
-async function save() {
+async function saveDraft() {
   if (!draft.value) return;
   saving.value = true;
   runError.value = "";
@@ -142,16 +86,49 @@ async function save() {
   }
 }
 
-async function runPipeline() {
-  if (!draft.value) return;
-  // Always save first so the run uses the latest code/config — silent
-  // surprises ("I changed the code but it ran the old one") are the
-  // worst part of these editors otherwise.
-  await save();
+async function publish() {
+  await saveDraft();
   try {
-    await pipelines.run(pipelineId.value);
-    selectedRunId.value = pipelines.runs[0]?.id ?? null;
-    tab.value = "history";
+    await pipelines.publish(pipelineId.value);
+  } catch (e) {
+    runError.value = (e as Error).message;
+  }
+}
+
+async function runPublished() {
+  try {
+    const r = await pipelines.run(pipelineId.value);
+    selectedRunId.value = r.id;
+    tab.value = "runs";
+    await pipelines.loadRun(pipelineId.value, r.id);
+  } catch (e) {
+    runError.value = (e as Error).message;
+  }
+}
+
+async function testDraft() {
+  await saveDraft();
+  try {
+    const r = await pipelines.testDraft(pipelineId.value);
+    selectedRunId.value = r.id;
+    tab.value = "runs";
+  } catch (e) {
+    runError.value = (e as Error).message;
+  }
+}
+
+async function convertToCustom() {
+  if (!draft.value) return;
+  draft.value.code_mode = "custom";
+  await pipelines.update(pipelineId.value, { code_mode: "custom", convert_to_custom: true } as Partial<SavedPipeline>);
+}
+
+async function regenerateGenerated() {
+  if (!draft.value || draft.value.code_mode === "custom") return;
+  try {
+    const code = await pipelines.previewTemplate(draft.value);
+    draft.value.python_code = code;
+    if (editor) editor.setValue(code);
   } catch (e) {
     runError.value = (e as Error).message;
   }
@@ -160,73 +137,111 @@ async function runPipeline() {
 async function selectRun(run: PipelineRun) {
   selectedRunId.value = run.id;
   await pipelines.loadRun(pipelineId.value, run.id);
+  router.replace({ name: "pipeline-run", params: { id: pipelineId.value, runId: run.id } });
 }
 
-function fmtDate(ts: number | null): string {
+async function retry() {
+  if (!selectedRunId.value) return;
+  await pipelines.retryRun(pipelineId.value, selectedRunId.value);
+  await pipelines.loadRuns(pipelineId.value);
+}
+async function pauseSchedule() {
+  await pipelines.pause(pipelineId.value, true);
+}
+function viewLogs() {
+  document.querySelector(".run-detail")?.scrollIntoView({ behavior: "smooth" });
+}
+async function askAiInvestigate() {
+  const run = selectedRunId.value;
+  await chat.send(
+    `Investigate pipeline ${pipelineId.value} run ${run ?? ""}. Use get_pipeline_run_logs and diagnose_pipeline_failure. Cite log evidence and say whether the cause is likely or confirmed.`,
+  );
+}
+async function restore(versionId: number) {
+  await pipelines.restoreVersion(pipelineId.value, versionId);
+  if (pipelines.current) draft.value = { ...pipelines.current };
+  tab.value = "definition";
+}
+async function showDiff(fromId: number, toId: number) {
+  const d = await pipelines.versionDiff(pipelineId.value, fromId, toId);
+  diffText.value = [
+    ...d.config_diff.map((c) => `${c.path}: ${JSON.stringify(c.before)} → ${JSON.stringify(c.after)}`),
+    d.code_diff.changed ? "code changed" : "code unchanged",
+  ].join("\n");
+}
+
+async function requestBackfill() {
+  const start = Math.floor(new Date(backfillStart.value).getTime() / 1000);
+  const end = Math.floor(new Date(backfillEnd.value).getTime() / 1000);
+  const r = await pipelines.backfill(pipelineId.value, start, end, false) as { warning?: string; needs_confirm?: boolean };
+  backfillWarning.value = r.warning || JSON.stringify(r);
+}
+async function confirmBackfill() {
+  const start = Math.floor(new Date(backfillStart.value).getTime() / 1000);
+  const end = Math.floor(new Date(backfillEnd.value).getTime() / 1000);
+  await pipelines.backfill(pipelineId.value, start, end, true);
+  backfillWarning.value = "";
+  tab.value = "runs";
+}
+
+function fmtDate(ts: number | null | undefined): string {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleString();
 }
-
 function fmtDuration(start: number, end: number | null): string {
   if (!end) return "running…";
   const secs = end - start;
   if (secs < 60) return `${secs}s`;
   return `${Math.floor(secs / 60)}m ${secs % 60}s`;
 }
-
-function statusColor(s: string | null): string {
+function statusColor(s: string | null | undefined): string {
   switch (s) {
-    case "success": return "ok";
-    case "failed": return "err";
-    case "running": return "running";
+    case "success":
+    case "healthy":
+    case "fresh": return "ok";
+    case "failed":
+    case "stale": return "err";
+    case "running":
+    case "queued": return "running";
     default: return "muted";
   }
 }
 
 const currentRun = computed(() => pipelines.runDetail ?? null);
+const p = computed(() => pipelines.current);
 
-function setLoadMode(m: "replace" | "append" | "merge" | "incremental" | "streaming") {
-  if (!draft.value) return;
-  draft.value.load_mode = m;
+function ensureSourceConfig() {
+  if (!draft.value) return {};
+  if (!draft.value.source_config) draft.value.source_config = {};
+  return draft.value.source_config as Record<string, unknown>;
 }
-
-function setSchedulePreset(preset: string) {
-  if (!draft.value) return;
-  draft.value.schedule = preset;
-  draft.value.schedule_enabled = true;
-}
-
-const dirty = computed(() => {
-  if (!draft.value || !pipelines.current) return false;
-  return JSON.stringify(draft.value) !== JSON.stringify(pipelines.current);
-});
 </script>
 
 <template>
   <div v-if="draft" class="detail">
     <header class="detail__head">
       <div class="detail__head-left">
-        <button class="btn btn-ghost btn-sm" @click="router.push({ name: 'pipelines' })">
-          ← Pipelines
-        </button>
+        <button class="btn btn-ghost btn-sm" @click="router.push({ name: 'pipelines' })">← Pipelines</button>
         <input v-model="draft.name" class="detail__name" />
-        <span
-          v-if="draft.last_run_status"
-          class="detail__status"
-          :class="`detail__status--${statusColor(draft.last_run_status)}`"
-        >{{ draft.last_run_status }}</span>
-        <span v-if="dirty" class="detail__dirty">•</span>
+        <span v-if="p?.execution_health" class="detail__status" :class="`detail__status--${statusColor(p.execution_health)}`">
+          {{ p.execution_health }}
+        </span>
+        <span v-if="p?.freshness" class="detail__status" :class="`detail__status--${statusColor(p.freshness)}`">
+          {{ p.freshness }}
+        </span>
       </div>
       <div class="detail__head-right">
-        <button class="btn btn-ghost btn-sm" :disabled="saving" @click="save">
-          {{ saving ? "Saving…" : "Save" }}
+        <button class="btn btn-ghost btn-sm" :disabled="saving" @click="saveDraft">
+          {{ saving ? "Saving…" : "Save draft" }}
         </button>
+        <button class="btn btn-sm" @click="testDraft">Test draft</button>
+        <button class="btn btn-sm" @click="publish">Publish</button>
         <button
           class="btn btn-primary btn-sm"
           :disabled="pipelines.running || !draft.destination_connection_id"
-          @click="runPipeline"
+          @click="runPublished"
         >
-          {{ pipelines.running ? "Running…" : "Run pipeline" }}
+          {{ pipelines.running ? "Queuing…" : "Run published version" }}
         </button>
       </div>
     </header>
@@ -234,20 +249,193 @@ const dirty = computed(() => {
     <p v-if="runError" class="detail__error">{{ runError }}</p>
 
     <div class="detail__tabs">
-      <button class="detail__tab" :class="{ 'detail__tab--active': tab === 'config' }" @click="tab = 'config'">Configuration</button>
-      <button class="detail__tab" :class="{ 'detail__tab--active': tab === 'code' }" @click="tab = 'code'">Python script</button>
-      <button class="detail__tab" :class="{ 'detail__tab--active': tab === 'history' }" @click="tab = 'history'">Run history</button>
+      <button class="detail__tab" :class="{ 'detail__tab--active': tab === 'overview' }" @click="tab = 'overview'">Overview</button>
+      <button class="detail__tab" :class="{ 'detail__tab--active': tab === 'runs' }" @click="tab = 'runs'">Runs</button>
+      <button class="detail__tab" :class="{ 'detail__tab--active': tab === 'definition' }" @click="tab = 'definition'">Definition</button>
+      <button class="detail__tab" :class="{ 'detail__tab--active': tab === 'versions' }" @click="tab = 'versions'">Versions</button>
+      <button class="detail__tab" :class="{ 'detail__tab--active': tab === 'settings' }" @click="tab = 'settings'">Settings</button>
     </div>
 
-    <!-- Config form -->
-    <section v-show="tab === 'config'" class="detail__panel detail__panel--scroll">
-      <div class="grid">
-        <label class="field field--full">
-          <span>Description</span>
-          <textarea v-model="draft.description" rows="2" placeholder="What does this pipeline load?"></textarea>
-        </label>
+    <!-- Overview -->
+    <section v-show="tab === 'overview'" class="detail__panel detail__panel--scroll">
+      <p class="lede">
+        {{ draft.description || "No description yet — this pipeline moves data from source to destination." }}
+      </p>
+      <div class="flow">
+        <div class="flow__step">
+          <strong>Source</strong>
+          <span>{{ draft.source_type }}{{ p?.source?.name ? ` · ${p.source.name}` : "" }}</span>
+        </div>
+        <span class="flow__arrow">→</span>
+        <div class="flow__step">
+          <strong>Processing</strong>
+          <span>{{ draft.extract_strategy || "full" }} extract · {{ draft.write_behavior || draft.load_mode }} write</span>
+        </div>
+        <span class="flow__arrow">→</span>
+        <div class="flow__step">
+          <strong>Destination</strong>
+          <span>{{ p?.destination?.name || "—" }} / {{ draft.destination_dataset || "—" }}</span>
+        </div>
       </div>
+      <dl class="meta">
+        <div><dt>Last successful update</dt><dd>{{ fmtDate(p?.last_successful_update ?? null) }}</dd></div>
+        <div><dt>Next run</dt><dd>{{ fmtDate(pipelines.nextRuns[0] ?? p?.next_run ?? null) }} ({{ draft.timezone || "UTC" }})</dd></div>
+        <div><dt>Current activity</dt><dd>{{ p?.attention || p?.last_run_status || "idle" }}</dd></div>
+        <div><dt>Published version</dt><dd>{{ p?.published_version ? `v${p.published_version.version_number}` : "none" }}</dd></div>
+      </dl>
+      <h3>Recent runs</h3>
+      <div class="strip">
+        <button
+          v-for="r in (p?.recent_runs || [])"
+          :key="r.id"
+          class="dot"
+          :class="`dot--${r.status}`"
+          @click="selectedRunId = r.id; tab = 'runs'; pipelines.loadRun(pipelineId, r.id)"
+        >{{ r.status }}</button>
+      </div>
+      <div v-if="p?.last_failed_run_id" class="failbox">
+        Unresolved failure on run #{{ p.last_failed_run_id }}.
+        <button class="btn btn-sm" @click="selectedRunId = p.last_failed_run_id!; tab = 'runs'; pipelines.loadRun(pipelineId, p.last_failed_run_id!)">Open run</button>
+      </div>
+      <h3>Output tables and quality checks</h3>
+      <ul class="checks">
+        <li v-for="(c, i) in (draft.quality_checks || [])" :key="i">
+          {{ (c as any).type }} {{ (c as any).column || "" }}
+        </li>
+        <li v-if="!(draft.quality_checks || []).length" class="muted">No checks configured yet.</li>
+      </ul>
+      <h3>Affected dashboards</h3>
+      <ul class="checks">
+        <li v-for="d in (p?.feeds?.dashboards || [])" :key="d.id">{{ d.name }}</li>
+        <li v-for="q in (p?.feeds?.queries || [])" :key="'q'+q.id">Query: {{ q.name }}</li>
+        <li v-if="!(p?.feeds?.dashboards || []).length && !(p?.feeds?.queries || []).length" class="muted">
+          No queries or dashboards currently reference this pipeline's dataset.
+        </li>
+      </ul>
+    </section>
 
+    <!-- Runs -->
+    <section v-show="tab === 'runs'" class="detail__panel detail__panel--scroll">
+      <ul class="runs">
+        <li v-if="pipelines.runs.length === 0" class="runs__empty">No runs yet.</li>
+        <li
+          v-for="run in pipelines.runs"
+          :key="run.id"
+          class="runs__row"
+          :class="{ 'runs__row--active': selectedRunId === run.id }"
+          @click="selectRun(run)"
+        >
+          <span class="runs__status" :class="`runs__status--${statusColor(run.status)}`">{{ run.status }}</span>
+          <span>{{ fmtDate(run.started_at) }}</span>
+          <span>{{ fmtDuration(run.started_at, run.finished_at) }}</span>
+          <span>{{ run.rows_loaded ?? "—" }} rows</span>
+          <span>{{ run.triggered_by }}</span>
+          <span v-if="run.version_id">v{{ run.version_id }}</span>
+        </li>
+      </ul>
+
+      <div v-if="currentRun" class="run-detail">
+        <div v-if="currentRun.status === 'failed' && currentRun.explanation" class="fail-explain">
+          <h4>{{ currentRun.explanation.headline }}</h4>
+          <p>{{ currentRun.explanation.explanation }}</p>
+          <p class="muted">Cause is <strong>{{ currentRun.explanation.confidence }}</strong>.</p>
+          <ul v-if="currentRun.explanation.evidence?.length" class="evidence">
+            <li v-for="(e, i) in currentRun.explanation.evidence" :key="i">
+              <code>{{ e.line }}</code>
+            </li>
+          </ul>
+          <div class="fail-actions">
+            <button class="btn btn-sm" @click="retry">Retry</button>
+            <button class="btn btn-sm" @click="askAiInvestigate">Ask AI to investigate</button>
+            <button class="btn btn-sm" @click="viewLogs">View logs</button>
+            <button class="btn btn-sm" @click="pauseSchedule">Pause schedule</button>
+          </div>
+        </div>
+        <div v-else class="fail-actions">
+          <button class="btn btn-sm" @click="retry">Retry</button>
+          <button class="btn btn-sm" @click="askAiInvestigate">Ask AI to investigate</button>
+          <button class="btn btn-sm" @click="viewLogs">View logs</button>
+          <button class="btn btn-sm" @click="pauseSchedule">Pause schedule</button>
+        </div>
+        <h4>Run #{{ currentRun.id }} — {{ currentRun.status }}</h4>
+        <dl class="meta">
+          <div><dt>Version</dt><dd>{{ currentRun.version_id ?? "draft" }}</dd></div>
+          <div><dt>Trigger</dt><dd>{{ currentRun.triggered_by }}</dd></div>
+          <div><dt>Attempts</dt><dd>{{ currentRun.attempt_number ?? 1 }}</dd></div>
+          <div><dt>Queued</dt><dd>{{ fmtDate((currentRun.timestamps as any)?.queued_at) }}</dd></div>
+          <div><dt>Started</dt><dd>{{ fmtDate(currentRun.started_at) }}</dd></div>
+          <div><dt>Finished</dt><dd>{{ fmtDate(currentRun.finished_at) }}</dd></div>
+          <div v-if="currentRun.processing_interval">
+            <dt>Processing interval</dt>
+            <dd>{{ fmtDate(currentRun.processing_interval.start) }} → {{ fmtDate(currentRun.processing_interval.end) }}</dd>
+          </div>
+          <div><dt>Rows</dt><dd>{{ currentRun.output_metrics?.rows_loaded ?? currentRun.rows_loaded ?? "—" }}</dd></div>
+        </dl>
+        <div v-if="currentRun.attempts?.length">
+          <h4>Attempts</h4>
+          <ul class="attempts">
+            <li v-for="a in currentRun.attempts" :key="String(a.id)">
+              #{{ a.attempt_number }} {{ a.status }} — {{ a.error_message || "ok" }}
+            </li>
+          </ul>
+        </div>
+        <PipelineLogViewer
+          :log="currentRun.log || ''"
+          :status="currentRun.status"
+          :error-message="currentRun.error_message"
+        />
+      </div>
+    </section>
+
+    <!-- Definition -->
+    <section v-show="tab === 'definition'" class="detail__panel detail__panel--code">
+      <div class="detail__code-bar">
+        <span v-if="draft.code_mode === 'template'" class="generated">
+          Generated code — configuration changes do not overwrite custom Python.
+          <button class="btn btn-ghost btn-sm" @click="regenerateGenerated">Regenerate from configuration</button>
+          <button class="btn btn-sm" @click="convertToCustom">Convert to custom code</button>
+        </span>
+        <span v-else>
+          Custom code — frozen. Configuration changes will not overwrite these edits.
+        </span>
+      </div>
+      <div ref="editorHost" class="detail__editor"></div>
+    </section>
+
+    <!-- Versions -->
+    <section v-show="tab === 'versions'" class="detail__panel detail__panel--scroll">
+      <ul class="versions">
+        <li v-for="v in pipelines.versions" :key="v.id" class="versions__row">
+          <strong>v{{ v.version_number }}</strong>
+          <span>{{ v.change_summary }}</span>
+          <span>{{ fmtDate(v.created_at) }}</span>
+          <span>{{ v.extract_strategy }} / {{ v.write_behavior }}</span>
+          <button
+            v-if="pipelines.versions[0] && v.id !== pipelines.versions[0].id"
+            class="btn btn-ghost btn-sm"
+            @click="showDiff(v.id, pipelines.versions[0]!.id)"
+          >Diff vs latest</button>
+          <button class="btn btn-sm" @click="restore(v.id)">Restore as new draft</button>
+        </li>
+        <li v-if="pipelines.versions.length === 0" class="muted">No published versions yet.</li>
+      </ul>
+      <pre v-if="diffText" class="diff">{{ diffText }}</pre>
+      <h3>Activity</h3>
+      <button class="btn btn-ghost btn-sm" @click="pipelines.loadActivity(pipelineId)">Refresh activity</button>
+      <ul class="activity">
+        <li v-for="a in pipelines.activity" :key="String(a.id)">
+          {{ a.action }} · {{ fmtDate(a.created_at as number) }}
+        </li>
+      </ul>
+    </section>
+
+    <!-- Settings -->
+    <section v-show="tab === 'settings'" class="detail__panel detail__panel--scroll">
+      <h3>What data would you like to bring into Crunch?</h3>
+      <label class="field field--full">
+        <span>Description</span>
+        <textarea v-model="draft.description" rows="2"></textarea>
+      </label>
       <h3>Source</h3>
       <div class="grid">
         <label class="field">
@@ -257,122 +445,81 @@ const dirty = computed(() => {
             <option value="rest_api">REST API</option>
             <option value="sql">SQL replication</option>
             <option value="file">File</option>
-            <option value="kafka">Kafka (streaming)</option>
+            <option value="kafka">Kafka</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Source connection</span>
+          <select v-model="draft.source_connection_id">
+            <option :value="null">(none — use config)</option>
+            <option v-for="c in ws.connections" :key="c.id" :value="c.id">{{ c.name }}</option>
           </select>
         </label>
         <label v-if="draft.source_type === 'rest_api'" class="field field--full">
           <span>Base URL</span>
-          <input v-model="(draft.source_config as any).base_url" placeholder="https://api.stripe.com/v1" />
-        </label>
-        <label v-if="draft.source_type === 'rest_api'" class="field">
-          <span>Path</span>
-          <input v-model="(draft.source_config as any).path" placeholder="/customers" />
-        </label>
-        <label v-if="draft.source_type === 'rest_api'" class="field">
-          <span>Auth header</span>
-          <input v-model="(draft.source_config as any).auth_header" placeholder="Bearer sk_…" type="password" />
-        </label>
-
-        <label v-if="draft.source_type === 'sql'" class="field field--full">
-          <span>Source connection URL</span>
-          <input v-model="(draft.source_config as any).connection_url" placeholder="postgresql://…" />
+          <input :value="String(ensureSourceConfig().base_url ?? '')" @input="ensureSourceConfig().base_url = ($event.target as HTMLInputElement).value" />
         </label>
         <label v-if="draft.source_type === 'sql'" class="field field--full">
           <span>Query</span>
-          <textarea v-model="(draft.source_config as any).query" rows="3" placeholder="SELECT * FROM source.orders" />
-        </label>
-
-        <label v-if="draft.source_type === 'file'" class="field field--full">
-          <span>File path or glob</span>
-          <input v-model="(draft.source_config as any).path" placeholder="/data/orders/*.parquet" />
-        </label>
-
-        <label v-if="draft.source_type === 'kafka'" class="field">
-          <span>Brokers</span>
-          <input v-model="(draft.source_config as any).brokers" placeholder="kafka1:9092,kafka2:9092" />
-        </label>
-        <label v-if="draft.source_type === 'kafka'" class="field">
-          <span>Topic</span>
-          <input v-model="(draft.source_config as any).topic" placeholder="events" />
-        </label>
-        <label v-if="draft.source_type === 'kafka'" class="field">
-          <span>Consumer group</span>
-          <input v-model="(draft.source_config as any).group_id" placeholder="crunch-consumer" />
+          <textarea :value="String(ensureSourceConfig().query ?? '')" rows="3" @input="ensureSourceConfig().query = ($event.target as HTMLTextAreaElement).value" />
         </label>
       </div>
-
       <h3>Destination</h3>
       <div class="grid">
         <label class="field">
           <span>Connection</span>
           <select v-model="draft.destination_connection_id">
             <option :value="null">(pick a connection)</option>
-            <option v-for="c in ws.connections" :key="c.id" :value="c.id">
-              {{ c.name }} — {{ c.type }}
-            </option>
+            <option v-for="c in ws.connections" :key="'d'+c.id" :value="c.id">{{ c.name }} — {{ c.type }}</option>
           </select>
         </label>
         <label class="field">
           <span>Dataset / schema</span>
-          <input v-model="draft.destination_dataset" placeholder="raw" />
+          <input v-model="draft.destination_dataset" />
+        </label>
+        <label class="field">
+          <span>Scratch destination (for Test draft)</span>
+          <select v-model="draft.scratch_destination_connection_id">
+            <option :value="null">(required for Test draft)</option>
+            <option v-for="c in ws.connections" :key="'s'+c.id" :value="c.id">{{ c.name }}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Scratch dataset</span>
+          <input v-model="draft.scratch_destination_dataset" placeholder="scratch" />
         </label>
       </div>
-
-      <h3>Load mode</h3>
+      <h3>Extract strategy</h3>
       <div class="modes">
-        <button
-          v-for="m in (['replace','append','merge','incremental','streaming'] as const)"
-          :key="m"
-          class="mode"
-          :class="{ 'mode--on': draft.load_mode === m }"
-          @click="setLoadMode(m)"
-        >
-          <strong>{{ m }}</strong>
-          <small>{{ ({
-            replace: 'Full load — truncate and re-ingest every run.',
-            append: 'Batch append — adds rows on each run.',
-            merge: 'Delta — upserts by primary key.',
-            incremental: 'Only new rows since the last cursor value.',
-            streaming: 'Bounded streaming — consume for N seconds / messages.',
-          } as Record<string, string>)[m] }}</small>
-        </button>
+        <button v-for="m in (['full','incremental','streaming'] as const)" :key="m"
+          class="mode" :class="{ 'mode--on': draft.extract_strategy === m }"
+          @click="draft.extract_strategy = m">{{ m }}</button>
       </div>
-      <div v-if="draft.load_mode === 'merge'" class="grid">
-        <label class="field field--full">
-          <span>Primary key(s) — comma-separated</span>
-          <input v-model="draft.primary_key" placeholder="id" />
-        </label>
+      <h3>Write behavior</h3>
+      <div class="modes">
+        <button v-for="m in (['replace','append','merge'] as const)" :key="m"
+          class="mode" :class="{ 'mode--on': draft.write_behavior === m }"
+          @click="draft.write_behavior = m">{{ m }}</button>
       </div>
-      <div v-if="draft.load_mode === 'incremental'" class="grid">
-        <label class="field field--full">
-          <span>Cursor field</span>
-          <input v-model="draft.cursor_field" placeholder="updated_at" />
-        </label>
-      </div>
-      <div v-if="draft.load_mode === 'streaming'" class="grid">
+      <div class="grid">
         <label class="field">
-          <span>Max wall-clock (seconds)</span>
-          <input v-model.number="draft.stream_max_seconds" type="number" min="1" />
+          <span>Primary key (merge)</span>
+          <input v-model="draft.primary_key" />
         </label>
         <label class="field">
-          <span>Max messages</span>
-          <input v-model.number="draft.stream_max_messages" type="number" min="1" />
+          <span>Cursor field (incremental)</span>
+          <input v-model="draft.cursor_field" />
         </label>
       </div>
-
       <h3>Schedule</h3>
       <div class="grid">
-        <label class="field field--full">
-          <span>Cron expression (5 fields)</span>
-          <input v-model="draft.schedule" placeholder="0 */6 * * *  (every 6 hours)" />
-          <small>
-            Presets:
-            <button class="preset" type="button" @click="setSchedulePreset('*/10 * * * *')">every 10m</button>
-            <button class="preset" type="button" @click="setSchedulePreset('0 * * * *')">hourly</button>
-            <button class="preset" type="button" @click="setSchedulePreset('0 */6 * * *')">every 6h</button>
-            <button class="preset" type="button" @click="setSchedulePreset('0 2 * * *')">daily 02:00</button>
-            <button class="preset" type="button" @click="setSchedulePreset('0 2 * * 1')">Mondays</button>
-          </small>
+        <label class="field">
+          <span>Cron</span>
+          <input v-model="draft.schedule" placeholder="0 * * * *" />
+        </label>
+        <label class="field">
+          <span>Timezone</span>
+          <input v-model="draft.timezone" placeholder="UTC" />
         </label>
         <label class="field">
           <span>Enabled</span>
@@ -381,365 +528,112 @@ const dirty = computed(() => {
             <span>{{ draft.schedule_enabled ? "scheduler will fire" : "paused" }}</span>
           </label>
         </label>
+        <label class="field">
+          <span>Freshness threshold (seconds)</span>
+          <input v-model.number="draft.freshness_threshold_seconds" type="number" />
+        </label>
       </div>
-      <div v-if="pipelines.nextRuns.length > 0 && draft.schedule_enabled" class="schedule-preview">
-        <strong>Next runs:</strong>
-        <span v-for="(ts, i) in pipelines.nextRuns" :key="i">{{ fmtDate(ts) }}</span>
+      <h3>Quality checks</h3>
+      <p class="muted">unique / not_null / accepted_values / freshness / row_count — stored as JSON.</p>
+      <textarea
+        class="json"
+        :value="JSON.stringify(draft.quality_checks || [], null, 2)"
+        rows="6"
+        @change="draft.quality_checks = JSON.parse(($event.target as HTMLTextAreaElement).value || '[]')"
+      />
+      <h3>Backfill</h3>
+      <div class="grid">
+        <label class="field"><span>From</span><input v-model="backfillStart" type="datetime-local" /></label>
+        <label class="field"><span>To</span><input v-model="backfillEnd" type="datetime-local" /></label>
       </div>
-
-      <h3>Code mode</h3>
-      <p class="hint">
-        <strong>Template</strong>: Crunch re-derives the Python from this form on every save.
-        <strong>Custom</strong>: your edits are preserved verbatim — switch here once you've
-        tailored the starter script.
-      </p>
-      <div class="modes modes--narrow">
-        <button class="mode" :class="{ 'mode--on': draft.code_mode === 'template' }" @click="draft.code_mode = 'template'">
-          <strong>template</strong>
-          <small>regenerate from form fields</small>
-        </button>
-        <button class="mode" :class="{ 'mode--on': draft.code_mode === 'custom' }" @click="draft.code_mode = 'custom'">
-          <strong>custom</strong>
-          <small>freeze edits</small>
-        </button>
-      </div>
-    </section>
-
-    <!-- Python script -->
-    <section v-show="tab === 'code'" class="detail__panel detail__panel--code">
-      <div class="detail__code-bar">
-        <span class="detail__hint">
-          <code>ctx</code> = destination + bounds · ⌘+Enter to run.
-          <span v-if="draft.code_mode === 'template'">Template mode — edits are overwritten on save.</span>
-        </span>
-      </div>
-      <div ref="editorHost" class="detail__editor"></div>
-    </section>
-
-    <!-- Run history -->
-    <section v-show="tab === 'history'" class="detail__panel detail__panel--scroll">
-      <ul class="runs">
-        <li v-if="pipelines.runs.length === 0" class="runs__empty">
-          No runs yet — hit <strong>Run pipeline</strong> to do the first one.
-        </li>
-        <li
-          v-for="run in pipelines.runs"
-          :key="run.id"
-          class="runs__row"
-          :class="{ 'runs__row--active': selectedRunId === run.id }"
-          @click="selectRun(run)"
-        >
-          <span class="runs__status" :class="`runs__status--${statusColor(run.status)}`">{{ run.status }}</span>
-          <span class="runs__time">{{ fmtDate(run.started_at) }}</span>
-          <span class="runs__duration">{{ fmtDuration(run.started_at, run.finished_at) }}</span>
-          <span class="runs__rows">{{ run.rows_loaded ?? "—" }} rows</span>
-          <span class="runs__trigger">{{ run.triggered_by }}</span>
-        </li>
-      </ul>
-
-      <div v-if="currentRun" class="run-detail">
-        <h4>Run #{{ currentRun.id }} — {{ currentRun.status }}</h4>
-        <PipelineLogViewer
-          :log="currentRun.log || ''"
-          :status="currentRun.status"
-          :error-message="currentRun.error_message"
-        />
+      <button class="btn btn-sm" type="button" @click="requestBackfill">Preview overwrite/duplicate implications</button>
+      <p v-if="backfillWarning" class="warn">{{ backfillWarning }}</p>
+      <button v-if="backfillWarning" class="btn btn-primary btn-sm" type="button" @click="confirmBackfill">Confirm backfill</button>
+      <div class="save-row">
+        <button class="btn btn-primary btn-sm" @click="saveDraft">Save draft</button>
       </div>
     </section>
   </div>
 </template>
 
 <style scoped>
-.detail {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-}
+.detail { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
 .detail__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 24px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-elev);
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 24px; border-bottom: 1px solid var(--border); background: var(--bg-elev);
 }
-.detail__head-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+.detail__head-left, .detail__head-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .detail__name {
-  font-family: var(--font-serif);
-  font-size: 17px;
-  font-weight: 500;
-  background: transparent;
-  border: none;
-  color: var(--fg);
-  outline: none;
-  min-width: 280px;
-  padding: 4px 6px;
+  font-family: var(--font-serif); font-size: 17px; font-weight: 500;
+  background: transparent; border: none; color: var(--fg); outline: none; min-width: 220px;
 }
-.detail__name:focus { background: var(--bg); border-radius: var(--radius-sm); }
 .detail__status {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 2px 8px;
-  border-radius: 999px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 2px 8px; border-radius: 999px;
 }
 .detail__status--ok { background: rgba(127, 176, 105, 0.14); color: var(--success); }
 .detail__status--err { background: rgba(224, 122, 95, 0.14); color: var(--error); }
 .detail__status--running { background: var(--accent-subtle); color: var(--accent); }
 .detail__status--muted { background: var(--bg); color: var(--fg-subtle); }
-.detail__dirty { color: var(--accent); font-size: 18px; }
-.detail__head-right { display: flex; gap: 6px; }
-.detail__error {
-  margin: 0;
-  padding: 8px 24px;
-  background: rgba(220, 80, 80, 0.08);
-  color: var(--error);
-  font-size: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.detail__tabs {
-  display: flex;
-  gap: 4px;
-  padding: 8px 24px 0;
-  border-bottom: 1px solid var(--border);
-}
+.detail__error { margin: 0; padding: 8px 24px; background: rgba(220, 80, 80, 0.08); color: var(--error); font-size: 12px; }
+.detail__tabs { display: flex; gap: 4px; padding: 8px 24px 0; border-bottom: 1px solid var(--border); }
 .detail__tab {
-  padding: 7px 14px;
-  font-size: 12.5px;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
+  padding: 7px 14px; font-size: 12.5px; background: transparent; border: none;
+  border-bottom: 2px solid transparent; color: var(--fg-muted); cursor: pointer;
 }
-.detail__tab--active {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
-}
-
-.detail__panel {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.detail__panel--scroll {
-  overflow-y: auto;
-  padding: 16px 24px 32px;
-}
-.detail__panel--code {
-  display: flex;
-}
-.detail__code-bar {
-  padding: 6px 16px;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
-  font-size: 11.5px;
-  color: var(--fg-subtle);
-}
-.detail__hint code { font-family: var(--font-mono); }
+.detail__tab--active { color: var(--fg); border-bottom-color: var(--accent); }
+.detail__panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.detail__panel--scroll { overflow-y: auto; padding: 16px 24px 32px; }
+.detail__panel--code { display: flex; }
+.detail__code-bar { padding: 6px 16px; background: var(--bg-elev); border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--fg-subtle); display: flex; gap: 8px; align-items: center; }
 .detail__editor { flex: 1; min-height: 0; }
-
-h3 {
-  font-family: var(--font-serif);
-  font-size: 14px;
-  font-weight: 500;
-  margin: 24px 0 10px;
+.lede { font-size: 14px; color: var(--fg-muted); }
+.flow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+.flow__step { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; display: grid; gap: 4px; }
+.flow__step strong { font-size: 11px; text-transform: uppercase; color: var(--fg-subtle); }
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.meta dt { font-size: 11px; color: var(--fg-subtle); }
+.meta dd { margin: 2px 0 0; }
+.strip { display: flex; gap: 6px; flex-wrap: wrap; }
+.dot { border: none; padding: 4px 8px; border-radius: 4px; font-size: 10px; cursor: pointer; text-transform: uppercase; }
+.dot--success { background: rgba(127, 176, 105, 0.14); color: var(--success); }
+.dot--failed { background: rgba(224, 122, 95, 0.14); color: var(--error); }
+.dot--running { background: var(--accent-subtle); color: var(--accent); }
+.failbox, .fail-explain {
+  background: rgba(224, 122, 95, 0.08); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 12px; margin: 12px 0;
 }
-h3:first-of-type { margin-top: 8px; }
-
-.grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-.field {
-  display: grid;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-.field--full { grid-column: 1 / -1; }
-.field input,
-.field select,
-.field textarea {
-  font-size: 13px;
-  padding: 6px 8px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--fg);
-  font-family: inherit;
-}
-.field small {
-  font-size: 11px;
-  color: var(--fg-subtle);
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-.preset {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 10px;
-  cursor: pointer;
-  color: var(--fg-muted);
-}
-.preset:hover { color: var(--fg); border-color: var(--accent-border); }
-.toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  padding: 6px 0;
-}
-
-.modes {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.modes--narrow { grid-template-columns: repeat(2, 200px); }
-.mode {
-  display: grid;
-  gap: 4px;
-  text-align: left;
-  padding: 10px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  color: var(--fg);
-  transition: border-color 120ms, background 120ms;
-}
-.mode strong {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-muted);
-}
-.mode small { font-size: 11px; color: var(--fg-subtle); line-height: 1.4; }
-.mode:hover { border-color: var(--accent-border); }
-.mode--on {
-  background: var(--accent-subtle);
-  border-color: var(--accent);
-}
-.mode--on strong { color: var(--accent); }
-
-.schedule-preview {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  align-items: center;
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  margin: 6px 0 12px;
-}
-.schedule-preview strong { color: var(--fg-subtle); font-weight: 500; }
-
-.hint {
-  font-size: 12px;
-  color: var(--fg-muted);
-  margin: 0 0 8px;
-}
-
-.runs {
-  list-style: none;
-  padding: 0;
-  margin: 0 0 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-.runs__empty {
-  padding: 24px;
-  text-align: center;
-  color: var(--fg-muted);
-  font-size: 13px;
-}
+.fail-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.evidence { font-size: 12px; }
+.runs { list-style: none; padding: 0; margin: 0 0 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.runs__empty { padding: 24px; text-align: center; color: var(--fg-muted); }
 .runs__row {
-  display: grid;
-  grid-template-columns: 80px 1fr 80px 100px 80px;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  cursor: pointer;
-  font-size: 12.5px;
+  display: grid; grid-template-columns: 90px 1fr 80px 90px 80px 60px; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12.5px;
 }
-.runs__row:last-child { border-bottom: none; }
-.runs__row:hover { background: var(--bg-hover); }
 .runs__row--active { background: var(--accent-subtle); }
-.runs__status {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 2px 8px;
-  border-radius: 999px;
-  text-align: center;
-}
+.runs__status { font-size: 10px; font-weight: 600; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; text-align: center; }
 .runs__status--ok { background: rgba(127, 176, 105, 0.14); color: var(--success); }
 .runs__status--err { background: rgba(224, 122, 95, 0.14); color: var(--error); }
 .runs__status--running { background: var(--accent-subtle); color: var(--accent); }
-.runs__status--muted { background: var(--bg); color: var(--fg-subtle); }
-.runs__time { font-variant-numeric: tabular-nums; }
-.runs__duration { font-family: var(--font-mono); color: var(--fg-muted); }
-.runs__rows { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
-.runs__trigger {
-  font-size: 10px;
-  text-transform: uppercase;
-  color: var(--fg-subtle);
-  letter-spacing: 0.04em;
+.run-detail { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; }
+.versions, .activity, .checks, .attempts { list-style: none; padding: 0; }
+.versions__row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.diff { background: var(--code-bg); padding: 10px; font-size: 12px; overflow: auto; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.field { display: grid; gap: 4px; font-size: 11px; color: var(--fg-muted); }
+.field--full { grid-column: 1 / -1; }
+.field input, .field select, .field textarea, .json {
+  font-size: 13px; padding: 6px 8px; background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--fg); font-family: inherit;
 }
-
-.run-detail {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 14px;
-}
-.run-detail h4 {
-  margin: 0 0 8px;
-  font-size: 13px;
-  font-weight: 500;
-}
-.run-detail__err {
-  margin: 0 0 8px;
-  padding: 8px 12px;
-  background: rgba(220, 80, 80, 0.08);
-  color: var(--error);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  border-radius: var(--radius-sm);
-  white-space: pre-wrap;
-}
-.run-detail__log {
-  margin: 0;
-  max-height: 360px;
-  overflow: auto;
-  background: var(--code-bg);
-  border: 1px solid var(--code-border);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--code-fg);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
+.json { width: 100%; font-family: var(--font-mono); }
+.modes { display: flex; gap: 8px; margin-bottom: 10px; }
+.mode { padding: 8px 12px; border: 1px solid var(--border); background: var(--bg-elev); color: var(--fg); cursor: pointer; border-radius: var(--radius-sm); }
+.mode--on { border-color: var(--accent); background: var(--accent-subtle); }
+.toggle { display: flex; gap: 6px; align-items: center; }
+.muted { color: var(--fg-muted); font-size: 12px; }
+.warn { color: var(--warn); font-size: 13px; }
+.save-row { margin-top: 16px; }
+h3 { font-family: var(--font-serif); font-size: 14px; font-weight: 500; margin: 20px 0 8px; }
 </style>

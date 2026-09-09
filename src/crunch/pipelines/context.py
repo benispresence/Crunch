@@ -26,6 +26,9 @@ class PipelineResult:
     log: str = ""
     error: str | None = None
     duration_ms: float = 0.0
+    steps: list[Any] | None = None
+    output_tables: list[Any] | None = None
+    checkpoints: list[Any] | None = None
 
 
 @dataclass
@@ -39,6 +42,7 @@ class PipelineContext:
     stream_max_seconds: int = 60
     stream_max_messages: int = 10000
     source_engine: Any = None  # populated for SQL-source pipelines
+    source_config: dict[str, Any] | None = None
 
     def dlt_destination(self) -> Any:
         """Return a dlt destination instance pre-configured with the
@@ -124,17 +128,30 @@ class PipelineContext:
         to bypass dlt and write into the database directly."""
         from sqlalchemy import create_engine
 
-        c = self.destination_config
-        dt = self.destination_type
-        if dt in ("postgres", "postgresql"):
-            return create_engine(
-                f"postgresql+psycopg2://{c.get('user', '')}:"
-                f"{c.get('password', '')}@{c.get('host', 'localhost')}:"
-                f"{c.get('port', 5432)}/{c.get('database', '')}"
-            )
-        if dt == "sqlite":
-            return create_engine(f"sqlite:///{c.get('database') or ':memory:'}")
-        if dt == "duckdb":
-            return create_engine(f"duckdb:///{c.get('database') or ':memory:'}")
-        # Best-effort default; user can replace in custom mode.
-        return create_engine("sqlite:///:memory:")
+        return create_engine(sqlalchemy_url(self.destination_type, self.destination_config))
+
+
+def sqlalchemy_url(destination_type: str, config: dict[str, Any]) -> str:
+    """Build a SQLAlchemy URL from a decrypted connection dict."""
+    c = config or {}
+    if c.get("connection_url"):
+        return str(c["connection_url"])
+    dt = (destination_type or str(c.get("type") or "")).lower()
+    database = c.get("database") or ":memory:"
+    user = c.get("user") or ""
+    password = c.get("password") or ""
+    host = c.get("host") or "localhost"
+    port = c.get("port")
+    if dt in ("postgres", "postgresql"):
+        return (
+            f"postgresql+psycopg2://{user}:{password}@{host}:{port or 5432}/{database}"
+        )
+    if dt == "sqlite":
+        return f"sqlite:///{database}"
+    if dt == "duckdb":
+        return f"duckdb:///{database}"
+    if dt in ("mysql", "mariadb"):
+        return f"mysql+pymysql://{user}:{password}@{host}:{port or 3306}/{database}"
+    if dt in ("mssql", "sqlserver"):
+        return f"mssql+pyodbc://{user}:{password}@{host}:{port or 1433}/{database}"
+    return "sqlite:///:memory:"

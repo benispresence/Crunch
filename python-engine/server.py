@@ -625,38 +625,80 @@ async def pipeline_template(req: PipelineTemplateRequest) -> dict[str, str]:
     return {"code": code}
 
 
+_PIPELINE_JOBS: dict[str, "subprocess.Popen[bytes]"] = {}
+
+
+def _spawn_pipeline_job(req: PipelineExecuteRequest) -> tuple[str, "subprocess.Popen[bytes]", str]:
+    import json as _json
+    import os
+    import subprocess
+    import tempfile
+
+    job = {
+        "code": req.code,
+        "destination": req.destination.model_dump(),
+        "stream_max_seconds": req.stream_max_seconds,
+        "stream_max_messages": req.stream_max_messages,
+        "timeout_seconds": req.timeout_seconds,
+    }
+    fd, path = tempfile.mkstemp(prefix="crunch-pipe-", suffix=".json")
+    os.write(fd, _json.dumps(job).encode("utf-8"))
+    os.close(fd)
+    os.chmod(path, 0o600)
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "crunch.pipelines.runner", path],
+        cwd=str(ROOT),
+        env=env,
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    job_id = str(proc.pid)
+    _PIPELINE_JOBS[job_id] = proc
+    return job_id, proc, path
+
+
+@app.post("/pipelines/spawn")
+async def pipeline_spawn(req: PipelineExecuteRequest) -> dict[str, object]:
+    """Start a killable subprocess for a pipeline run. Returns job_id + pid."""
+    _check_token(req.token)
+    job_id, proc, path = _spawn_pipeline_job(req)
+    return {"job_id": job_id, "pid": proc.pid, "job_path": path}
+
+
+@app.post("/pipelines/jobs/{job_id}/cancel")
+async def pipeline_cancel(job_id: str, req: dict[str, str] | None = None) -> dict[str, object]:
+    import os
+    import signal as _signal
+
+    proc = _PIPELINE_JOBS.get(job_id)
+    if proc is None or proc.pid is None:
+        return {"ok": False, "error": "job not found", "pid_alive": False}
+    try:
+        os.killpg(proc.pid, _signal.SIGTERM)
+    except ProcessLookupError:
+        return {"ok": True, "pid_alive": False, "status": "already_exited"}
+    return {"ok": True, "pid": proc.pid, "pid_alive": proc.poll() is None}
+
+
 @app.post("/pipelines/execute", response_model=PipelineExecuteResponse)
 async def pipeline_execute(req: PipelineExecuteRequest) -> PipelineExecuteResponse:
-    """Run a user-authored pipeline script in the sandbox. Returns
-    rows-loaded + captured stdout/stderr + duration."""
+    """Run a pipeline in a killable subprocess (not in-thread)."""
+    import json as _json
+    import os
+    import signal as _signal
+    import subprocess
+
     _check_token(req.token)
-    ctx = PipelineContext(
-        destination_type=(req.destination.type or "").lower(),
-        destination_config=req.destination.model_dump(),
-        stream_max_seconds=req.stream_max_seconds,
-        stream_max_messages=req.stream_max_messages,
-    )
-    # CPU-bound script; off-load to a thread so the asyncio loop stays
-    # responsive and the FastAPI worker can serve health checks.
-    # SIGALRM inside execute_pipeline only works from the main thread,
-    # so we also bound the asyncio await — a runaway script can no
-    # longer hold the engine's request indefinitely.  The orphaned
-    # worker thread will finish eventually (Python can't kill threads
-    # cooperatively), but the engine is freed to handle further calls.
-    loop = asyncio.get_event_loop()
+    job_id, proc, path = _spawn_pipeline_job(req)
     try:
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: execute_pipeline(
-                    req.code, ctx, timeout_seconds=req.timeout_seconds,
-                ),
-            ),
-            # Add a small grace beyond the in-process SIGALRM so we
-            # don't race with the script's own timeout report.
-            timeout=req.timeout_seconds + 30,
-        )
-    except asyncio.TimeoutError:
+        proc.wait(timeout=req.timeout_seconds + 30)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, _signal.SIGKILL)  # type: ignore[arg-type]
+        except Exception:
+            proc.kill()
         return PipelineExecuteResponse(
             success=False,
             rows_loaded=0,
@@ -667,12 +709,27 @@ async def pipeline_execute(req: PipelineExecuteRequest) -> PipelineExecuteRespon
             ),
             duration_ms=(req.timeout_seconds + 30) * 1000,
         )
+    result_path = path + ".result.json"
+    if os.path.exists(result_path):
+        payload = _json.loads(open(result_path, encoding="utf-8").read())
+        try:
+            os.remove(path)
+            os.remove(result_path)
+        except OSError:
+            pass
+        return PipelineExecuteResponse(
+            success=bool(payload.get("success")),
+            rows_loaded=int(payload.get("rows_loaded") or 0),
+            log=str(payload.get("log") or ""),
+            error=payload.get("error"),
+            duration_ms=float(payload.get("duration_ms") or 0),
+        )
     return PipelineExecuteResponse(
-        success=result.success,
-        rows_loaded=result.rows_loaded,
-        log=result.log,
-        error=result.error,
-        duration_ms=result.duration_ms,
+        success=False,
+        rows_loaded=0,
+        log="",
+        error=f"pipeline process exited {proc.returncode} without a result file",
+        duration_ms=0,
     )
 
 

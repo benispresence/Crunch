@@ -103,6 +103,8 @@ export interface SavedDashboard {
 export type PipelineLoadMode = "replace" | "append" | "merge" | "incremental" | "streaming";
 export type PipelineSourceType = "rest_api" | "sql" | "file" | "kafka" | "custom";
 export type PipelineCodeMode = "template" | "custom";
+export type PipelineExtractStrategy = "full" | "incremental" | "streaming";
+export type PipelineWriteBehavior = "replace" | "append" | "merge";
 
 export interface SavedPipeline {
   id: number;
@@ -114,6 +116,8 @@ export interface SavedPipeline {
   destination_connection_id: number | null;
   destination_dataset: string | null;
   load_mode: PipelineLoadMode;
+  extract_strategy?: PipelineExtractStrategy;
+  write_behavior?: PipelineWriteBehavior;
   primary_key: string | null;
   cursor_field: string | null;
   python_code: string;
@@ -127,6 +131,28 @@ export interface SavedPipeline {
   last_run_at: number | null;
   created_at: number;
   updated_at: number;
+  tags?: string[];
+  timezone?: string;
+  freshness_threshold_seconds?: number | null;
+  quality_checks?: Array<Record<string, unknown>>;
+  source_connection_id?: number | null;
+  scratch_destination_connection_id?: number | null;
+  scratch_destination_dataset?: string | null;
+  published_version_id?: number | null;
+  processing_interval?: string | null;
+  last_successful_update?: number | null;
+  execution_health?: string;
+  freshness?: string;
+  attention?: string;
+  recent_runs?: Array<{ id: number; status: string }>;
+  published_version?: { id: number; version_number: number } | null;
+  next_run?: number | null;
+  duration_seconds?: number | null;
+  rows_loaded?: number | null;
+  last_failed_run_id?: number | null;
+  source?: { type: string; name: string | null };
+  destination?: { name: string | null; dataset: string | null };
+  feeds?: { queries: Array<{ id: number; name: string }>; dashboards: Array<{ id: number; name: string }> };
 }
 
 export interface SqlResult {
@@ -197,7 +223,8 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.dashboards = await api.get<SavedDashboard[]>("/dashboards");
     },
     async loadPipelines() {
-      this.pipelines = await api.get<SavedPipeline[]>("/pipelines");
+      const r = await api.get<{ pipelines?: SavedPipeline[] } | SavedPipeline[]>("/pipelines/overview");
+      this.pipelines = Array.isArray(r) ? r : (r.pipelines ?? []);
     },
     async createFolder(name: string, parentId: number | null = null) {
       const r = await api.post<{ id: number }>("/folders", { name, parent_id: parentId });

@@ -399,6 +399,12 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
         <div class="prop__newq-row"><span class="prop__field">Name</span> {{ p.pipeline.name }}</div>
         <div class="prop__newq-row"><span class="prop__field">Source</span> {{ p.pipeline.source_type }}</div>
         <div class="prop__newq-row"><span class="prop__field">Load mode</span> {{ p.pipeline.load_mode }}</div>
+        <div v-if="p.pipeline.extract_strategy" class="prop__newq-row">
+          <span class="prop__field">Extract</span> {{ p.pipeline.extract_strategy }}
+        </div>
+        <div v-if="p.pipeline.write_behavior" class="prop__newq-row">
+          <span class="prop__field">Write</span> {{ p.pipeline.write_behavior }}
+        </div>
         <div v-if="p.pipeline.destination_connection_id != null" class="prop__newq-row">
           <span class="prop__field">Destination</span>
           {{ labels.connectionLabel(p.pipeline.destination_connection_id) }}

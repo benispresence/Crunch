@@ -14,6 +14,27 @@ import {
   type PipelineRow,
   type SourceType,
 } from "../services/pipelines.js";
+import { normalizeLoadBehavior, stripSecretsFromConfig } from "../services/pipelineOps.js";
+import {
+  aiSafePipeline,
+  buildOverview,
+  cancelRun,
+  diffVersions,
+  enqueueBackfill,
+  enqueueRun,
+  getRunDetail,
+  inspectConnectionSchema,
+  listActivity,
+  listVersions,
+  pauseSchedule,
+  pipelineLineage,
+  publishVersion,
+  restoreVersionAsDraft,
+  retryRun,
+  sealPipelineSourceConfig,
+  validatePipeline,
+  waitForRun,
+} from "../services/pipelineRuntime.js";
 
 export const pipelinesRouter = Router();
 pipelinesRouter.use(requireAuth);
@@ -21,6 +42,8 @@ pipelinesRouter.use(requireAuth);
 const SOURCE_TYPES = ["rest_api", "sql", "file", "kafka", "custom"] as const;
 const LOAD_MODES = ["replace", "append", "merge", "incremental", "streaming"] as const;
 const CODE_MODES = ["template", "custom"] as const;
+const EXTRACT = ["full", "incremental", "streaming"] as const;
+const WRITE = ["replace", "append", "merge"] as const;
 
 const upsertSchema = z.object({
   name: z.string().min(1).max(120),
@@ -31,6 +54,8 @@ const upsertSchema = z.object({
   destination_connection_id: z.number().int().nullable().optional(),
   destination_dataset: z.string().max(120).nullable().optional(),
   load_mode: z.enum(LOAD_MODES).default("replace"),
+  extract_strategy: z.enum(EXTRACT).optional(),
+  write_behavior: z.enum(WRITE).optional(),
   primary_key: z.string().nullable().optional(),
   cursor_field: z.string().nullable().optional(),
   python_code: z.string().optional(),
@@ -39,6 +64,15 @@ const upsertSchema = z.object({
   schedule_enabled: z.boolean().optional(),
   stream_max_seconds: z.number().int().min(1).max(86400).optional(),
   stream_max_messages: z.number().int().min(1).max(10_000_000).optional(),
+  tags: z.array(z.string()).optional(),
+  timezone: z.string().optional(),
+  freshness_threshold_seconds: z.number().int().nullable().optional(),
+  quality_checks: z.array(z.record(z.unknown())).optional(),
+  source_connection_id: z.number().int().nullable().optional(),
+  scratch_destination_connection_id: z.number().int().nullable().optional(),
+  scratch_destination_dataset: z.string().nullable().optional(),
+  processing_interval: z.string().nullable().optional(),
+  convert_to_custom: z.boolean().optional(),
 });
 
 const SELECT_COLS = `
@@ -50,12 +84,15 @@ const SELECT_COLS = `
   schedule, schedule_enabled,
   stream_max_seconds, stream_max_messages,
   last_run_id, last_run_status, last_run_at,
-  created_at, updated_at
+  created_at, updated_at,
+  tags_json, timezone, extract_strategy, write_behavior,
+  freshness_threshold_seconds, quality_checks_json,
+  source_connection_id, scratch_destination_connection_id,
+  scratch_destination_dataset, published_version_id, paused,
+  processing_interval, last_successful_update,
+  source_secrets_json
 `;
 
-/** Cross-pipeline timeline: one row per recent run, with the
- *  pipeline's name + status + start/end timestamps so the UI can
- *  build a Gantt chart. Lookback is capped so this stays cheap. */
 pipelinesRouter.get("/timeline", (req, res) => {
   const lookbackHours = Math.min(
     24 * 30,
@@ -70,22 +107,30 @@ pipelinesRouter.get("/timeline", (req, res) => {
               p.name AS pipeline_name
        FROM pipeline_runs r
        JOIN pipelines p ON p.id = r.pipeline_id
-       WHERE p.user_id = ? AND r.started_at >= ?
-       ORDER BY r.started_at DESC
+       WHERE p.user_id = ? AND COALESCE(r.started_at, r.queued_at, 0) >= ?
+       ORDER BY COALESCE(r.started_at, r.queued_at) DESC
        LIMIT ?`,
     )
     .all(req.user!.sub, since, limit);
   res.json({ runs: rows, lookback_hours: lookbackHours });
 });
 
+pipelinesRouter.get("/overview", (req, res) => {
+  res.json(buildOverview(db, req.user!.sub));
+});
+
+pipelinesRouter.get("/schema/:connectionId", async (req, res) => {
+  try {
+    const r = await inspectConnectionSchema(db, Number(req.params.connectionId), req.user!.sub);
+    res.json(r);
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
 pipelinesRouter.get("/", (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT ${SELECT_COLS} FROM pipelines WHERE user_id = ?
-       ORDER BY updated_at DESC`,
-    )
-    .all(req.user!.sub) as PipelineRow[];
-  res.json(rows.map(rowToPipeline));
+  const overview = buildOverview(db, req.user!.sub);
+  res.json(overview);
 });
 
 pipelinesRouter.get("/:id", (req, res) => {
@@ -98,14 +143,12 @@ pipelinesRouter.get("/:id", (req, res) => {
     res.status(404).json({ error: "not found" });
     return;
   }
-  res.json(rowToPipeline(row));
+  const overview = buildOverview(db, req.user!.sub);
+  const extra = overview.pipelines.find((p) => p.id === row.id);
+  const lineage = pipelineLineage(db, row.id, req.user!.sub);
+  res.json({ ...rowToPipeline(row), ...extra, feeds: lineage });
 });
 
-/**
- * Generate (or re-generate) a template script for the given form
- * inputs. Useful when the UI wants to preview the script before save,
- * and on every save when ``code_mode = template``.
- */
 pipelinesRouter.post("/template", async (req, res) => {
   const parsed = upsertSchema
     .partial()
@@ -115,9 +158,12 @@ pipelinesRouter.post("/template", async (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  // We assemble a "virtual" pipeline row so buildTemplateSpec can run
-  // with no DB persistence. Resolving the destination connection from
-  // the user's accounts gives the template the right destination type.
+  const load = normalizeLoadBehavior({
+    extract_strategy: parsed.data.extract_strategy,
+    write_behavior: parsed.data.write_behavior,
+    load_mode: parsed.data.load_mode,
+  });
+  const { sanitized } = stripSecretsFromConfig(parsed.data.source_config ?? {});
   const row: PipelineRow = {
     id: 0,
     user_id: req.user!.sub,
@@ -125,10 +171,12 @@ pipelinesRouter.post("/template", async (req, res) => {
     name: parsed.data.name,
     description: parsed.data.description ?? null,
     source_type: (parsed.data.source_type ?? "custom") as SourceType,
-    source_config_json: JSON.stringify(parsed.data.source_config ?? {}),
+    source_config_json: JSON.stringify(sanitized),
     destination_connection_id: parsed.data.destination_connection_id ?? null,
     destination_dataset: parsed.data.destination_dataset ?? null,
     load_mode: (parsed.data.load_mode ?? "replace") as LoadMode,
+    extract_strategy: load.extract_strategy,
+    write_behavior: load.write_behavior,
     primary_key: parsed.data.primary_key ?? null,
     cursor_field: parsed.data.cursor_field ?? null,
     python_code: "",
@@ -144,7 +192,7 @@ pipelinesRouter.post("/template", async (req, res) => {
   const spec = buildTemplateSpec(row, req.user!.sub);
   try {
     const r = await pythonEngine.generatePipelineTemplate(spec);
-    res.json({ code: r.code, spec });
+    res.json({ code: r.code, spec, generated: true });
   } catch (e) {
     res.status(502).json({ error: (e as Error).message });
   }
@@ -157,12 +205,18 @@ pipelinesRouter.post("/", async (req, res) => {
     return;
   }
   if (parsed.data.schedule) {
-    try { nextRun(parsed.data.schedule); }
+    try { nextRun(parsed.data.schedule, parsed.data.timezone || "UTC"); }
     catch (e) {
       res.status(400).json({ error: `invalid cron: ${(e as Error).message}` });
       return;
     }
   }
+  const load = normalizeLoadBehavior({
+    extract_strategy: parsed.data.extract_strategy,
+    write_behavior: parsed.data.write_behavior,
+    load_mode: parsed.data.load_mode,
+  });
+  const sealed = sealPipelineSourceConfig(parsed.data.source_config ?? {});
   const info = db
     .prepare(
       `INSERT INTO pipelines (
@@ -172,8 +226,13 @@ pipelinesRouter.post("/", async (req, res) => {
          load_mode, primary_key, cursor_field,
          python_code, code_mode,
          schedule, schedule_enabled,
-         stream_max_seconds, stream_max_messages
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         stream_max_seconds, stream_max_messages,
+         tags_json, timezone, extract_strategy, write_behavior,
+         freshness_threshold_seconds, quality_checks_json,
+         source_connection_id, scratch_destination_connection_id,
+         scratch_destination_dataset, processing_interval,
+         source_secrets_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       req.user!.sub,
@@ -181,18 +240,29 @@ pipelinesRouter.post("/", async (req, res) => {
       parsed.data.name,
       parsed.data.description ?? null,
       parsed.data.source_type ?? "custom",
-      JSON.stringify(parsed.data.source_config ?? {}),
+      JSON.stringify(sealed.sanitized),
       parsed.data.destination_connection_id ?? null,
       parsed.data.destination_dataset ?? null,
       parsed.data.load_mode ?? "replace",
       parsed.data.primary_key ?? null,
       parsed.data.cursor_field ?? null,
       parsed.data.python_code ?? "",
-      parsed.data.code_mode ?? "template",
+      parsed.data.convert_to_custom ? "custom" : (parsed.data.code_mode ?? "template"),
       parsed.data.schedule ?? null,
       parsed.data.schedule_enabled ? 1 : 0,
       parsed.data.stream_max_seconds ?? 60,
       parsed.data.stream_max_messages ?? 10_000,
+      JSON.stringify(parsed.data.tags ?? []),
+      parsed.data.timezone ?? "UTC",
+      load.extract_strategy,
+      load.write_behavior,
+      parsed.data.freshness_threshold_seconds ?? null,
+      JSON.stringify(parsed.data.quality_checks ?? []),
+      parsed.data.source_connection_id ?? null,
+      parsed.data.scratch_destination_connection_id ?? null,
+      parsed.data.scratch_destination_dataset ?? null,
+      parsed.data.processing_interval ?? null,
+      sealed.sealed,
     );
   const row = db
     .prepare(`SELECT ${SELECT_COLS} FROM pipelines WHERE id = ?`)
@@ -207,11 +277,18 @@ pipelinesRouter.put("/:id", async (req, res) => {
     return;
   }
   if (parsed.data.schedule) {
-    try { nextRun(parsed.data.schedule); }
+    try { nextRun(parsed.data.schedule, parsed.data.timezone || "UTC"); }
     catch (e) {
       res.status(400).json({ error: `invalid cron: ${(e as Error).message}` });
       return;
     }
+  }
+  const existing = db
+    .prepare(`SELECT ${SELECT_COLS} FROM pipelines WHERE id = ? AND user_id = ?`)
+    .get(req.params.id, req.user!.sub) as PipelineRow | undefined;
+  if (!existing) {
+    res.status(404).json({ error: "not found" });
+    return;
   }
   const fields: string[] = [];
   const values: unknown[] = [];
@@ -220,20 +297,58 @@ pipelinesRouter.put("/:id", async (req, res) => {
   if (parsed.data.description !== undefined) push("description = ?", parsed.data.description);
   if (parsed.data.folder_id !== undefined) push("folder_id = ?", parsed.data.folder_id);
   if (parsed.data.source_type !== undefined) push("source_type = ?", parsed.data.source_type);
-  if (parsed.data.source_config !== undefined) push("source_config_json = ?", JSON.stringify(parsed.data.source_config));
+  if (parsed.data.source_config !== undefined) {
+    const sealed = sealPipelineSourceConfig(
+      parsed.data.source_config,
+      (existing as { source_secrets_json?: string }).source_secrets_json ?? "",
+    );
+    push("source_config_json = ?", JSON.stringify(sealed.sanitized));
+    push("source_secrets_json = ?", sealed.sealed);
+  }
   if (parsed.data.destination_connection_id !== undefined) push("destination_connection_id = ?", parsed.data.destination_connection_id);
   if (parsed.data.destination_dataset !== undefined) push("destination_dataset = ?", parsed.data.destination_dataset);
   if (parsed.data.load_mode !== undefined) push("load_mode = ?", parsed.data.load_mode);
   if (parsed.data.primary_key !== undefined) push("primary_key = ?", parsed.data.primary_key);
   if (parsed.data.cursor_field !== undefined) push("cursor_field = ?", parsed.data.cursor_field);
-  if (parsed.data.python_code !== undefined) push("python_code = ?", parsed.data.python_code);
-  if (parsed.data.code_mode !== undefined) push("code_mode = ?", parsed.data.code_mode);
+  const nextMode = parsed.data.convert_to_custom
+    ? "custom"
+    : parsed.data.code_mode;
+  // Never clobber custom Python with a template regen from form fields.
+  if (parsed.data.python_code !== undefined) {
+    if (existing.code_mode === "custom" && nextMode !== "custom" && !parsed.data.convert_to_custom) {
+      /* keep existing python_code */
+    } else {
+      push("python_code = ?", parsed.data.python_code);
+    }
+  }
+  if (nextMode !== undefined) push("code_mode = ?", nextMode);
   if (parsed.data.schedule !== undefined) push("schedule = ?", parsed.data.schedule);
   if (parsed.data.schedule_enabled !== undefined) push("schedule_enabled = ?", parsed.data.schedule_enabled ? 1 : 0);
   if (parsed.data.stream_max_seconds !== undefined) push("stream_max_seconds = ?", parsed.data.stream_max_seconds);
   if (parsed.data.stream_max_messages !== undefined) push("stream_max_messages = ?", parsed.data.stream_max_messages);
+  if (parsed.data.tags !== undefined) push("tags_json = ?", JSON.stringify(parsed.data.tags));
+  if (parsed.data.timezone !== undefined) push("timezone = ?", parsed.data.timezone);
+  if (parsed.data.extract_strategy !== undefined || parsed.data.write_behavior !== undefined || parsed.data.load_mode !== undefined) {
+    const load = normalizeLoadBehavior({
+      extract_strategy: parsed.data.extract_strategy ?? existing.extract_strategy,
+      write_behavior: parsed.data.write_behavior ?? existing.write_behavior,
+      load_mode: parsed.data.load_mode ?? existing.load_mode,
+    });
+    push("extract_strategy = ?", load.extract_strategy);
+    push("write_behavior = ?", load.write_behavior);
+  }
+  if (parsed.data.freshness_threshold_seconds !== undefined) push("freshness_threshold_seconds = ?", parsed.data.freshness_threshold_seconds);
+  if (parsed.data.quality_checks !== undefined) push("quality_checks_json = ?", JSON.stringify(parsed.data.quality_checks));
+  if (parsed.data.source_connection_id !== undefined) push("source_connection_id = ?", parsed.data.source_connection_id);
+  if (parsed.data.scratch_destination_connection_id !== undefined) {
+    push("scratch_destination_connection_id = ?", parsed.data.scratch_destination_connection_id);
+  }
+  if (parsed.data.scratch_destination_dataset !== undefined) {
+    push("scratch_destination_dataset = ?", parsed.data.scratch_destination_dataset);
+  }
+  if (parsed.data.processing_interval !== undefined) push("processing_interval = ?", parsed.data.processing_interval);
   if (fields.length === 0) {
-    res.json({ ok: true });
+    res.json(rowToPipeline(existing));
     return;
   }
   fields.push("updated_at = strftime('%s', 'now')");
@@ -258,11 +373,83 @@ pipelinesRouter.delete("/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-/** Run a pipeline now. Returns the completed run record. */
 pipelinesRouter.post("/:id/run", async (req, res) => {
   try {
-    const run = await runPipeline(Number(req.params.id), req.user!.sub, "manual");
+    const wait = req.query.wait === "1" || req.body?.wait === true;
+    const run = await runPipeline(Number(req.params.id), req.user!.sub, "manual", { wait });
     res.json(run);
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.post("/:id/test", async (req, res) => {
+  try {
+    const run = enqueueRun(db, {
+      pipelineId: Number(req.params.id),
+      userId: req.user!.sub,
+      trigger: "test",
+      isTest: true,
+    });
+    if (req.query.wait === "1") {
+      res.json(await waitForRun(db, Number(run.id)));
+      return;
+    }
+    res.json(run);
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.post("/:id/publish", (req, res) => {
+  try {
+    const r = publishVersion(
+      db,
+      Number(req.params.id),
+      req.user!.sub,
+      typeof req.body?.change_summary === "string" ? req.body.change_summary : undefined,
+    );
+    res.json(r);
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.get("/:id/versions", (req, res) => {
+  const exists = db
+    .prepare("SELECT id FROM pipelines WHERE id = ? AND user_id = ?")
+    .get(req.params.id, req.user!.sub);
+  if (!exists) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ versions: listVersions(db, Number(req.params.id)) });
+});
+
+pipelinesRouter.get("/:id/versions/:fromId/diff/:toId", (req, res) => {
+  try {
+    res.json(
+      diffVersions(
+        db,
+        Number(req.params.id),
+        Number(req.params.fromId),
+        Number(req.params.toId),
+      ),
+    );
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.post("/:id/versions/:versionId/restore", (req, res) => {
+  try {
+    const row = restoreVersionAsDraft(
+      db,
+      Number(req.params.id),
+      req.user!.sub,
+      Number(req.params.versionId),
+    );
+    res.json(rowToPipeline(row as unknown as PipelineRow));
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }
@@ -277,12 +464,11 @@ pipelinesRouter.get("/:id/runs", (req, res) => {
     res.status(404).json({ error: "not found" });
     return;
   }
-  // Return without logs for fast listing; the dialog fetches one
-  // run by id when the user clicks a row.
   const rows = db
     .prepare(
       `SELECT id, status, started_at, finished_at, rows_loaded,
-              error_message, triggered_by
+              error_message, triggered_by, version_id, attempt_number,
+              queued_at, processing_interval_start, processing_interval_end
        FROM pipeline_runs WHERE pipeline_id = ?
        ORDER BY id DESC LIMIT 50`,
     )
@@ -292,52 +478,126 @@ pipelinesRouter.get("/:id/runs", (req, res) => {
 
 pipelinesRouter.get("/:id/runs/:runId", (req, res) => {
   const pipelineId = Number(req.params.id);
+  const pipe = db
+    .prepare("SELECT id, name FROM pipelines WHERE id = ? AND user_id = ?")
+    .get(pipelineId, req.user!.sub) as { id: number; name: string } | undefined;
+  if (!pipe) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  const detail = getRunDetail(db, pipelineId, Number(req.params.runId), pipe.name);
+  if (!detail) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+  res.json(detail);
+});
+
+pipelinesRouter.post("/:id/runs/:runId/cancel", async (req, res) => {
+  try {
+    res.json(await cancelRun(db, Number(req.params.id), Number(req.params.runId), req.user!.sub));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.post("/:id/runs/:runId/retry", (req, res) => {
+  try {
+    res.json(retryRun(db, Number(req.params.id), Number(req.params.runId), req.user!.sub));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.post("/:id/pause", (req, res) => {
+  try {
+    const paused = req.body?.paused !== false;
+    pauseSchedule(db, Number(req.params.id), req.user!.sub, paused);
+    res.json({ ok: true, paused });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.post("/:id/validate", (req, res) => {
+  try {
+    res.json(validatePipeline(db, Number(req.params.id), req.user!.sub));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.post("/:id/backfill", (req, res) => {
+  try {
+    const start = Number(req.body?.start);
+    const end = Number(req.body?.end);
+    const confirm = !!req.body?.confirm;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      res.status(400).json({ error: "start and end (epoch seconds) required" });
+      return;
+    }
+    res.json(enqueueBackfill(db, Number(req.params.id), req.user!.sub, start, end, confirm));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.get("/:id/activity", (req, res) => {
   const exists = db
     .prepare("SELECT id FROM pipelines WHERE id = ? AND user_id = ?")
-    .get(pipelineId, req.user!.sub);
+    .get(req.params.id, req.user!.sub);
   if (!exists) {
     res.status(404).json({ error: "not found" });
     return;
   }
+  res.json({ activity: listActivity(db, Number(req.params.id)) });
+});
+
+pipelinesRouter.get("/:id/impact", (req, res) => {
+  try {
+    res.json(pipelineLineage(db, Number(req.params.id), req.user!.sub));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+pipelinesRouter.get("/:id/ai-safe", (req, res) => {
   const row = db
-    .prepare(
-      `SELECT id, pipeline_id, status, started_at, finished_at,
-              rows_loaded, log, error_message, triggered_by
-       FROM pipeline_runs WHERE id = ? AND pipeline_id = ?`,
-    )
-    .get(req.params.runId, pipelineId);
+    .prepare(`SELECT ${SELECT_COLS} FROM pipelines WHERE id = ? AND user_id = ?`)
+    .get(req.params.id, req.user!.sub) as Record<string, unknown> | undefined;
   if (!row) {
-    res.status(404).json({ error: "run not found" });
+    res.status(404).json({ error: "not found" });
     return;
   }
-  res.json(row);
+  res.json(aiSafePipeline(row));
 });
 
 pipelinesRouter.get("/:id/next-runs", (req, res) => {
   const row = db
     .prepare(
-      "SELECT schedule, schedule_enabled FROM pipelines WHERE id = ? AND user_id = ?",
+      "SELECT schedule, schedule_enabled, timezone FROM pipelines WHERE id = ? AND user_id = ?",
     )
     .get(req.params.id, req.user!.sub) as
-    | { schedule: string | null; schedule_enabled: number }
+    | { schedule: string | null; schedule_enabled: number; timezone: string | null }
     | undefined;
   if (!row) {
     res.status(404).json({ error: "not found" });
     return;
   }
   if (!row.schedule || row.schedule_enabled === 0) {
-    res.json({ next: [] });
+    res.json({ next: [], timezone: row.timezone || "UTC" });
     return;
   }
   try {
-    // Preview the next five firings so the user can sanity-check the
-    // cron expression in the form.
-    const it = cronParser.parseExpression(row.schedule, { currentDate: new Date() });
+    const it = cronParser.parseExpression(row.schedule, {
+      currentDate: new Date(),
+      tz: row.timezone || undefined,
+    });
     const next: number[] = [];
     for (let i = 0; i < 5; i++) {
       next.push(Math.floor(it.next().toDate().getTime() / 1000));
     }
-    res.json({ next });
+    res.json({ next, timezone: row.timezone || "UTC" });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }

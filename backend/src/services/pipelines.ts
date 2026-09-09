@@ -1,31 +1,34 @@
 /**
- * Pipeline storage + execution + scheduler.
+ * Pipeline storage helpers + compatibility wrappers.
  *
- * Each pipeline is a Python script (auto-generated from a form or
- * fully custom) that ingests data into one of the user's saved
- * connections. The script runs in the python engine's sandbox and
- * gets a ``ctx`` object exposing the destination's decrypted
- * credentials, so user code doesn't have to handle secrets.
- *
- * A small in-process ticker scans `pipelines` every 30s and fires any
- * pipeline whose cron expression has a match inside the window
- * between the previous tick and now (``fireBetween`` below). The
- * ticker holds an in-memory set of running pipeline ids so a slow
- * run can't fire twice while still executing.
- *
- * Runs are persisted to ``pipeline_runs`` so the UI can show history
- * and the user can read logs from failed runs without SSH.
+ * Queue, versions, process execution, and overview DTOs live in
+ * pipelineRuntime.ts. This module keeps row mapping, template spec
+ * building, and re-exports the scheduler so existing imports continue
+ * to work.
  */
 
-import cronParser from "cron-parser";
 import { db } from "../db/index.js";
 import { decryptConnectionConfig } from "./crypto.js";
-import { pythonEngine } from "./pythonEngine.js";
+import { normalizeLoadBehavior } from "./pipelineOps.js";
+import {
+  enqueueRun,
+  startScheduler as startRuntimeScheduler,
+  stopScheduler as stopRuntimeScheduler,
+  setSchedulerConcurrency as setRuntimeConcurrency,
+  getSchedulerStatus as getRuntimeStatus,
+  waitForRun,
+} from "./pipelineRuntime.js";
 import { getSetting } from "./settings.js";
+
+export {
+  nextRunEpoch as nextRun,
+} from "./pipelineRuntime.js";
 
 export type LoadMode = "replace" | "append" | "merge" | "incremental" | "streaming";
 export type SourceType = "rest_api" | "sql" | "file" | "kafka" | "custom";
 export type CodeMode = "template" | "custom";
+export type ExtractStrategy = "full" | "incremental" | "streaming";
+export type WriteBehavior = "replace" | "append" | "merge";
 
 export interface PipelineRow {
   id: number;
@@ -51,18 +54,32 @@ export interface PipelineRow {
   last_run_at: number | null;
   created_at: number;
   updated_at: number;
+  tags_json?: string;
+  timezone?: string;
+  extract_strategy?: ExtractStrategy;
+  write_behavior?: WriteBehavior;
+  freshness_threshold_seconds?: number | null;
+  quality_checks_json?: string;
+  source_connection_id?: number | null;
+  scratch_destination_connection_id?: number | null;
+  scratch_destination_dataset?: string | null;
+  published_version_id?: number | null;
+  paused?: number;
+  processing_interval?: string | null;
+  last_successful_update?: number | null;
 }
 
 export interface PipelineRunRow {
   id: number;
   pipeline_id: number;
-  status: "pending" | "running" | "success" | "failed" | "cancelled";
+  status: "pending" | "queued" | "running" | "success" | "failed" | "cancelled" | "retrying";
   started_at: number;
   finished_at: number | null;
   rows_loaded: number | null;
   log: string;
   error_message: string | null;
-  triggered_by: "manual" | "schedule" | "agent";
+  triggered_by: "manual" | "schedule" | "agent" | "retry" | "backfill" | "test";
+  version_id?: number | null;
 }
 
 interface ConnectionRow {
@@ -73,6 +90,11 @@ interface ConnectionRow {
 }
 
 export function rowToPipeline(row: PipelineRow) {
+  const load = normalizeLoadBehavior({
+    extract_strategy: row.extract_strategy,
+    write_behavior: row.write_behavior,
+    load_mode: row.load_mode,
+  });
   return {
     id: row.id,
     folder_id: row.folder_id,
@@ -83,6 +105,8 @@ export function rowToPipeline(row: PipelineRow) {
     destination_connection_id: row.destination_connection_id,
     destination_dataset: row.destination_dataset,
     load_mode: row.load_mode,
+    extract_strategy: load.extract_strategy,
+    write_behavior: load.write_behavior,
     primary_key: row.primary_key,
     cursor_field: row.cursor_field,
     python_code: row.python_code,
@@ -96,40 +120,33 @@ export function rowToPipeline(row: PipelineRow) {
     last_run_at: row.last_run_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    tags: safeJsonArr(row.tags_json),
+    timezone: row.timezone || "UTC",
+    freshness_threshold_seconds: row.freshness_threshold_seconds ?? null,
+    quality_checks: safeJsonArr(row.quality_checks_json),
+    source_connection_id: row.source_connection_id ?? null,
+    scratch_destination_connection_id: row.scratch_destination_connection_id ?? null,
+    scratch_destination_dataset: row.scratch_destination_dataset ?? null,
+    published_version_id: row.published_version_id ?? null,
+    paused: !!row.paused || !row.schedule_enabled,
+    processing_interval: row.processing_interval ?? null,
+    last_successful_update: row.last_successful_update ?? null,
   };
+}
+
+function safeJsonArr(s: string | null | undefined): unknown[] {
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
 }
 
 function safeJson(s: string | null): Record<string, unknown> {
   if (!s) return {};
   try { return JSON.parse(s) as Record<string, unknown>; } catch { return {}; }
-}
-
-/** Validate a cron expression. Returns the next run's epoch seconds
- *  on success; throws otherwise (with a user-friendly message). */
-export function nextRun(schedule: string, after: Date = new Date()): number {
-  const it = cronParser.parseExpression(schedule, { currentDate: after });
-  return Math.floor(it.next().toDate().getTime() / 1000);
-}
-
-/** Truthy when the cron expression has *any* match inside the
- *  (closed, open] window between ``prev`` and ``now``. We use this
- *  rather than "next match equals now" so a 30s scheduler tick can't
- *  miss a minute-precision cron firing. */
-function fireBetween(schedule: string, prev: Date, now: Date): boolean {
-  try {
-    const it = cronParser.parseExpression(schedule, {
-      currentDate: prev,
-      endDate: now,
-    });
-    while (true) {
-      const n = it.next();
-      const t = n.toDate().getTime();
-      if (t > now.getTime()) return false;
-      if (t > prev.getTime()) return true;
-    }
-  } catch {
-    return false;
-  }
 }
 
 /** Resolve a pipeline's destination connection to a decrypted
@@ -175,80 +192,37 @@ export function buildTemplateSpec(pipeline: PipelineRow, userId: number): Record
     source_config: safeJson(pipeline.source_config_json),
     destination: dest,
     load_mode: pipeline.load_mode,
+    extract_strategy: pipeline.extract_strategy,
+    write_behavior: pipeline.write_behavior,
     primary_key: pipeline.primary_key,
     cursor_field: pipeline.cursor_field,
   };
 }
 
 /**
- * Run a single pipeline now. Creates a ``pipeline_runs`` row, calls
- * the python engine, captures the result, updates denormalised
- * last-run fields on the pipeline. Returns the finished run.
+ * Enqueue a run on the persisted shared queue. Returns the queued row
+ * immediately; pass ``wait`` to block until a terminal status.
  */
 export async function runPipeline(
   pipelineId: number,
   userId: number,
   triggeredBy: PipelineRunRow["triggered_by"] = "manual",
+  opts: { wait?: boolean } = {},
 ): Promise<PipelineRunRow> {
-  const pipeline = db
-    .prepare("SELECT * FROM pipelines WHERE id = ? AND user_id = ?")
-    .get(pipelineId, userId) as PipelineRow | undefined;
-  if (!pipeline) throw new Error("pipeline not found");
-
-  const runInfo = db
-    .prepare(
-      `INSERT INTO pipeline_runs (pipeline_id, status, triggered_by)
-       VALUES (?, 'running', ?)`,
-    )
-    .run(pipelineId, triggeredBy);
-  const runId = Number(runInfo.lastInsertRowid);
-
-  let status: PipelineRunRow["status"] = "failed";
-  let log = "";
-  let rowsLoaded: number | null = null;
-  let errorMessage: string | null = null;
-  try {
-    const dest = resolveDestination(pipeline, userId);
-    const r = await pythonEngine.runPipeline({
-      code: pipeline.python_code,
-      destination: dest as unknown as Record<string, unknown>,
-      stream_max_seconds: pipeline.stream_max_seconds,
-      stream_max_messages: pipeline.stream_max_messages,
-    });
-    log = r.log ?? "";
-    rowsLoaded = r.rows_loaded;
-    if (r.success) {
-      status = "success";
-    } else {
-      status = "failed";
-      errorMessage = r.error ?? "unknown error";
-    }
-  } catch (e) {
-    status = "failed";
-    errorMessage = (e as Error).message;
-  }
-
-  db.prepare(
-    `UPDATE pipeline_runs SET
-       status = ?, finished_at = strftime('%s', 'now'),
-       rows_loaded = ?, log = ?, error_message = ?
-     WHERE id = ?`,
-  ).run(status, rowsLoaded, log, errorMessage, runId);
-  db.prepare(
-    `UPDATE pipelines SET
-       last_run_id = ?, last_run_status = ?,
-       last_run_at = strftime('%s', 'now')
-     WHERE id = ?`,
-  ).run(runId, status, pipelineId);
-
-  // Trim history right after this insert so the table never grows
-  // unboundedly. Default kept generously (100) but admin can override
-  // via Settings.
+  const trigger =
+    triggeredBy === "agent" || triggeredBy === "schedule" || triggeredBy === "manual"
+      ? triggeredBy
+      : "manual";
+  const queued = enqueueRun(db, {
+    pipelineId,
+    userId,
+    trigger,
+  });
   trimRunHistory(pipelineId);
-
-  return db
-    .prepare("SELECT * FROM pipeline_runs WHERE id = ?")
-    .get(runId) as PipelineRunRow;
+  if (opts.wait) {
+    return (await waitForRun(db, Number(queued.id))) as unknown as PipelineRunRow;
+  }
+  return queued as unknown as PipelineRunRow;
 }
 
 /** Default number of runs to keep per pipeline before older rows are
@@ -283,83 +257,18 @@ export function trimRunHistory(pipelineId: number): number {
   return r.changes;
 }
 
-// ---------- Scheduler ----------------------------------------------
-
-interface SchedulerState {
-  intervalHandle: NodeJS.Timeout | null;
-  lastTickAt: number;
-  inFlight: Set<number>;        // pipeline ids currently running
-  maxConcurrent: number;
-}
-
-const state: SchedulerState = {
-  intervalHandle: null,
-  lastTickAt: Math.floor(Date.now() / 1000),
-  inFlight: new Set(),
-  maxConcurrent: 4,
-};
-
 export function setSchedulerConcurrency(n: number): void {
-  state.maxConcurrent = Math.max(1, Math.min(16, n));
+  setRuntimeConcurrency(n);
 }
 
-export function getSchedulerStatus(): {
-  running: boolean;
-  in_flight_pipeline_ids: number[];
-  last_tick_at: number;
-  max_concurrent: number;
-} {
-  return {
-    running: state.intervalHandle != null,
-    in_flight_pipeline_ids: [...state.inFlight],
-    last_tick_at: state.lastTickAt,
-    max_concurrent: state.maxConcurrent,
-  };
+export function getSchedulerStatus() {
+  return getRuntimeStatus();
 }
 
-/** Start the cron-style ticker. Idempotent. */
 export function startScheduler(intervalMs = 30_000): void {
-  if (state.intervalHandle) return;
-  state.intervalHandle = setInterval(() => {
-    void tickScheduler();
-  }, intervalMs);
-  // Kick once immediately so a freshly-saved due pipeline doesn't
-  // wait the full interval.
-  void tickScheduler();
-  console.log(`[scheduler] started, polling every ${intervalMs / 1000}s`);
+  startRuntimeScheduler(db, intervalMs);
 }
 
 export function stopScheduler(): void {
-  if (state.intervalHandle) {
-    clearInterval(state.intervalHandle);
-    state.intervalHandle = null;
-  }
-}
-
-async function tickScheduler(): Promise<void> {
-  const now = new Date();
-  const prev = new Date(state.lastTickAt * 1000);
-  state.lastTickAt = Math.floor(now.getTime() / 1000);
-
-  const due = db
-    .prepare(
-      `SELECT id, user_id, schedule FROM pipelines
-       WHERE schedule_enabled = 1 AND schedule IS NOT NULL AND schedule != ''`,
-    )
-    .all() as Array<{ id: number; user_id: number; schedule: string }>;
-
-  for (const row of due) {
-    if (state.inFlight.size >= state.maxConcurrent) break;
-    if (state.inFlight.has(row.id)) continue;
-    if (!fireBetween(row.schedule, prev, now)) continue;
-
-    state.inFlight.add(row.id);
-    runPipeline(row.id, row.user_id, "schedule")
-      .catch((e) => {
-        console.warn(`[scheduler] pipeline ${row.id} failed: ${(e as Error).message}`);
-      })
-      .finally(() => {
-        state.inFlight.delete(row.id);
-      });
-  }
+  stopRuntimeScheduler();
 }

@@ -21,6 +21,8 @@ from .context import PipelineContext, PipelineResult
 from .executor import execute_pipeline
 from .templates import LOAD_MODE_TO_DISPOSITION, generate_template
 
+# runner is a CLI module (python -m crunch.pipelines.runner) — imported on demand.
+
 __all__ = [
     "LOAD_MODE_TO_DISPOSITION",
     "PipelineContext",

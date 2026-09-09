@@ -39,6 +39,11 @@ export const router = createRouter({
         },
         { path: "pipelines", name: "pipelines", component: Pipelines },
         { path: "pipelines/:id", name: "pipeline-detail", component: PipelineDetail },
+        {
+          path: "pipelines/:id/runs/:runId",
+          name: "pipeline-run",
+          component: PipelineDetail,
+        },
         { path: "admin", name: "admin", component: Admin, meta: { adminOnly: true } },
         { path: "docs", redirect: "/docs/filters" },
         { path: "docs/filters", name: "docs-filters", component: DocsFilters },

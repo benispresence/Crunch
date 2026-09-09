@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { config } from "../config.js";
+import { upgradePipelineTables } from "./pipelineSchema.js";
 
 export const db = new Database(config.databaseFile);
 db.pragma("journal_mode = WAL");
@@ -292,7 +293,11 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline
     ON pipeline_runs(pipeline_id, id DESC);
+`);
 
+upgradePipelineTables(db);
+
+db.exec(`
   -- Capability registry. Code seeds this; users never INSERT.
   -- A capability is a string like "query.write" that gates a specific
   -- action. Permissions on groups + permissions on api_keys both

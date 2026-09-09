@@ -1,9 +1,18 @@
 /**
  * Pipeline proposal tools. Mirrors the query/dashboard pattern: list +
- * get for discovery, propose_* for every mutation.
+ * get for discovery, propose_* for every mutation. Extended with schema
+ * inspection, validation, run-log retrieval, version comparison, and
+ * failure diagnosis.
  */
 
 import { db } from "../../db/index.js";
+import { explainFailure, stripSecretsFromConfig } from "../pipelineOps.js";
+import {
+  aiSafePipeline,
+  diffVersions,
+  inspectConnectionSchema,
+  validatePipeline,
+} from "../pipelineRuntime.js";
 import { safeParse, type ToolHandler, type ToolModule } from "./types.js";
 
 const list_pipelines: ToolHandler = (ctx) =>
@@ -45,17 +54,106 @@ const get_pipeline: ToolHandler = (ctx, input) => {
   const recent = db
     .prepare(
       `SELECT id, status, started_at, finished_at, rows_loaded,
-              error_message, triggered_by
+              error_message, triggered_by, version_id, attempt_number
        FROM pipeline_runs WHERE pipeline_id = ?
        ORDER BY id DESC LIMIT 10`,
     )
     .all(id);
+  const safe = aiSafePipeline(row as unknown as Record<string, unknown>);
   return {
-    ...row,
-    source_config: safeParse(row.source_config_json),
+    ...safe,
+    source_config: stripSecretsFromConfig(safeParse(row.source_config_json)).sanitized,
     schedule_enabled: !!row.schedule_enabled,
     recent_runs: recent,
   };
+};
+
+const inspect_connection_schema: ToolHandler = async (ctx, input) => {
+  const id = input.connection_id as number;
+  try {
+    return await inspectConnectionSchema(db, id, ctx.userId);
+  } catch (e) {
+    return { error: (e as Error).message, success: false };
+  }
+};
+
+const validate_pipeline: ToolHandler = (ctx, input) => {
+  const id = input.pipeline_id as number;
+  try {
+    return validatePipeline(db, id, ctx.userId);
+  } catch (e) {
+    return { error: (e as Error).message, success: false };
+  }
+};
+
+const get_pipeline_run_logs: ToolHandler = (ctx, input) => {
+  const pipelineId = input.pipeline_id as number;
+  const runId = input.run_id as number;
+  const owned = db
+    .prepare("SELECT name FROM pipelines WHERE id = ? AND user_id = ?")
+    .get(pipelineId, ctx.userId) as { name: string } | undefined;
+  if (!owned) return { error: `pipeline #${pipelineId} not found`, success: false };
+  const run = db
+    .prepare(
+      `SELECT id, status, log, error_message, version_id, triggered_by,
+              attempt_number, started_at, finished_at
+       FROM pipeline_runs WHERE id = ? AND pipeline_id = ?`,
+    )
+    .get(runId, pipelineId) as Record<string, unknown> | undefined;
+  if (!run) return { error: `run #${runId} not found`, success: false };
+  const attempts = db
+    .prepare(
+      `SELECT attempt_number, status, log, error_message, started_at, finished_at
+       FROM pipeline_run_attempts WHERE run_id = ? ORDER BY attempt_number`,
+    )
+    .all(runId);
+  return { ...run, attempts };
+};
+
+const compare_pipeline_versions: ToolHandler = (ctx, input) => {
+  const pipelineId = input.pipeline_id as number;
+  const owned = db
+    .prepare("SELECT id FROM pipelines WHERE id = ? AND user_id = ?")
+    .get(pipelineId, ctx.userId);
+  if (!owned) return { error: `pipeline #${pipelineId} not found`, success: false };
+  try {
+    return diffVersions(
+      db,
+      pipelineId,
+      input.from_version_id as number,
+      input.to_version_id as number,
+    );
+  } catch (e) {
+    return { error: (e as Error).message, success: false };
+  }
+};
+
+const diagnose_pipeline_failure: ToolHandler = (ctx, input) => {
+  const pipelineId = input.pipeline_id as number;
+  const runId = input.run_id as number;
+  const pipe = db
+    .prepare("SELECT name, last_successful_update FROM pipelines WHERE id = ? AND user_id = ?")
+    .get(pipelineId, ctx.userId) as
+    | { name: string; last_successful_update: number | null }
+    | undefined;
+  if (!pipe) return { error: `pipeline #${pipelineId} not found`, success: false };
+  const run = db
+    .prepare(
+      `SELECT log, error_message, next_retry_at FROM pipeline_runs
+       WHERE id = ? AND pipeline_id = ?`,
+    )
+    .get(runId, pipelineId) as
+    | { log: string; error_message: string | null; next_retry_at: number | null }
+    | undefined;
+  if (!run) return { error: `run #${runId} not found`, success: false };
+  const explanation = explainFailure({
+    error: run.error_message,
+    log: run.log || "",
+    lastSuccessfulUpdate: pipe.last_successful_update,
+    retryAt: run.next_retry_at,
+    pipelineName: pipe.name,
+  });
+  return { success: true, ...explanation };
 };
 
 const propose_new_pipeline: ToolHandler = (_ctx, input) => ({
@@ -71,8 +169,16 @@ const propose_new_pipeline: ToolHandler = (_ctx, input) => ({
       destination_connection_id: (input.destination_connection_id as number | undefined) ?? null,
       destination_dataset: (input.destination_dataset as string | undefined) ?? null,
       load_mode: (input.load_mode as string | undefined) ?? "replace",
+      extract_strategy: (input.extract_strategy as string | undefined) ?? undefined,
+      write_behavior: (input.write_behavior as string | undefined) ?? undefined,
       primary_key: (input.primary_key as string | undefined) ?? null,
       cursor_field: (input.cursor_field as string | undefined) ?? null,
+      timezone: (input.timezone as string | undefined) ?? "UTC",
+      quality_checks: (input.quality_checks as unknown[] | undefined) ?? [],
+      tags: (input.tags as string[] | undefined) ?? [],
+      recovery: (input.recovery as Record<string, unknown> | undefined) ?? {
+        retries: "bounded, transient failures",
+      },
       schedule: (input.schedule as string | undefined) ?? null,
       schedule_enabled: !!input.schedule_enabled,
       python_code: (input.python_code as string | undefined) ?? "",
@@ -101,9 +207,10 @@ const propose_pipeline_edit: ToolHandler = (ctx, input) => {
   for (const k of [
     "name", "description", "source_type", "source_config",
     "destination_connection_id", "destination_dataset",
-    "load_mode", "primary_key", "cursor_field",
-    "schedule", "schedule_enabled",
-    "python_code", "code_mode",
+    "load_mode", "extract_strategy", "write_behavior",
+    "primary_key", "cursor_field",
+    "schedule", "schedule_enabled", "timezone",
+    "python_code", "code_mode", "quality_checks", "tags",
   ]) {
     if (input[k] !== undefined) patch[k] = input[k];
   }
@@ -157,6 +264,66 @@ const propose_delete_pipeline: ToolHandler = (ctx, input) => {
 export const pipelineTools: ToolModule = {
   tools: [
     {
+      name: "inspect_connection_schema",
+      description:
+        "Inspect tables/schemas on a saved connection. Call this when proposing a pipeline so Source/Destination map to real tables. Does not return credentials.",
+      input_schema: {
+        type: "object",
+        properties: { connection_id: { type: "number" } },
+        required: ["connection_id"],
+      },
+    },
+    {
+      name: "validate_pipeline",
+      description:
+        "Validate a pipeline's configuration (extract vs write, keys, destination) and that destination credentials resolve. DOES NOT run a load.",
+      input_schema: {
+        type: "object",
+        properties: { pipeline_id: { type: "number" } },
+        required: ["pipeline_id"],
+      },
+    },
+    {
+      name: "get_pipeline_run_logs",
+      description:
+        "Fetch one run's logs, attempts, version, trigger, and timestamps. Use before diagnose_pipeline_failure.",
+      input_schema: {
+        type: "object",
+        properties: {
+          pipeline_id: { type: "number" },
+          run_id: { type: "number" },
+        },
+        required: ["pipeline_id", "run_id"],
+      },
+    },
+    {
+      name: "compare_pipeline_versions",
+      description:
+        "Readable config + code diff between two published pipeline versions.",
+      input_schema: {
+        type: "object",
+        properties: {
+          pipeline_id: { type: "number" },
+          from_version_id: { type: "number" },
+          to_version_id: { type: "number" },
+        },
+        required: ["pipeline_id", "from_version_id", "to_version_id"],
+      },
+    },
+    {
+      name: "diagnose_pipeline_failure",
+      description:
+        "Explain a failed run using its logs. Labels the cause as likely vs confirmed and cites log evidence. Does not mutate state.",
+      input_schema: {
+        type: "object",
+        properties: {
+          pipeline_id: { type: "number" },
+          run_id: { type: "number" },
+        },
+        required: ["pipeline_id", "run_id"],
+      },
+    },
+    {
       name: "list_pipelines",
       description:
         "List the user's data pipelines (id, name, source_type, load_mode, destination, last_run_status). Call before any propose_pipeline_* tool.",
@@ -185,9 +352,15 @@ export const pipelineTools: ToolModule = {
           source_config: { type: "object" },
           destination_connection_id: { type: "number" },
           destination_dataset: { type: "string" },
-          load_mode: { type: "string", description: "replace | append | merge | incremental | streaming" },
+          load_mode: { type: "string", description: "legacy combined mode; prefer extract_strategy + write_behavior" },
+          extract_strategy: { type: "string", description: "full | incremental | streaming (independent of write)" },
+          write_behavior: { type: "string", description: "replace | append | merge (independent of extract)" },
           primary_key: { type: "string" },
           cursor_field: { type: "string" },
+          timezone: { type: "string" },
+          quality_checks: { type: "array", items: { type: "object" } },
+          tags: { type: "array", items: { type: "string" } },
+          recovery: { type: "object" },
           schedule: { type: "string", description: "5-field cron expression, optional" },
           schedule_enabled: { type: "boolean" },
           python_code: { type: "string", description: "Override the auto-generated template" },
@@ -253,5 +426,7 @@ export const pipelineTools: ToolModule = {
   handlers: {
     list_pipelines, get_pipeline, propose_new_pipeline,
     propose_pipeline_edit, propose_run_pipeline, propose_delete_pipeline,
+    inspect_connection_schema, validate_pipeline, get_pipeline_run_logs,
+    compare_pipeline_versions, diagnose_pipeline_failure,
   },
 };

@@ -302,8 +302,19 @@ def execute_pipeline(
         _sys.modules.pop(fake_mod.__name__, None)
 
     rows = 0
+    steps = None
+    output_tables = None
+    checkpoints = None
     if isinstance(ret, dict):
         rows = int(ret.get("rows_loaded", 0) or 0)
+        steps = ret.get("steps")
+        output_tables = ret.get("output_tables")
+        checkpoints = ret.get("checkpoints")
+        captured = ret.get("rows")
+        if isinstance(captured, list) and not output_tables:
+            output_tables = [{"name": "output", "rows": captured}]
+        elif isinstance(captured, list) and isinstance(output_tables, list):
+            output_tables = list(output_tables) + [{"name": "output", "rows": captured}]
     elif isinstance(ret, int):
         rows = ret
 
@@ -312,4 +323,7 @@ def execute_pipeline(
         rows_loaded=rows,
         log=_cap_log(log_buf.getvalue()),
         duration_ms=(time.perf_counter() - started) * 1000,
+        steps=steps if isinstance(steps, list) else None,
+        output_tables=output_tables if isinstance(output_tables, list) else None,
+        checkpoints=checkpoints if isinstance(checkpoints, list) else None,
     )

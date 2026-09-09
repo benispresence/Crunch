@@ -1,8 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { useChatStore } from "@/stores/chat";
 import ChatMessage from "./ChatMessage.vue";
 import CookieLoader from "./CookieLoader.vue";
+
+const route = useRoute();
+const onPipelines = computed(() =>
+  route.name === "pipelines" || route.name === "pipeline-detail" || route.name === "pipeline-run",
+);
 
 const chat = useChatStore();
 const input = ref("");
@@ -150,17 +156,26 @@ function resize() {
     <div ref="scroller" class="chat__scroll">
       <div v-if="chat.turns.length === 0" class="chat__empty">
         <img src="/logo.png" alt="Crunch" class="chat__empty-logo" />
-        <h2 class="chat__empty-title">How can I help with your data?</h2>
+        <h2 class="chat__empty-title">
+          {{ onPipelines ? "What data would you like to bring into Crunch?" : "How can I help with your data?" }}
+        </h2>
         <p class="chat__empty-sub">
-          I can read your schema, write SQL, run queries, and chart the results.
+          {{ onPipelines
+            ? "Describe a source, destination, schedule, and checks. I’ll inspect connections and propose a pipeline."
+            : "I can read your schema, write SQL, run queries, and chart the results." }}
         </p>
         <div class="chat__suggestions">
           <button
-            v-for="s in [
-              'Show me the tables in my main connection',
-              'Top 10 customers by revenue this month',
-              'Plot daily signups over the last 90 days',
-            ]"
+            v-for="s in (onPipelines
+              ? [
+                  'Copy orders from our production Postgres into analytics every hour. Use updated_at to pick up changes, deduplicate by order ID, and tell me if it fails.',
+                  'List my connections and propose a pipeline from the first SQL source.',
+                ]
+              : [
+                  'Show me the tables in my main connection',
+                  'Top 10 customers by revenue this month',
+                  'Plot daily signups over the last 90 days',
+                ])"
             :key="s"
             class="chat__suggestion"
             @click="input = s; send()"

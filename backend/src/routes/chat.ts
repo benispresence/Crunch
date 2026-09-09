@@ -93,13 +93,11 @@ Cross-surface navigation:
 - The user can toggle auto-accept; when on, the navigation happens immediately. Either way, surface it as a proposal — never assume the user has switched pages.
 
 Data pipelines:
-- Pipelines ingest data into one of the user's connections — REST APIs, SQL replication, files, Kafka, or fully custom Python. Each pipeline has a Python script (typically using the dlt library) that we can auto-generate from a structured form.
-- Discovery: \`list_pipelines\` → \`get_pipeline\` for the full state (config + python_code + recent runs).
-- Create: \`propose_new_pipeline\`. Provide source_type + load_mode + destination_connection_id at minimum. Leave python_code unset to let the engine generate a dlt template that matches the form fields; set code_mode='custom' if you want to hand-author the script.
-- Edit: \`propose_pipeline_edit\`. Same field set, all optional. Editing the form fields with code_mode='template' regenerates the script automatically.
-- Run: \`propose_run_pipeline\` fires it once now. Schedule-based runs use the cron expression stored on the pipeline.
-- Load modes: replace (truncate + reingest), append (batch), merge (delta, needs primary_key), incremental (cursor_field), streaming (bounded micro-batch with stream_max_seconds/messages).
-- After a successful new_pipeline accept, prefer chaining \`propose_navigate\` with to='pipeline' so the user lands in the editor and can run/edit it.
+- Conversational creation is the main path. Start from "What data would you like to bring into Crunch?" Discover connections with \`list_connections\` and tables with \`inspect_connection_schema\`, then \`propose_new_pipeline\` covering Source, Destination, Behavior (extract_strategy AND write_behavior independently — incremental is not the same as merge), Cursor, Schedule + timezone, Checks, and Recovery.
+- The user flow is Describe → Review → Validate (\`validate_pipeline\`) → Test draft (scratch destination) → Publish. Never bake secret values into proposals; use connection ids and secret references.
+- Discovery: \`list_pipelines\` → \`get_pipeline\` (secrets stripped). Run logs: \`get_pipeline_run_logs\`. Failures: \`diagnose_pipeline_failure\` (cite log evidence; label likely vs confirmed). Versions: \`compare_pipeline_versions\`.
+- Create: \`propose_new_pipeline\`. Edit: \`propose_pipeline_edit\`. Run: \`propose_run_pipeline\` enqueues the published version. Custom Python is never overwritten by form changes; converting to custom is explicit.
+- After a successful new_pipeline accept, prefer chaining \`propose_navigate\` with to='pipeline' so the user lands on Overview.
 
 For \`propose_navigate\`: \`to='pipeline'\` (with \`pipeline_id\`) opens the pipeline detail view; \`to='pipelines'\` opens the list.
 
@@ -121,6 +119,9 @@ const workspaceContextSchema = z.object({
   has_unsaved_changes: z.boolean().optional(),
   last_result_columns: z.array(z.string()).optional(),
   last_result_row_count: z.number().int().optional(),
+  active_pipeline_id: z.number().int().nullable().optional(),
+  active_pipeline_name: z.string().nullable().optional(),
+  active_run_id: z.number().int().nullable().optional(),
 });
 
 const sendSchema = z.object({
@@ -182,6 +183,14 @@ function formatWorkspaceContext(ctx: z.infer<typeof workspaceContextSchema>): st
     lines.push(
       `last_result: ${ctx.last_result_row_count ?? "?"} rows, columns: ${ctx.last_result_columns.join(", ")}`,
     );
+  }
+  if (ctx.active_pipeline_id != null) {
+    lines.push(
+      `active_pipeline: #${ctx.active_pipeline_id} "${ctx.active_pipeline_name ?? "?"}"`,
+    );
+  }
+  if (ctx.active_run_id != null) {
+    lines.push(`active_run: #${ctx.active_run_id}`);
   }
   lines.push("</workspace_context>");
   lines.push(
