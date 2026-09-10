@@ -39,6 +39,41 @@ const savedDefinition = ref("");
 const definitionKeys = ["name", "description", "source_type", "source_config", "source_connection_id", "destination_connection_id", "destination_dataset", "extract_strategy", "write_behavior", "load_mode", "primary_key", "cursor_field", "python_code", "code_mode", "schedule", "schedule_enabled", "timezone", "quality_checks", "tags", "stream_max_seconds", "stream_max_messages", "scratch_destination_connection_id", "scratch_destination_dataset", "freshness_threshold_seconds"];
 function definition(value: Partial<SavedPipeline> | null) { return JSON.stringify(definitionKeys.map(k => (value as Record<string, unknown> | null)?.[k])); }
 const dirty = computed(() => definition(draft.value) !== savedDefinition.value);
+const published = computed(() =>
+  pipelines.versions.find((v) => v.id === pipelines.current?.published_version_id) ?? null,
+);
+/** True when the editor/draft script is not what "Run published version" will execute. */
+const unpublishedCode = computed(() => {
+  if (!draft.value || !published.value) return false;
+  return (draft.value.python_code ?? "") !== published.value.python_code;
+});
+function savedPython(): string {
+  try {
+    const parsed = JSON.parse(savedDefinition.value) as unknown[];
+    return String(parsed[definitionKeys.indexOf("python_code")] ?? "");
+  } catch {
+    return "";
+  }
+}
+function adoptServerDraft(opts: { forceCode?: boolean } = {}) {
+  const cur = pipelines.current;
+  if (!cur || cur.id !== pipelineId.value) return;
+  if (!dirty.value) {
+    draft.value = clone(cur);
+    savedDefinition.value = definition(draft.value);
+    return;
+  }
+  // Chat Accept / restore can write python_code while this page still holds
+  // a stale clone. If the user hasn't edited the script locally, take the
+  // server copy so Save/Publish cannot write the old script back.
+  if (
+    (opts.forceCode || (draft.value?.python_code ?? "") === savedPython())
+    && cur.python_code != null
+    && cur.python_code !== draft.value?.python_code
+  ) {
+    draft.value = { ...draft.value, python_code: cur.python_code };
+  }
+}
 let poll: ReturnType<typeof setInterval> | null = null;
 let refreshing = false;
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -118,6 +153,10 @@ watch(
   (code) => {
     if (editor && code != null && editor.getValue() !== code) editor.setValue(code);
   },
+);
+watch(
+  () => [pipelines.current?.id, pipelines.current?.updated_at, pipelines.current?.python_code] as const,
+  () => adoptServerDraft(),
 );
 
 async function saveDraft() {
@@ -382,11 +421,16 @@ function openAdminPackages(mod: string) {
           :disabled="pipelines.running || !p?.published_version_id"
           @click="runPublished"
         >
-          {{ pipelines.running ? "Queuing…" : "Run published version" }}
+          {{ pipelines.running ? "Queuing…" : (published ? `Run published v${published.version_number}` : "Run published version") }}
         </button>
       </div>
     </header>
 
+    <p v-if="unpublishedCode" class="detail__warn" role="status">
+      Draft code is not what runs in production.
+      <strong>Run published v{{ published?.version_number }}</strong> still executes the last published script.
+      Publish to run this draft, or use Test draft. Retry on a failed run also replays that run’s original snapshot, not the editor.
+    </p>
     <p v-if="validationMessage" role="status">{{ validationMessage }}</p>
     <p v-if="runError" role="alert" class="detail__error">{{ runError }}</p>
 
@@ -738,6 +782,14 @@ function openAdminPackages(mod: string) {
 .detail__status--running { background: var(--accent-subtle); color: var(--accent); }
 .detail__status--muted { background: var(--bg); color: var(--fg-subtle); }
 .detail__error { margin: 0; padding: 8px 24px; background: rgba(220, 80, 80, 0.08); color: var(--error); font-size: 12px; }
+.detail__warn {
+  margin: 0;
+  padding: 8px 24px;
+  background: rgba(200, 160, 60, 0.12);
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
 .detail__tabs { display: flex; gap: 4px; padding: 8px 24px 0; border-bottom: 1px solid var(--border); }
 .detail__tab {
   padding: 7px 14px; font-size: 12.5px; background: transparent; border: none;
