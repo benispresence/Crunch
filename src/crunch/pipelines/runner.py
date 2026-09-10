@@ -10,6 +10,7 @@ The parent (Express) owns the process group and can SIGTERM/SIGKILL it.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     job_path = Path(args[0])
     job = json.loads(job_path.read_text())
+    environment = {str(k): str(v) for k, v in (job.get("environment") or {}).items()}
+    os.environ.update(environment)
     from crunch.pipelines.context import PipelineContext
     from crunch.pipelines.executor import execute_pipeline
 
@@ -62,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         source_config=source_config,
         runtime_config=job.get("runtime_config") or {},
         source_engine=source_engine,
+        env=environment,
     )
     timeout = int(job.get("timeout_seconds") or 1800)
     result = execute_pipeline(job.get("code") or "", ctx, timeout_seconds=timeout)
@@ -83,6 +87,19 @@ def main(argv: list[str] | None = None) -> int:
         "checkpoints": list(getattr(result, "checkpoints", None) or []),
         "rows": captured_rows,
     }
+    # Redact before persisting results, including nested previews and exceptions.
+    secrets = sorted(filter(None, job.get("environment_secrets") or []), key=len, reverse=True)
+    def redact(value):
+        if isinstance(value, str):
+            for secret in secrets:
+                value = value.replace(secret, "[REDACTED]")
+            return value
+        if isinstance(value, list):
+            return [redact(v) for v in value]
+        if isinstance(value, dict):
+            return {redact(k): redact(v) for k, v in value.items()}
+        return value
+    payload = redact(payload)
     result_path = Path(str(job_path) + ".result.json")
     temporary = Path(str(result_path) + ".tmp")
     temporary.write_text(json.dumps(payload, default=str))

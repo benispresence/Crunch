@@ -389,3 +389,16 @@ describe("legacy pipeline upgrade", () => {
     db.close();
   });
 });
+
+it('injects pipeline variables and secrets into the worker and masks stored output', async () => {
+  const {saveEnvironment} = await import('../src/services/pipelineEnvironment.ts');
+  const database = openDb("def run():\n    assert ctx.env['REGION'] == 'eu'\n    assert len(ctx.env['API_TOKEN']) > 5\n    print(ctx.env['API_TOKEN'])\n    return {'rows_loaded': 7}\n");
+  database.prepare('UPDATE pipelines SET environment_sealed = ? WHERE id = 1').run(saveEnvironment({entries:[{name:'REGION',value:'eu',secret:false},{name:'API_TOKEN',value:'worker-secret-123',secret:true}]},''));
+  try {
+    const queued = enqueueRun(database, {pipelineId:1,userId:1,trigger:'manual'});
+    const run = await waitForRun(database, Number(queued.id), 30000);
+    assert.equal(run.status,'success');
+    assert.ok(!JSON.stringify(run).includes('worker-secret-123'));
+    assert.ok(JSON.stringify(run).includes('[REDACTED]'));
+  } finally { database.close(); }
+});

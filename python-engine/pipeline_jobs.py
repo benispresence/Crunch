@@ -18,6 +18,7 @@ class PipelineJobs:
         self.directory = Path(os.environ.get('CRUNCH_PIPELINE_JOB_DIR', str(Path(tempfile.gettempdir()) / 'crunch-engine-jobs')))
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.children = {}
+        self.secrets = {}
 
     def path(self, job_id):
         if not re.fullmatch(r'[a-zA-Z0-9-]{16,100}', job_id):
@@ -35,6 +36,7 @@ class PipelineJobs:
         path = directory / 'job.json'
         path.write_text(json.dumps(job))
         path.chmod(0o600)
+        self.secrets[job_id] = job.get('environment_secrets') or []
         log = open(directory / 'process.log', 'wb')
         proc = subprocess.Popen([sys.executable, '-m', 'crunch.pipelines.runner', str(path)],
             cwd=self.root, env={**os.environ, 'PYTHONPATH': str(self.root / 'src') + os.pathsep + os.environ.get('PYTHONPATH', '')},
@@ -49,6 +51,12 @@ class PipelineJobs:
                 self.kill(proc)
                 (directory / 'timed_out').touch()
             finally:
+                log_path = directory / 'process.log'
+                output = log_path.read_text(errors='replace')
+                for secret in sorted(filter(None, self.secrets.get(job_id, [])), key=len, reverse=True):
+                    output = output.replace(secret, '[REDACTED]')
+                log_path.write_text(output)
+                self.secrets.pop(job_id, None)
                 path.unlink(missing_ok=True)
         threading.Thread(target=supervise, daemon=True).start()
         return {'job_id': job_id, 'status': 'running'}
@@ -94,7 +102,10 @@ class PipelineJobs:
         if proc and proc.poll() is None:
             return {'status': 'running'}
         if proc:
-            log = (directory / 'process.log').read_text(errors='replace')[-20000:]
+            log = (directory / 'process.log').read_text(errors='replace')
+            for secret in sorted(filter(None, self.secrets.get(job_id, [])), key=len, reverse=True):
+                log = log.replace(secret, '[REDACTED]')
+            log = log[-20000:]
             return {'status': 'finished', 'result': {'success': False, 'error': 'Worker timed out' if (directory / 'timed_out').exists() else f'Worker exited {proc.returncode}', 'log': log, 'rows_loaded': 0}}
         # Engine restart: do not signal arbitrary persisted PIDs or replay writes.
         return {'status': 'interrupted'}

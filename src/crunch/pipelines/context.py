@@ -42,6 +42,7 @@ class PipelineContext:
     stream_max_seconds: int = 60
     stream_max_messages: int = 10000
     runtime_config: dict[str, Any] | None = None
+    env: dict[str, str] | None = None
     source_engine: Any = None  # populated for SQL-source pipelines
     source_config: dict[str, Any] | None = None
 

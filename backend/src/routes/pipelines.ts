@@ -1,3 +1,4 @@
+import { publicEnvironment, saveEnvironment } from "../services/pipelineEnvironment.js";
 import cronParser from "cron-parser";
 import { Router } from "express";
 import { z } from "zod";
@@ -38,6 +39,25 @@ import {
 
 export const pipelinesRouter = Router();
 pipelinesRouter.use(requireAuth);
+
+// Values are deliberately separate from pipeline DTOs, snapshots and AI tools.
+pipelinesRouter.get("/:id/environment", (req, res) => {
+  const row = db.prepare("SELECT environment_sealed FROM pipelines WHERE id = ? AND user_id = ?").get(req.params.id, req.user!.sub) as {environment_sealed: string} | undefined;
+  if (!row) { res.status(404).json({error: "not found"}); return; }
+  res.json(publicEnvironment(row.environment_sealed));
+});
+pipelinesRouter.put("/:id/environment", (req, res) => {
+  const row = db.prepare("SELECT environment_sealed FROM pipelines WHERE id = ? AND user_id = ?").get(req.params.id, req.user!.sub) as {environment_sealed: string} | undefined;
+  if (!row) { res.status(404).json({error: "not found"}); return; }
+  try {
+    const sealed = saveEnvironment(req.body, row.environment_sealed);
+    db.transaction(() => {
+      db.prepare("UPDATE pipelines SET environment_sealed = ? WHERE id = ? AND user_id = ?").run(sealed, req.params.id, req.user!.sub);
+      db.prepare("INSERT INTO pipeline_activity (pipeline_id, actor_user_id, action, detail_json) VALUES (?, ?, 'environment_updated', '{}')").run(req.params.id, req.user!.sub);
+    })();
+    res.json(publicEnvironment(sealed));
+  } catch { res.status(400).json({error: "Invalid variables. Use unique uppercase names, avoid reserved process names, and enter values for new secrets."}); }
+});
 
 const SOURCE_TYPES = ["rest_api", "sql", "file", "kafka", "custom"] as const;
 const LOAD_MODES = ["replace", "append", "merge", "incremental", "streaming"] as const;

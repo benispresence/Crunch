@@ -1,3 +1,4 @@
+import { readEnvironment, redactEnvironment } from "./pipelineEnvironment.js";
 import { randomUUID } from "node:crypto";
 /**
  * Persisted pipeline queue, versions, overview DTOs, and execution.
@@ -757,7 +758,10 @@ async function executeRun(
 
   const jobId = String(run.engine_job_id || randomUUID());
   if (!run.engine_job_id) database.prepare("UPDATE pipeline_runs SET engine_job_id = ?, started_at = strftime('%s', 'now') WHERE id = ?").run(jobId, runId);
+  const environment = readEnvironment(pipeline.environment_sealed);
   const job = {
+    environment: Object.fromEntries(environment.map(e => [e.name, e.value])),
+    environment_secrets: environment.filter(e => e.secret).map(e => e.value),
     job_id: jobId, code, destination, source_config: sourceConfig, source_connection: sourceConnection,
     stream_max_seconds: Number(runtime.stream_max_seconds ?? 60),
     stream_max_messages: Number(runtime.stream_max_messages ?? 10000), timeout_seconds: 1800,
@@ -788,6 +792,7 @@ async function executeRun(
       await new Promise(r => setTimeout(r, 500));
     }
   }
+  result = redactEnvironment(result, environment.filter(e => e.secret).map(e => e.value));
   const cancelled = !!(database.prepare("SELECT cancel_requested FROM pipeline_runs WHERE id = ?").get(runId) as {cancel_requested: number})?.cancel_requested;
 
   if (cancelled) {

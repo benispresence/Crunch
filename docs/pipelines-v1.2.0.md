@@ -72,3 +72,34 @@ The frontend build retains its existing large-chunk warning for Monaco/Plotly.
 A native desktop installer and live AI provider generation were not exercised;
 desktop resources were updated, and assistant UI behavior used a deterministic
 response fixture.
+
+## Pipeline variables and secrets
+
+Open a pipeline, select **Settings → Variables & Secrets**, and add named values.
+Use uppercase names such as `REGION` or `API_TOKEN`. Select Secret for credentials;
+saved secret values are never returned to the browser. Type a replacement to
+rotate a secret, or remove the row and save to delete it. A blank replacement
+is an explicitly empty value; leaving the saved placeholder untouched preserves it.
+
+Click **Save variables & secrets** separately from **Save draft**. These settings
+are live, pipeline-scoped configuration: each new worker receives current values,
+including scratch tests and retries of older published versions. Running workers
+keep their original values. Publish/restore does not snapshot or roll back this
+configuration. Changes appear in activity without values.
+
+Read values in custom Python with `ctx.env["API_TOKEN"]` or
+`ctx.env.get("REGION", "eu")`. They are also injected into the individual worker's
+process environment for libraries that read environment settings. Importing `os`
+is subject to the existing package allowlist. Process-control names such as
+`PATH`, `PYTHONPATH`, and `CRUNCH_*` are reserved.
+
+Storage uses the existing application encryption key. The dedicated API exposes
+ordinary variables and secret names only. Values are excluded from pipeline
+snapshots and assistant context. Exact secret strings are masked in captured
+results, errors, previews and completed worker logs; transformed/encoded values
+cannot be reliably recognized, so scripts should avoid printing credentials.
+
+Validation: 32 backend tests including worker injection and redaction, and the
+Chromium harness `backend/scripts/pipeline-environment-browser.mjs` covering
+add/preserve/rotate/delete, real engine execution, masked API/log/version output,
+and authentication. Run this harness only against a disposable local database.

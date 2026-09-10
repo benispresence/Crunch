@@ -153,6 +153,8 @@ export function upgradePipelineTables(database: Database.Database): void {
   // copied into versions, AI payloads, or source_config_json.
   p("source_secrets_json", "source_secrets_json TEXT NOT NULL DEFAULT ''");
 
+  p("environment_sealed", "environment_sealed TEXT NOT NULL DEFAULT ''");
+
   const r = (col: string, ddl: string) => ensureColumn(database, "pipeline_runs", col, ddl);
   r("version_id", "version_id INTEGER");
   r("queued_at", "queued_at INTEGER");

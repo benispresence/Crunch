@@ -2,6 +2,7 @@
 import * as monaco from "monaco-editor";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import PipelineEnvironment from "@/components/PipelineEnvironment.vue";
 import PipelineLogViewer from "@/components/PipelineLogViewer.vue";
 import { useTheme } from "@/composables/theme";
 import { useChatStore } from "@/stores/chat";
@@ -515,6 +516,7 @@ function ensureSourceConfig() {
         <span>Description</span>
         <textarea v-model="draft.description" rows="2"></textarea>
       </label>
+      <PipelineEnvironment :pipeline-id="pipelineId" />
       <h3>Source</h3>
       <div class="grid">
         <label class="field">

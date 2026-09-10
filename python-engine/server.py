@@ -271,6 +271,8 @@ class PipelineExecuteRequest(BaseModel):
     source_config: dict[str, Any] = {}
     source_connection: dict[str, Any] | None = None
     runtime_config: dict[str, Any] = {}
+    environment: dict[str, str] = {}
+    environment_secrets: list[str] = []
 
 
 class PipelineExecuteResponse(BaseModel):

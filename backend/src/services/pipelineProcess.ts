@@ -13,6 +13,8 @@ import path from "node:path";
 
 export interface PipelineJob {
   runtime_config?: Record<string, unknown>;
+  environment?: Record<string, string>;
+  environment_secrets?: string[];
   code: string;
   destination: Record<string, unknown>;
   source_config?: Record<string, unknown>;
