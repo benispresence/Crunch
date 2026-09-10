@@ -94,6 +94,24 @@ function parseJson<T>(s: string | null | undefined, fallback: T): T {
   }
 }
 
+/** Admin package table as the worker should see it. Missing table (tests) → {}. */
+function allowedPackagesForJob(database: Database.Database): Record<string, string> {
+  try {
+    const rows = database
+      .prepare(
+        `SELECT COALESCE(import_name, package_name) AS name, package_name
+           FROM allowed_packages
+          WHERE is_enabled = 1 AND status = 'installed'`,
+      )
+      .all() as Array<{ name: string; package_name: string }>;
+    const out: Record<string, string> = {};
+    for (const row of rows) out[row.name] = row.package_name;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export function setSchedulerConcurrency(n: number): void {
   workerState.maxConcurrent = Math.max(1, Math.min(16, n));
 }
@@ -765,6 +783,7 @@ async function executeRun(
     job_id: jobId, code, destination, source_config: sourceConfig, source_connection: sourceConnection,
     stream_max_seconds: Number(runtime.stream_max_seconds ?? 60),
     stream_max_messages: Number(runtime.stream_max_messages ?? 10000), timeout_seconds: 1800,
+    allowed_packages: allowedPackagesForJob(database),
     runtime_config: {...runtime, destination_dataset: isTest ? runtime.scratch_destination_dataset : runtime.destination_dataset,
       pipeline_identity: `pipeline_${pipelineId}${isTest ? "_test" : ""}`,
       processing_interval_start: run.processing_interval_start, processing_interval_end: run.processing_interval_end},

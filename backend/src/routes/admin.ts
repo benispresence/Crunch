@@ -3,7 +3,14 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAdmin, requireAuth } from "../middleware/auth.js";
 import { createUser, findUserByEmail, updatePassword } from "../services/auth.js";
-import { isStdlibRow } from "../services/packages.js";
+import {
+  addOrInstallPackage,
+  installPackageById,
+  isPipelineDefault,
+  isStdlibRow,
+  isVizBlockedImport,
+  type PackageRow,
+} from "../services/packages.js";
 import {
   getWebSearchMaxUses,
   isWebSearchEnabled,
@@ -74,20 +81,6 @@ import {
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireAdmin);
 
-interface PackageRow {
-  id: number;
-  package_name: string;
-  import_name: string | null;
-  version_spec: string | null;
-  installed_version: string | null;
-  status: string;
-  error_message: string | null;
-  is_default: number;
-  is_enabled: number;
-  created_at: number;
-  updated_at: number;
-}
-
 interface UserRow {
   id: number;
   email: string;
@@ -96,6 +89,8 @@ interface UserRow {
 }
 
 function rowToPackage(row: PackageRow) {
+  const importName = row.import_name || row.package_name;
+  const vizBlocked = isVizBlockedImport(importName);
   return {
     id: row.id,
     package_name: row.package_name,
@@ -109,6 +104,10 @@ function rowToPackage(row: PackageRow) {
     // Lets the UI drop the Install/Uninstall buttons — there is no pip step
     // for a module that ships with Python.
     is_stdlib: isStdlibRow(row.installed_version),
+    // Chart scripts still cannot import this even when the wheel is present.
+    viz_blocked: vizBlocked,
+    is_pipeline_default: isPipelineDefault(row.package_name),
+    used_by: vizBlocked ? "pipelines" : "charts_and_pipelines",
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -134,23 +133,17 @@ adminRouter.post("/packages", async (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const info = db
-    .prepare(
-      "INSERT INTO allowed_packages (package_name, import_name, version_spec, status, is_enabled) VALUES (?, ?, ?, 'pending', 1)",
-    )
-    .run(
-      parsed.data.package_name,
-      parsed.data.import_name ?? parsed.data.package_name,
-      parsed.data.version_spec ?? null,
-    );
-  const id = Number(info.lastInsertRowid);
-  if (parsed.data.auto_install) {
-    await installPackageById(id);
+  try {
+    const row = await addOrInstallPackage({
+      package_name: parsed.data.package_name,
+      import_name: parsed.data.import_name,
+      version_spec: parsed.data.version_spec,
+      auto_install: parsed.data.auto_install,
+    });
+    res.json(rowToPackage(row));
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
   }
-  const row = db
-    .prepare("SELECT * FROM allowed_packages WHERE id = ?")
-    .get(id) as PackageRow;
-  res.json(rowToPackage(row));
 });
 
 adminRouter.put("/packages/:id", (req, res) => {
@@ -218,39 +211,6 @@ adminRouter.delete("/packages/:id", (req, res) => {
   db.prepare("DELETE FROM allowed_packages WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
 });
-
-async function installPackageById(
-  id: number,
-): Promise<{ success: boolean; version?: string; error?: string }> {
-  const row = db
-    .prepare("SELECT * FROM allowed_packages WHERE id = ?")
-    .get(id) as PackageRow | undefined;
-  if (!row) return { success: false, error: "not found" };
-  db.prepare(
-    "UPDATE allowed_packages SET status = 'installing', error_message = NULL, updated_at = strftime('%s', 'now') WHERE id = ?",
-  ).run(id);
-  try {
-    const r = await pythonEngine.installPackage(
-      row.package_name,
-      row.version_spec ?? undefined,
-    );
-    db.prepare(
-      "UPDATE allowed_packages SET status = ?, installed_version = ?, error_message = ?, updated_at = strftime('%s', 'now') WHERE id = ?",
-    ).run(
-      r.success ? "installed" : "failed",
-      r.version ?? null,
-      r.error ?? null,
-      id,
-    );
-    return r;
-  } catch (err) {
-    const msg = (err as Error).message;
-    db.prepare(
-      "UPDATE allowed_packages SET status = 'failed', error_message = ?, updated_at = strftime('%s', 'now') WHERE id = ?",
-    ).run(msg, id);
-    return { success: false, error: msg };
-  }
-}
 
 adminRouter.get("/users", (_req, res) => {
   const rows = db

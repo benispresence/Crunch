@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { api } from "@/api/client";
 import AiSettingsPanel from "@/components/AiSettingsPanel.vue";
 import AuthSettingsPanel from "@/components/AuthSettingsPanel.vue";
@@ -20,6 +21,10 @@ interface Pkg {
   is_enabled: boolean;
   /** Ships with Python: no pip step, no version number. */
   is_stdlib?: boolean;
+  /** Chart scripts still cannot import this (e.g. requests). */
+  viz_blocked?: boolean;
+  is_pipeline_default?: boolean;
+  used_by?: "pipelines" | "charts_and_pipelines";
 }
 
 interface AdminUser {
@@ -30,8 +35,34 @@ interface AdminUser {
 }
 
 const auth = useAuthStore();
-const tab = ref<"settings" | "packages" | "users" | "auth" | "permissions" | "pipelines" | "mcp" | "git">("settings");
+const route = useRoute();
+const router = useRouter();
+type AdminTab = "settings" | "packages" | "users" | "auth" | "permissions" | "pipelines" | "mcp" | "git";
+const ADMIN_TABS: AdminTab[] = ["settings", "packages", "users", "auth", "permissions", "pipelines", "mcp", "git"];
+function tabFromQuery(): AdminTab {
+  const t = String(route.query.tab || "");
+  return (ADMIN_TABS as string[]).includes(t) ? (t as AdminTab) : "settings";
+}
+const tab = ref<AdminTab>(tabFromQuery());
 const error = ref("");
+const highlightPkg = computed(() => String(route.query.pkg || "").trim().toLowerCase());
+
+function setTab(next: AdminTab) {
+  tab.value = next;
+  const query: Record<string, string> = { ...Object.fromEntries(
+    Object.entries(route.query).filter((e): e is [string, string] => typeof e[1] === "string"),
+  ) };
+  query.tab = next;
+  if (next !== "packages") delete query.pkg;
+  void router.replace({ query });
+}
+
+watch(
+  () => route.query.tab,
+  () => {
+    tab.value = tabFromQuery();
+  },
+);
 
 interface SettingsState {
   public_registration_enabled: boolean;
@@ -191,7 +222,28 @@ async function loadAll() {
   await Promise.all([loadGit(), loadSettings()]);
 }
 
-onMounted(loadAll);
+onMounted(async () => {
+  await loadAll();
+  if (highlightPkg.value && !packages.value.some(matchesHighlight)) {
+    newPkg.value.package_name = highlightPkg.value;
+  }
+  await nextTick();
+  document.querySelector(".admin__row--hl")?.scrollIntoView({ block: "center" });
+});
+
+function matchesHighlight(p: Pkg): boolean {
+  const needle = highlightPkg.value;
+  if (!needle) return false;
+  return (
+    p.package_name.toLowerCase() === needle
+    || (p.import_name || "").toLowerCase() === needle
+  );
+}
+
+watch([packages, highlightPkg], async () => {
+  await nextTick();
+  document.querySelector(".admin__row--hl")?.scrollIntoView({ block: "center" });
+});
 
 async function add() {
   if (!newPkg.value.package_name.trim()) return;
@@ -322,63 +374,63 @@ async function deleteUser(u: AdminUser) {
   <div class="admin">
     <header class="admin__head">
       <h1>Admin</h1>
-      <p>Manage the visualization sandbox whitelist and user roles.</p>
+      <p>Manage Python packages for charts and pipelines, plus user roles.</p>
     </header>
 
     <div class="admin__tabs">
       <button
         class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'settings' }"
-        @click="tab = 'settings'"
+        @click="setTab('settings')"
       >
         Settings
       </button>
       <button
         class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'packages' }"
-        @click="tab = 'packages'"
+        @click="setTab('packages')"
       >
         Allowed packages
       </button>
       <button
         class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'users' }"
-        @click="tab = 'users'"
+        @click="setTab('users')"
       >
         Users
       </button>
       <button
         class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'auth' }"
-        @click="tab = 'auth'"
+        @click="setTab('auth')"
       >
         Authentication
       </button>
       <button
         class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'permissions' }"
-        @click="tab = 'permissions'"
+        @click="setTab('permissions')"
       >
         Permissions
       </button>
       <button
         class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'pipelines' }"
-        @click="tab = 'pipelines'"
+        @click="setTab('pipelines')"
       >
         Pipelines
       </button>
       <button
         class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'mcp' }"
-        @click="tab = 'mcp'"
+        @click="setTab('mcp')"
       >
         MCP
       </button>
       <button
         class="admin__tab"
         :class="{ 'admin__tab--active': tab === 'git' }"
-        @click="tab = 'git'"
+        @click="setTab('git')"
       >
         Git
       </button>
@@ -388,6 +440,12 @@ async function deleteUser(u: AdminUser) {
 
     <!-- Packages -->
     <section v-if="tab === 'packages'" class="admin__section">
+      <p class="admin__hint">
+        Installed packages are available to <strong>pipelines</strong>. Chart scripts
+        use the same list, except network libraries such as <code>requests</code>
+        stay blocked in visualizations even after they are installed.
+        Deep-link: <code>/admin?tab=packages&amp;pkg=requests</code>.
+      </p>
       <div class="admin__form">
         <input
           v-model="newPkg.package_name"
@@ -411,6 +469,7 @@ async function deleteUser(u: AdminUser) {
           <tr>
             <th>Package</th>
             <th>Import</th>
+            <th>Used by</th>
             <th>Version</th>
             <th>Status</th>
             <th>Enabled</th>
@@ -418,15 +477,26 @@ async function deleteUser(u: AdminUser) {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="p in packages" :key="p.id">
+          <tr
+            v-for="p in packages"
+            :key="p.id"
+            :class="{ 'admin__row--hl': matchesHighlight(p) }"
+          >
             <td>
               <div class="admin__pkg">
                 <strong>{{ p.package_name }}</strong>
                 <span v-if="p.is_stdlib" class="admin__badge">stdlib</span>
+                <span v-else-if="p.is_pipeline_default" class="admin__badge">pipeline</span>
                 <span v-else-if="p.is_default" class="admin__badge">default</span>
               </div>
             </td>
             <td class="admin__mono">{{ p.import_name ?? "—" }}</td>
+            <td>
+              <span v-if="p.viz_blocked" class="admin__badge" title="Installed for pipelines. Chart scripts still cannot import this module.">
+                pipelines
+              </span>
+              <span v-else class="admin__badge admin__badge--quiet">charts &amp; pipelines</span>
+            </td>
             <td class="admin__mono">
               <span v-if="p.is_stdlib" class="admin__stdlib" title="Part of Python — no pip package, so there is no version to report">
                 built in
@@ -831,6 +901,14 @@ async function deleteUser(u: AdminUser) {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
+}
+.admin__row--hl td {
+  background: rgba(224, 122, 95, 0.08);
+}
+.admin__badge--quiet {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .admin__pkg { display: flex; align-items: center; gap: 8px; }
 .admin__badge {

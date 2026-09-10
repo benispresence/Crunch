@@ -22,6 +22,7 @@ export interface PipelineJob {
   stream_max_seconds?: number;
   stream_max_messages?: number;
   timeout_seconds?: number;
+  allowed_packages?: Record<string, string>;
 }
 
 export interface PipelineJobResult {

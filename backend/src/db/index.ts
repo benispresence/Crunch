@@ -451,10 +451,26 @@ const DEFAULT_PACKAGES = [
   { name: "altair", importName: "altair" },
 ];
 
+// Pipeline libraries. Status stays 'pending' until the engine pip-installs
+// them — unlike the viz defaults above, these are not guaranteed to already
+// live in the interpreter. INSERT OR IGNORE so a previously failed
+// 'requests' row is not duplicated.
+const PIPELINE_PACKAGES = [
+  { name: "requests", importName: "requests" },
+  { name: "dlt", importName: "dlt" },
+  { name: "httpx", importName: "httpx" },
+  { name: "kafka-python", importName: "kafka" },
+];
+
 const insertPkg = db.prepare(
   "INSERT OR IGNORE INTO allowed_packages (package_name, import_name, is_default, is_enabled, status) VALUES (?, ?, 1, 1, 'installed')",
 );
 for (const p of DEFAULT_PACKAGES) insertPkg.run(p.name, p.importName);
+
+const insertPipePkg = db.prepare(
+  "INSERT OR IGNORE INTO allowed_packages (package_name, import_name, is_default, is_enabled, status) VALUES (?, ?, 1, 1, 'pending')",
+);
+for (const p of PIPELINE_PACKAGES) insertPipePkg.run(p.name, p.importName);
 
 // Stdlib modules the sandbox allows out of the box. They ship with Python, so
 // they get installed_version 'stdlib' — there is no pip package and no version

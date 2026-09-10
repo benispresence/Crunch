@@ -3,14 +3,19 @@ import * as monaco from "monaco-editor";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import PipelineEnvironment from "@/components/PipelineEnvironment.vue";
+import PipelineImportsBar, {
+  type PipelineImport,
+} from "@/components/PipelineImportsBar.vue";
 import PipelineLogViewer from "@/components/PipelineLogViewer.vue";
 import { useTheme } from "@/composables/theme";
+import { useAuthStore } from "@/stores/auth";
 import { useChatStore } from "@/stores/chat";
 import { usePipelinesStore, type PipelineRun } from "@/stores/pipelines";
 import { useWorkspaceStore, type SavedPipeline } from "@/stores/workspace";
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
 const ws = useWorkspaceStore();
 const pipelines = usePipelinesStore();
 const chat = useChatStore();
@@ -96,6 +101,7 @@ function mountEditor() {
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
     automaticLayout: true,
+    glyphMargin: true,
     padding: { top: 12, bottom: 12 },
     tabSize: 4,
   });
@@ -103,6 +109,7 @@ function mountEditor() {
     if (!draft.value) return;
     draft.value.python_code = editor!.getValue();
   });
+  applyImportDecorations(importIssues.value);
 }
 watch(() => draft.value?.code_mode, mode => editor?.updateOptions({readOnly: mode === "template"}));
 watch(monacoTheme, (t) => monaco.editor.setTheme(t));
@@ -291,6 +298,63 @@ function ensureSourceConfig() {
   if (!draft.value.source_config) draft.value.source_config = {};
   return draft.value.source_config as Record<string, unknown>;
 }
+
+const importIssues = ref<PipelineImport[]>([]);
+let importDecos: monaco.editor.IEditorDecorationsCollection | null = null;
+
+function onImports(list: PipelineImport[]) {
+  importIssues.value = list;
+  applyImportDecorations(list);
+}
+
+function applyImportDecorations(list: PipelineImport[]) {
+  if (!editor) return;
+  if (!importDecos) importDecos = editor.createDecorationsCollection();
+  importDecos.set(
+    list
+      .filter((item) => item.status !== "ok")
+      .map((item) => ({
+        range: new monaco.Range(item.line, 1, item.line, 1),
+        options: {
+          isWholeLine: true,
+          className:
+            item.status === "not_installed"
+              ? "pipe-import-missing"
+              : "pipe-import-blocked",
+          glyphMarginClassName: "pipe-import-glyph",
+          hoverMessage: { value: item.detail },
+        },
+      })),
+  );
+}
+
+function revealImportLine(line: number) {
+  if (!editor) return;
+  editor.revealLineInCenter(line);
+  editor.setPosition({ lineNumber: line, column: 1 });
+  editor.focus();
+}
+
+function missingModuleFromText(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const missing = text.match(/No module named ['\"]([^'\"]+)['\"]/);
+  if (missing) return missing[1]!.split(".")[0]!;
+  const allowed = text.match(/Module '([^']+)' is not in the allowed package list/);
+  if (allowed) return allowed[1]!.split(".")[0]!;
+  return null;
+}
+
+const runImportHint = computed(() => {
+  const run = currentRun.value;
+  if (!run || run.status !== "failed") return null;
+  const name = missingModuleFromText(run.error_message) || missingModuleFromText(run.log);
+  if (!name) return null;
+  return name;
+});
+
+function openAdminPackages(mod: string) {
+  void router.push({ name: "admin", query: { tab: "packages", pkg: mod } });
+}
 </script>
 
 <template>
@@ -435,6 +499,18 @@ function ensureSourceConfig() {
           <button class="btn btn-sm" @click="viewLogs">View logs</button>
           <button class="btn btn-sm" @click="pauseSchedule">Pause schedule</button>
         </div>
+        <div v-if="runImportHint" class="import-cta">
+          This run failed because <code>{{ runImportHint }}</code> is missing or not allowed in the pipeline worker.
+          <button
+            v-if="auth.user?.role === 'admin'"
+            class="btn btn-primary btn-sm"
+            type="button"
+            @click="openAdminPackages(runImportHint)"
+          >
+            Install in Allowed packages
+          </button>
+          <span v-else class="muted">Ask an admin to install it from Admin → Allowed packages.</span>
+        </div>
         <button v-if="['queued', 'running', 'retrying'].includes(currentRun.status)" class="btn btn-sm" @click="cancel">Cancel run</button>
         <h4>Run #{{ currentRun.id }} — {{ currentRun.status }}</h4>
         <dl class="meta">
@@ -479,6 +555,11 @@ function ensureSourceConfig() {
           Custom code — frozen. Configuration changes will not overwrite these edits.
         </span>
       </div>
+      <PipelineImportsBar
+        :code="draft.python_code || ''"
+        @imports="onImports"
+        @select-line="revealImportLine"
+      />
       <div ref="editorHost" class="detail__editor"></div>
     </section>
 
@@ -665,9 +746,30 @@ function ensureSourceConfig() {
 .detail__tab--active { color: var(--fg); border-bottom-color: var(--accent); }
 .detail__panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .detail__panel--scroll { overflow-y: auto; padding: 16px 24px 32px; }
-.detail__panel--code { display: flex; }
+.detail__panel--code { display: flex; flex-direction: column; }
 .detail__code-bar { padding: 6px 16px; background: var(--bg-elev); border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--fg-subtle); display: flex; gap: 8px; align-items: center; }
 .detail__editor { flex: 1; min-height: 0; }
+.import-cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: rgba(224, 122, 95, 0.08);
+  border: 1px solid rgba(224, 122, 95, 0.3);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.import-cta code { font-family: var(--font-mono); }
+:deep(.pipe-import-missing) { background: rgba(224, 122, 95, 0.09); }
+:deep(.pipe-import-blocked) { background: rgba(200, 160, 60, 0.12); }
+:deep(.pipe-import-glyph) {
+  background: var(--error);
+  width: 4px !important;
+  margin-left: 3px;
+  border-radius: 2px;
+}
 .lede { font-size: 14px; color: var(--fg-muted); }
 .flow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
 .flow__step { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; display: grid; gap: 4px; }

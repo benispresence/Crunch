@@ -57,9 +57,23 @@ SAFE_STDLIB = frozenset({
 })
 
 
+#: Third-party packages charts must never import (network). Pipelines
+#: may import them, and the package manager may pip-install them —
+#: the viz sandbox still refuses the import at runtime.
+VIZ_BLOCKED_PYPI = frozenset({"requests"})
+
+#: Never pip-installed into the engine. These are packaging tools, not
+#: libraries a chart or pipeline should gain by ticking "Install".
+NEVER_INSTALL = frozenset({"pip", "setuptools", "ensurepip", "distutils"})
+
+
+def _top_level(name: str) -> str:
+    return name.split(".")[0].split("[")[0].strip().lower()
+
+
 def is_blocked(name: str) -> bool:
     """True if the module may never be imported, whitelist or not."""
-    return name.split(".")[0] in BLOCKED_MODULES
+    return _top_level(name) in BLOCKED_MODULES
 
 
 def is_stdlib(name: str) -> bool:
@@ -68,15 +82,40 @@ def is_stdlib(name: str) -> bool:
     Uses ``sys.stdlib_module_names`` (3.10+) rather than a hand-maintained
     list, so it stays correct across Python versions.
     """
-    top = name.split(".")[0]
-    return top in getattr(sys, "stdlib_module_names", frozenset()) or top in SAFE_STDLIB
+    top = _top_level(name)
+    stdlib = {n.lower() for n in getattr(sys, "stdlib_module_names", frozenset())}
+    return top in stdlib or top in SAFE_STDLIB
 
 
 def classify(name: str) -> str:
-    """Return ``"blocked"``, ``"stdlib"``, or ``"pypi"``."""
+    """Return ``"blocked"``, ``"stdlib"``, or ``"pypi"`` for *viz imports*."""
     if is_blocked(name):
         return "blocked"
     if is_stdlib(name):
+        return "stdlib"
+    return "pypi"
+
+
+def classify_install(name: str) -> str:
+    """How the package manager should treat this name.
+
+    Separate from :func:`classify` because the viz sandbox's import
+    blocklist is not an install blocklist. ``requests`` is blocked in
+    chart scripts (network) but REST pipelines import it, so pip must
+    still be allowed to put it in the engine.
+
+    Returns:
+        ``stdlib`` — skip pip, report version ``"stdlib"``. Includes
+        viz-blocked stdlib modules such as ``os`` (they are not PyPI
+        packages).
+        ``refused`` — never pip-install (``pip``, ``setuptools``).
+        ``pypi`` — run pip. Includes viz-blocked third-party packages
+        such as ``requests``.
+    """
+    top = _top_level(name)
+    if top in NEVER_INSTALL:
+        return "refused"
+    if is_stdlib(top):
         return "stdlib"
     return "pypi"
 

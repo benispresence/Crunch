@@ -8,7 +8,9 @@ The trust model:
   visualisation sandbox where viz code shouldn't reach the network.
 * So we apply an *allowlist* on imports — admin-curated via
   Admin → Allowed packages — plus a small default list of libraries
-  pipelines reliably need.
+  pipelines reliably need. The allowlist applies to *user* code;
+  third-party packages on that list may import their own dependencies
+  (``requests`` pulling in ``urllib3`` / ``ssl``).
 * ``os`` is neither allowlisted nor blocked: pipelines get a curated
   stand-in exposing ``environ`` (their own variables and secrets only),
   ``getenv`` and the pure ``os.path`` helpers, so credential lookups
@@ -209,7 +211,14 @@ def _make_controlled_import(allowed_modules: dict[str, str], env: dict[str, str]
 
     def _controlled_import(name, globals=None, locals=None, fromlist=(), level=0):
         top = name.split(".")[0]
-        if top == "os":
+        caller = ""
+        if isinstance(globals, dict):
+            caller = str(globals.get("__name__") or "")
+        # Only the pipeline script is on the allowlist. Libraries it
+        # imports (requests → urllib3 → ssl) keep using the real
+        # importer, otherwise no third-party HTTP client can load.
+        from_user = caller in ("", "__crunch_pipeline__", "__main__")
+        if top == "os" and from_user:
             # Curated stand-in, even if an admin allowlisted "os" —
             # user code never reaches process control from here.
             if name == "os.path" and fromlist:
@@ -220,12 +229,21 @@ def _make_controlled_import(allowed_modules: dict[str, str], env: dict[str, str]
                     "'os' is limited to os.environ, os.getenv and os.path."
                 )
             return os_module
-        if top not in allowed_modules:
+        if from_user and top not in allowed_modules:
             raise ImportError(
                 f"Module '{name}' is not in the allowed package list. "
                 "Ask an admin to add it via Admin → Allowed packages."
             )
-        return real_import(name, globals, locals, fromlist, level)
+        try:
+            return real_import(name, globals, locals, fromlist, level)
+        except ModuleNotFoundError:
+            if not from_user:
+                raise
+            raise ModuleNotFoundError(
+                f"No module named '{name}'. '{top}' is allowed for pipelines "
+                "but is not installed in the Python engine. An admin can "
+                "install it from Admin → Allowed packages."
+            ) from None
 
     return _controlled_import
 
@@ -285,6 +303,22 @@ def _load_admin_allowlist() -> dict[str, str]:
     return _DEFAULT_PIPELINE_ALLOWLIST
 
 
+def _merge_allowlist(allowed_packages: dict[str, str] | None) -> dict[str, str]:
+    """Fold a caller-supplied allowlist over the pipeline defaults.
+
+    The Express backend holds the admin package table, so when it
+    passes one we use it instead of the DB lookup — the worker has no
+    reliable view of that database. The defaults stay underneath so a
+    caller can't accidentally drop dlt/requests by sending a short
+    list.
+    """
+    if not allowed_packages:
+        return _load_admin_allowlist()
+    merged = dict(_DEFAULT_PIPELINE_ALLOWLIST)
+    merged.update({str(k): str(v) for k, v in allowed_packages.items()})
+    return merged
+
+
 def _make_capturing_print(buf: io.StringIO):
     """Wrap print() so the user's writes end up in our log buffer."""
     def _p(*args, **kwargs):
@@ -305,6 +339,7 @@ def execute_pipeline(
     code: str,
     ctx: PipelineContext,
     timeout_seconds: int = 600,
+    allowed_packages: dict[str, str] | None = None,
 ) -> PipelineResult:
     """Run a pipeline script in a controlled namespace, capturing
     stdout/stderr. Returns row counts + log + duration.
@@ -314,6 +349,11 @@ def execute_pipeline(
     stuck Kafka subscriber, blocking SQL) can't permanently hold a
     scheduler slot. SIGALRM only works on POSIX from the main thread;
     we skip the wall-clock guard otherwise (Windows / threadpool).
+
+    ``allowed_packages`` is the admin allowlist as the *caller* knows
+    it — the Express backend owns that table, so the worker is told
+    rather than left to guess. Omitting it falls back to the local
+    lookup, which is what unit tests and the legacy path use.
     """
     import signal as _signal
 
@@ -324,7 +364,7 @@ def execute_pipeline(
     # find the function's module in sys.modules. Skipping these caused
     # ``AttributeError: 'NoneType' object has no attribute '__name__'``
     # in dlt 1.x because ``__module__`` defaulted to None.
-    allowed_modules = _load_admin_allowlist()
+    allowed_modules = _merge_allowlist(allowed_packages)
     namespace: dict[str, Any] = {
         "__name__": "__crunch_pipeline__",
         "__package__": None,

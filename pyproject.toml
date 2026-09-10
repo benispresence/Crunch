@@ -60,6 +60,7 @@ dependencies = [
     # Data Processing
     "pandas>=2.1.0",
     "numpy>=1.26.0",
+    "requests>=2.31.0",         # REST pipeline templates import this
     "duckdb>=0.10.0",               # SQL on DataFrames (CSV/Excel)
     "openpyxl>=3.1.0",              # Excel .xlsx support
     

@@ -4,6 +4,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
+import { pipelineAllowedPackages } from "../services/packages.js";
 import { pythonEngine } from "../services/pythonEngine.js";
 import {
   buildTemplateSpec,
@@ -137,6 +138,23 @@ pipelinesRouter.get("/timeline", (req, res) => {
 
 pipelinesRouter.get("/overview", (req, res) => {
   res.json(buildOverview(db, req.user!.sub));
+});
+
+pipelinesRouter.post("/imports", async (req, res) => {
+  const parsed = z.object({ code: z.string() }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  try {
+    const r = await pythonEngine.analyzePipelineImports(
+      parsed.data.code,
+      pipelineAllowedPackages(),
+    );
+    res.json(r);
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
 });
 
 pipelinesRouter.get("/schema/:connectionId", async (req, res) => {

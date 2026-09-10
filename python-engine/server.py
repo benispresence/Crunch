@@ -57,7 +57,11 @@ from crunch.query.validator import QueryValidator  # noqa: E402
 from crunch.visualization.code_executor import CodeExecutor  # noqa: E402
 from crunch.visualization.factory import ChartFactory  # noqa: E402
 from crunch.visualization.plotly_theme import install as install_plotly_theme  # noqa: E402
-from crunch.visualization.sandbox_modules import classify  # noqa: E402
+from crunch.visualization.sandbox_modules import (  # noqa: E402
+    classify_install,
+    is_blocked,
+    is_stdlib,
+)
 from crunch.visualization.theme_tokens import install_token_validator  # noqa: E402
 
 # Make the neutral template the process-wide Plotly default before any figure
@@ -273,6 +277,7 @@ class PipelineExecuteRequest(BaseModel):
     runtime_config: dict[str, Any] = {}
     environment: dict[str, str] = {}
     environment_secrets: list[str] = []
+    allowed_packages: dict[str, str] = Field(default_factory=dict)
 
 
 class PipelineExecuteResponse(BaseModel):
@@ -504,20 +509,27 @@ class PackageRequest(BaseModel):
 async def install_package(req: PackageRequest) -> dict[str, Any]:
     _check_token(req.token)
 
-    # Stdlib modules ship with Python: there is nothing to pip install and no
-    # version to report. `pip install time` fails, which used to leave the row
-    # stuck in "failed" and the module unimportable. Short-circuit instead.
-    kind = classify(req.package_name)
-    if kind == "blocked":
+    # Install policy is *not* the viz import blocklist. Chart scripts
+    # still cannot `import requests`, but REST pipelines can — so pip
+    # must be allowed to put it in this interpreter. Stdlib names skip
+    # pip (`pip install time` fails and used to leave the row stuck).
+    kind = classify_install(req.package_name)
+    viz_blocked = is_blocked(req.package_name)
+    if kind == "refused":
         return {
             "success": False,
             "error": (
-                f"'{req.package_name}' is blocked in the visualization sandbox "
-                "and cannot be whitelisted."
+                f"'{req.package_name}' cannot be installed into the engine."
             ),
+            "viz_blocked": viz_blocked,
         }
     if kind == "stdlib":
-        return {"success": True, "version": "stdlib", "stdlib": True}
+        return {
+            "success": True,
+            "version": "stdlib",
+            "stdlib": True,
+            "viz_blocked": viz_blocked,
+        }
 
     spec = req.package_name + (req.version_spec or "")
     try:
@@ -528,20 +540,20 @@ async def install_package(req: PackageRequest) -> dict[str, Any]:
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
         if proc.returncode != 0:
-            return {"success": False, "error": stderr.decode()[:1000]}
+            return {"success": False, "error": stderr.decode()[:1000], "viz_blocked": viz_blocked}
     except asyncio.TimeoutError:
-        return {"success": False, "error": "install timed out"}
+        return {"success": False, "error": "install timed out", "viz_blocked": viz_blocked}
     except Exception as exc:
-        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}", "viz_blocked": viz_blocked}
 
     version = await _resolve_installed_version(req.package_name)
-    return {"success": True, "version": version}
+    return {"success": True, "version": version, "viz_blocked": viz_blocked}
 
 
 @app.post("/packages/uninstall")
 async def uninstall_package(req: PackageRequest) -> dict[str, Any]:
     _check_token(req.token)
-    if classify(req.package_name) == "stdlib":
+    if is_stdlib(req.package_name):
         return {
             "success": False,
             "error": f"'{req.package_name}' is part of Python and cannot be uninstalled.",
@@ -623,6 +635,22 @@ async def execute_python(req: ExecutePythonRequest) -> ExecutePythonResponse:
         stdout=result.html or "",
         error=None,
     )
+
+
+class PipelineImportsRequest(BaseModel):
+    token: str
+    code: str
+    allowed_packages: dict[str, str] = Field(default_factory=dict)
+
+
+@app.post("/pipelines/imports")
+async def pipeline_imports(req: PipelineImportsRequest) -> dict[str, Any]:
+    """Classify imports in pipeline code against the allowlist + this interpreter."""
+    _check_token(req.token)
+    from crunch.pipelines.imports import analyze_imports
+
+    allowed = req.allowed_packages or None
+    return {"imports": analyze_imports(req.code or "", allowed)}
 
 
 @app.post("/pipelines/template")

@@ -22,6 +22,7 @@ import { vizRouter } from "./routes/viz.js";
 import { seedDefaultAdmin } from "./services/auth.js";
 import { seedPermissions } from "./services/permissions.js";
 import { startScheduler } from "./services/pipelines.js";
+import { ensurePipelinePackages } from "./services/packages.js";
 import { pythonEngine } from "./services/pythonEngine.js";
 
 const app = express();
@@ -147,6 +148,20 @@ function onListen() {
   // fire on the first 30s boundary after startup. Idempotent across
   // restarts.
   startScheduler();
+  // REST templates `import requests`. If a previous install was refused
+  // by the viz blocklist, retry now that pip is independent of that list.
+  void ensurePipelinePackages()
+    .then((r) => {
+      if (r.installed.length) {
+        console.log(`[packages] installed for pipelines: ${r.installed.join(", ")}`);
+      }
+      if (r.failed.length) {
+        console.warn(`[packages] pipeline auto-install: ${r.failed.join("; ")}`);
+      }
+    })
+    .catch((err: Error) => {
+      console.warn(`[packages] pipeline auto-install skipped: ${err.message}`);
+    });
 }
 
 if (config.bindHost) {

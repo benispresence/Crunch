@@ -33,6 +33,25 @@ class PipelineEngineTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result.success, result.error)
             self.assertEqual(result.rows, [[42]])
 
+    async def test_install_requests_is_not_refused_as_viz_blocked(self):
+        result = await server.install_package(server.PackageRequest(
+            token=os.environ.get("PYTHON_ENGINE_TOKEN", "dev-engine-token"),
+            package_name="requests",
+        ))
+        self.assertNotIn("blocked in the visualization sandbox", result.get("error") or "")
+        self.assertTrue(result.get("success"), result.get("error"))
+        self.assertTrue(result.get("viz_blocked"))
+
+    async def test_pipeline_imports_flags_missing_or_ok_requests(self):
+        result = await server.pipeline_imports(server.PipelineImportsRequest(
+            token=os.environ.get("PYTHON_ENGINE_TOKEN", "dev-engine-token"),
+            code="import requests\n",
+            allowed_packages={},
+        ))
+        row = result["imports"][0]
+        self.assertEqual(row["module"], "requests")
+        self.assertNotEqual(row["status"], "not_allowed")
+
     async def test_job_operations_require_engine_token(self):
         from fastapi import HTTPException
         for fn in (server.pipeline_status, server.pipeline_cancel):

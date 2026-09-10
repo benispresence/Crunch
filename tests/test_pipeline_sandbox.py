@@ -60,6 +60,40 @@ class PipelineSandboxTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("allowed package list", result.error or "")
 
+    def test_requests_is_allowed_even_if_not_installed(self):
+        result = execute_pipeline(
+            "import requests\ndef run():\n    return 0\n", _ctx(),
+        )
+        if result.success:
+            return
+        self.assertNotIn("allowed package list", result.error or "")
+        self.assertIn("requests", result.error or "")
+        self.assertIn("Allowed packages", result.error or "")
+
+    def test_requests_runs_when_installed(self):
+        try:
+            import requests as _requests  # noqa: F401
+        except ImportError:
+            self.skipTest("requests not installed in this interpreter")
+        result = execute_pipeline(
+            "import requests\n"
+            "def run():\n"
+            "    return {'rows_loaded': 1, 'steps': [callable(getattr(requests, 'get', None))]}\n",
+            _ctx(),
+        )
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.steps, [True])
+
+    def test_allowed_library_can_import_its_dependencies(self):
+        """User code cannot import urllib3, but `import json` (stdlib on
+        the allowlist) still works, and a missing allowed package is
+        reported as not installed rather than not allowed."""
+        result = execute_pipeline(
+            "import urllib3\ndef run():\n    return 0\n", _ctx(),
+        )
+        self.assertFalse(result.success)
+        self.assertIn("allowed package list", result.error or "")
+
     def test_run_returning_a_list_reports_rows(self):
         result = execute_pipeline(
             "def run():\n    return [{'id': 1}, {'id': 2}]\n", _ctx(),

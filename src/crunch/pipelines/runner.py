@@ -68,7 +68,11 @@ def main(argv: list[str] | None = None) -> int:
         env=environment,
     )
     timeout = int(job.get("timeout_seconds") or 1800)
-    result = execute_pipeline(job.get("code") or "", ctx, timeout_seconds=timeout)
+    allowed = job.get("allowed_packages")
+    result = execute_pipeline(
+        job.get("code") or "", ctx, timeout_seconds=timeout,
+        allowed_packages=allowed if isinstance(allowed, dict) else None,
+    )
     output_tables = list(getattr(result, "output_tables", None) or [])
     captured_rows: list = []
     for table in output_tables:

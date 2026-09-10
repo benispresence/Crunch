@@ -95,9 +95,24 @@ export const pythonEngine = {
   }) => call<PythonResult>({ path: "/python/execute", body: params }),
 
   installPackage: (name: string, versionSpec?: string) =>
-    call<{ success: boolean; version?: string; error?: string }>({
+    call<{ success: boolean; version?: string; error?: string; viz_blocked?: boolean }>({
       path: "/packages/install",
       body: { package_name: name, version_spec: versionSpec },
+    }),
+
+  analyzePipelineImports: (code: string, allowedPackages?: Record<string, string>) =>
+    call<{
+      imports: Array<{
+        module: string;
+        line: number;
+        status: string;
+        detail: string;
+        pip_name?: string;
+        action?: string;
+      }>;
+    }>({
+      path: "/pipelines/imports",
+      body: { code, allowed_packages: allowedPackages ?? {} },
     }),
 
   uninstallPackage: (name: string) =>
