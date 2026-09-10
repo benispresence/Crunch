@@ -253,7 +253,7 @@ describe("pipelineOps", () => {
     assert.deepEqual(exp.actions, ["Retry", "Ask AI to investigate", "View logs", "Pause schedule"]);
   });
 
-  it("recovers queued work across restart and requeues dead running pids", () => {
+  it("preserves queued work and fails interrupted executions without replay", () => {
     const recovered = recoverRunsOnRestart(
       [
         { id: 1, status: "queued", pid: null },
@@ -272,7 +272,8 @@ describe("pipelineOps", () => {
     const q = recovered.find((r) => r.id === 1);
     assert.equal(q?.nextStatus, "queued");
     const dead = recovered.find((r) => r.id === 2);
-    assert.equal(dead?.requeue, true);
+    assert.equal(dead?.nextStatus, "failed");
+    assert.equal(dead?.requeue, false);
     const live = recovered.find((r) => r.id === 3);
     assert.equal(live?.nextStatus, "running");
   });

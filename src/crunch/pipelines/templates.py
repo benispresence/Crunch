@@ -196,10 +196,7 @@ def _template_rest_api(t: dict[str, Any]) -> str:
     extract = t.get("extract_strategy") or t["load_mode"]
     if extract == "incremental" and cursor_field:
         items_arg = f"cursor = dlt.sources.incremental({quoted_cursor})"
-        cursor_init = (
-            f"    cursor = dlt.sources.incremental({quoted_cursor}, "
-            f"initial_value=None){newline}"
-        )
+        cursor_init = ""
         cursor_apply = (
             f'        params = {{"updated_since": cursor.last_value}} '
             f'if cursor.last_value else {{}}{newline}'

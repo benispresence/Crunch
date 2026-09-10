@@ -411,6 +411,9 @@ filter can drive many charts at once.
 
 ## Data pipelines
 
+For the v1.2.0 draft/publish workflow, engine-owned jobs, scratch tests,
+backfills, and validation commands, see [Pipeline operations](docs/pipelines-v1.2.0.md).
+
 Pipelines move data into your destinations on a schedule. Each
 pipeline is a Python script (auto-generated from a form, fully
 custom, or anywhere in between) that runs in the python engine's

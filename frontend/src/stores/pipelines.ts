@@ -13,6 +13,8 @@ export interface PipelineRun {
   triggered_by: "manual" | "schedule" | "agent" | "retry" | "backfill" | "test";
   log?: string;
   version_id?: number | null;
+  is_test?: boolean;
+  timezone?: string;
   attempt_number?: number;
   attempts?: Array<Record<string, unknown>>;
   timestamps?: Record<string, unknown>;

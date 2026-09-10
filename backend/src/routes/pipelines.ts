@@ -146,7 +146,7 @@ pipelinesRouter.get("/:id", (req, res) => {
   const overview = buildOverview(db, req.user!.sub);
   const extra = overview.pipelines.find((p) => p.id === row.id);
   const lineage = pipelineLineage(db, row.id, req.user!.sub);
-  res.json({ ...rowToPipeline(row), ...extra, feeds: lineage });
+  res.json({ ...extra, ...rowToPipeline(row), published_schedule: extra?.schedule, published_timezone: extra?.timezone, feeds: lineage });
 });
 
 pipelinesRouter.post("/template", async (req, res) => {
@@ -318,13 +318,10 @@ pipelinesRouter.put("/:id", async (req, res) => {
   const nextMode = parsed.data.convert_to_custom
     ? "custom"
     : parsed.data.code_mode;
-  // Never clobber custom Python with a template regen from form fields.
+  // An explicitly submitted script is an edit, including an AI patch that
+  // omits code_mode. Template generation happens only for generated drafts.
   if (parsed.data.python_code !== undefined) {
-    if (existing.code_mode === "custom" && nextMode !== "custom" && !parsed.data.convert_to_custom) {
-      /* keep existing python_code */
-    } else {
-      push("python_code = ?", parsed.data.python_code);
-    }
+    push("python_code = ?", parsed.data.python_code);
   }
   if (nextMode !== undefined) push("code_mode = ?", nextMode);
   if (parsed.data.schedule !== undefined) push("schedule = ?", parsed.data.schedule);
@@ -388,8 +385,18 @@ pipelinesRouter.post("/:id/run", async (req, res) => {
   }
 });
 
+async function prepareGeneratedDraft(id: number, userId: number) {
+  const row = db.prepare("SELECT * FROM pipelines WHERE id = ? AND user_id = ?").get(id,userId) as PipelineRow | undefined;
+  if (!row) throw new Error("pipeline not found");
+  if (row.code_mode === "template") {
+    const generated = await pythonEngine.generatePipelineTemplate(buildTemplateSpec(row,userId));
+    db.prepare("UPDATE pipelines SET python_code = ? WHERE id = ? AND user_id = ?").run(generated.code,id,userId);
+  }
+}
+
 pipelinesRouter.post("/:id/test", async (req, res) => {
   try {
+    await prepareGeneratedDraft(Number(req.params.id), req.user!.sub);
     const run = enqueueRun(db, {
       pipelineId: Number(req.params.id),
       userId: req.user!.sub,
@@ -408,6 +415,7 @@ pipelinesRouter.post("/:id/test", async (req, res) => {
 
 pipelinesRouter.post("/:id/publish", async (req, res) => {
   try {
+    await prepareGeneratedDraft(Number(req.params.id), req.user!.sub);
     const validation = await validatePipeline(db, Number(req.params.id), req.user!.sub);
     if (!validation.ok) { res.status(400).json({error: "Validation failed", validation}); return; }
     const r = publishVersion(

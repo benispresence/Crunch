@@ -31,7 +31,6 @@ import {
   normalizeLoadBehavior,
   payloadContainsSecretValues,
   payloadHasSecretRefs,
-  recoverRunsOnRestart,
   resolveSecretReferences,
   schemaInspectSql,
   shouldRetry,
@@ -479,12 +478,6 @@ export function enqueueRun(
     versionId = (pipeline.published_version_id as number | null) ?? null;
     if (versionId == null) throw new Error("Publish a validated version before running");
   }
-  if (isTest) {
-    if (pipeline.scratch_destination_connection_id == null) {
-      throw new Error("Test draft requires an explicitly identified scratch destination");
-    }
-  }
-
   let snapshot: VersionSnapshot | null = null;
   if (versionId != null) {
     const ver = getVersion(database, req.pipelineId, versionId);
@@ -554,7 +547,7 @@ export function enqueueRun(
     versionId,
     detail: { trigger: req.trigger, is_test: isTest },
   });
-  void dispatchQueued(database);
+  if (!database.inTransaction) void dispatchQueued(database);
   return getRun(database, runId)!;
 }
 
@@ -603,6 +596,7 @@ function runToDto(
     error_message: run.error_message,
     triggered_by: run.triggered_by,
     version_id: run.version_id,
+    timezone: parseJson<VersionSnapshot | null>(String(run.snapshot_json ?? "null"), null)?.timezone || "UTC",
     attempt_number: run.attempt_number,
     max_attempts: run.max_attempts,
     attempts,
@@ -752,7 +746,8 @@ async function executeRun(
   }
 
   const attemptNumber = Number(run.attempt_number ?? 1);
-  const attemptInfo = database
+  const existingAttempt = run.engine_job_id ? database.prepare("SELECT id FROM pipeline_run_attempts WHERE run_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1").get(runId) as {id: number} | undefined : undefined;
+  const attemptInfo = existingAttempt ? {lastInsertRowid: existingAttempt.id} : database
     .prepare(
       `INSERT INTO pipeline_run_attempts (run_id, attempt_number, status, started_at)
        VALUES (?, ?, 'running', strftime('%s', 'now'))`,
@@ -761,7 +756,7 @@ async function executeRun(
   const attemptId = Number(attemptInfo.lastInsertRowid);
 
   const jobId = String(run.engine_job_id || randomUUID());
-  database.prepare("UPDATE pipeline_runs SET engine_job_id = ?, started_at = strftime('%s', 'now') WHERE id = ?").run(jobId, runId);
+  if (!run.engine_job_id) database.prepare("UPDATE pipeline_runs SET engine_job_id = ?, started_at = strftime('%s', 'now') WHERE id = ?").run(jobId, runId);
   const job = {
     job_id: jobId, code, destination, source_config: sourceConfig, source_connection: sourceConnection,
     stream_max_seconds: Number(runtime.stream_max_seconds ?? 60),
@@ -917,7 +912,7 @@ function maybeRetryOrFinish(
       .prepare(
         `UPDATE pipeline_runs SET
            status = 'queued', attempt_number = ?, next_retry_at = ?,
-           error_message = ?, log = ?, pid = NULL
+           error_message = ?, log = ?, pid = NULL, engine_job_id = NULL
          WHERE id = ?`,
       )
       .run(nextAttempt, nextAt, error, log, run.id);
@@ -1107,18 +1102,13 @@ export function enqueueBackfill(
 ): Record<string, unknown> {
   const pipeline = getPipelineRow(database, pipelineId, userId);
   if (!pipeline) throw new Error("pipeline not found");
-  const load = normalizeLoadBehavior({
-    extract_strategy: pipeline.extract_strategy as string,
-    write_behavior: pipeline.write_behavior as string,
-    load_mode: pipeline.load_mode as string,
-  });
   const ver = getVersion(database, pipelineId, Number(pipeline.published_version_id));
   const cfg = parseJson<Record<string, unknown>>(String(ver?.config_json ?? "{}"), {});
   if (cfg.source_type !== "sql" || !cfg.cursor_field || !String(ver?.python_code ?? "").includes("ctx.in_interval")) throw new Error("Backfill requires a generated SQL pipeline with a cursor and interval support");
   const plan = buildBackfillPlan({
     intervalStart: start,
     intervalEnd: end,
-    writeBehavior: load.write_behavior,
+    writeBehavior: ver!.write_behavior as WriteBehavior,
   });
   if (!confirm) {
     return { needs_confirm: true, ...plan };
@@ -1165,6 +1155,12 @@ function fireBetween(schedule: string, prev: Date, now: Date, timezone: string):
 }
 
 export function enqueueDueSchedules(database: Database.Database): number {
+  const count = database.transaction(() => enqueueScheduleWindow(database))();
+  void dispatchQueued(database);
+  return count;
+}
+
+function enqueueScheduleWindow(database: Database.Database): number {
   const now = new Date();
   const saved = database.prepare("SELECT value FROM settings WHERE key = 'pipeline_scheduler_tick'").get() as {value: string} | undefined;
   const prev = new Date(Number(saved?.value ?? workerState.lastTickAt) * 1000);
@@ -1258,8 +1254,9 @@ export function buildOverview(
       .get(row.id) as
       | { status: string; started_at: number; finished_at: number | null; rows_loaded: number | null }
       | undefined;
-    const running = recent.some((r) => r.status === "running");
-    const queued = recent.some((r) => r.status === "queued" || r.status === "retrying");
+    const active = database.prepare("SELECT status FROM pipeline_runs WHERE pipeline_id = ? AND is_test = 0 AND status IN ('running','queued','retrying')").all(row.id) as {status: string}[];
+    const running = active.some(r => r.status === "running");
+    const queued = active.some(r => r.status !== "running");
     let destName: string | null = null;
     if (row.destination_connection_id != null) {
       const c = database

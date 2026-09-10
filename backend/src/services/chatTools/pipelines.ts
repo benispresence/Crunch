@@ -213,7 +213,7 @@ const propose_pipeline_edit: ToolHandler = (ctx, input) => {
     "load_mode", "extract_strategy", "write_behavior",
     "primary_key", "cursor_field",
     "schedule", "schedule_enabled", "timezone",
-    "python_code", "code_mode", "quality_checks", "tags", "timezone", "source_connection_id", "scratch_destination_connection_id", "scratch_destination_dataset",
+    "python_code", "code_mode", "quality_checks", "tags", "source_connection_id", "scratch_destination_connection_id", "scratch_destination_dataset",
   ]) {
     if (input[k] !== undefined) patch[k] = input[k];
   }
@@ -394,6 +394,11 @@ export const pipelineTools: ToolModule = {
           destination_connection_id: { type: "number" },
           destination_dataset: { type: "string" },
           load_mode: { type: "string" },
+          extract_strategy: { type: "string", enum: ["full", "incremental", "streaming"] },
+          write_behavior: { type: "string", enum: ["replace", "append", "merge"] },
+          timezone: { type: "string" },
+          quality_checks: { type: "array", items: { type: "object" } },
+          tags: { type: "array", items: { type: "string" } },
           primary_key: { type: "string" },
           cursor_field: { type: "string" },
           schedule: { type: "string" },

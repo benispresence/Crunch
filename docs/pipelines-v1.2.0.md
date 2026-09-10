@@ -34,7 +34,7 @@ numeric counts, including loads larger than 10,000 rows.
 
 The creation prompt submits a request to the chat assistant, which inspects
 connections and proposes an editable draft. A configured AI provider is required.
-The manual form remains available. Run details refresh automatically, expose
+Pending AI proposals can be edited before acceptance. The manual form remains available. Run details refresh automatically, expose
 cancellation, and show attempts and check results. Versions include readable
 configuration differences and a Monaco code diff.
 
@@ -46,3 +46,29 @@ Validation commands:
 - `venv/bin/python -m unittest tests.test_pipeline_release`
 - `npm run build --prefix backend`
 - `npm run build --prefix frontend`
+
+## Release validation
+
+The browser harness (`backend/scripts/pipeline-browser.mjs`) exercises publish,
+production and scratch runs, live refresh, cancel, code diff, and AI proposal
+acceptance. Its assistant response is a deterministic SSE fixture; it does not
+measure a live model's reasoning. The API and proposal persistence are real.
+
+`backend/scripts/pipeline-restart.mjs` kills/restarts Express during a job and
+asserts exactly one destination write. `pipeline-container.mjs` submits a job
+through the backend Docker image to a separate Python engine container.
+
+Set `PLAYWRIGHT_MODULE` and `PLAYWRIGHT_EXECUTABLE` to installed Playwright and
+Chromium paths, and `API_BASE` / `FRONTEND_URL` for isolated test instances.
+Only use these harnesses against disposable databases.
+
+Validated for this release: 29 backend regression tests, four Python engine/load
+regressions, frontend and backend production builds, a cross-container DuckDB
+write, a real API crash/restart with exactly one destination write, and Chromium
+publish/test/cancel/diff/proposal flows. Browser checks also cover failed-save
+publication blocking and custom-script edits that omit `code_mode`.
+
+The frontend build retains its existing large-chunk warning for Monaco/Plotly.
+A native desktop installer and live AI provider generation were not exercised;
+desktop resources were updated, and assistant UI behavior used a deterministic
+response fixture.

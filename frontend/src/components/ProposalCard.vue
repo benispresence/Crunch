@@ -5,11 +5,13 @@ import {
   useEntityLabels,
 } from "@/composables/entityLabels";
 import { highlightCode } from "@/composables/markdown";
+import { useWorkspaceStore } from "@/stores/workspace";
 import { useChatStore } from "@/stores/chat";
 import type { ProposalRecord } from "@/stores/chat";
 
 const props = defineProps<{ record: ProposalRecord; turnId: string }>();
 const chat = useChatStore();
+const workspace = useWorkspaceStore();
 const labels = useEntityLabels();
 
 type DiffLine = { type: "common" | "add" | "remove"; text: string };
@@ -395,6 +397,19 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 
     <!-- new_pipeline: structured preview + a short snippet of the script -->
     <template v-if="p.kind === 'new_pipeline'">
+      <fieldset v-if="record.status === 'pending'" class="prop__pipeline-edit">
+        <legend>Review draft</legend>
+        <label>Name<input v-model="p.pipeline.name" aria-label="Proposal pipeline name" /></label>
+        <label>Destination<select v-model="p.pipeline.destination_connection_id" aria-label="Proposal destination"><option :value="null">Select connection</option><option v-for="c in workspace.connections" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
+        <label>Dataset<input v-model="p.pipeline.destination_dataset" aria-label="Proposal dataset" /></label>
+        <label>Extraction<select v-model="p.pipeline.extract_strategy"><option value="full">Full</option><option value="incremental">Incremental</option><option value="streaming">Streaming</option></select></label>
+        <label>Write behavior<select v-model="p.pipeline.write_behavior"><option value="replace">Replace</option><option value="append">Append</option><option value="merge">Merge</option></select></label>
+        <label>Primary key<input v-model="p.pipeline.primary_key" /></label>
+        <label>Cursor<input v-model="p.pipeline.cursor_field" /></label>
+        <label>Schedule<input v-model="p.pipeline.schedule" placeholder="0 * * * *" /></label>
+        <label>Timezone<input v-model="p.pipeline.timezone" placeholder="UTC" /></label>
+        <p>Accept creates a draft. Validate and publish it before scheduling a run.</p>
+      </fieldset>
       <div class="prop__newq">
         <div class="prop__newq-row"><span class="prop__field">Name</span> {{ p.pipeline.name }}</div>
         <div class="prop__newq-row"><span class="prop__field">Source</span> {{ p.pipeline.source_type }}</div>
@@ -483,6 +498,11 @@ function reject() { chat.rejectProposal(props.turnId, props.record.id); }
 </template>
 
 <style scoped>
+.prop__pipeline-edit { border: 1px solid var(--border); border-radius: 6px; display: grid; gap: 8px; margin: 8px 0; }
+.prop__pipeline-edit label { display: grid; gap: 4px; font-size: 12px; }
+.prop__pipeline-edit input, .prop__pipeline-edit select { min-width: 0; width: 100%; padding: 6px; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+.prop__pipeline-edit p { font-size: 11px; color: var(--fg-muted); }
+
 .prop {
   border: 1px solid var(--accent-border);
   border-radius: var(--radius);

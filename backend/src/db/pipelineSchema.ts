@@ -131,11 +131,15 @@ export function installPipelineTables(database: Database.Database): void {
 }
 
 export function upgradePipelineTables(database: Database.Database): void {
+  const upgradingLoad = !(database.prepare("PRAGMA table_info(pipelines)").all() as {name: string}[]).some(c => c.name === "extract_strategy");
   const p = (col: string, ddl: string) => ensureColumn(database, "pipelines", col, ddl);
   p("tags_json", "tags_json TEXT NOT NULL DEFAULT '[]'");
   p("timezone", "timezone TEXT NOT NULL DEFAULT 'UTC'");
   p("extract_strategy", "extract_strategy TEXT NOT NULL DEFAULT 'full'");
   p("write_behavior", "write_behavior TEXT NOT NULL DEFAULT 'replace'");
+  if (upgradingLoad) database.exec(`UPDATE pipelines SET
+    extract_strategy = CASE load_mode WHEN 'incremental' THEN 'incremental' WHEN 'streaming' THEN 'streaming' ELSE 'full' END,
+    write_behavior = CASE load_mode WHEN 'merge' THEN 'merge' WHEN 'replace' THEN 'replace' ELSE 'append' END`);
   p("freshness_threshold_seconds", "freshness_threshold_seconds INTEGER");
   p("quality_checks_json", "quality_checks_json TEXT NOT NULL DEFAULT '[]'");
   p("source_connection_id", "source_connection_id INTEGER REFERENCES connections(id) ON DELETE SET NULL");

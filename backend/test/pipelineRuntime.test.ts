@@ -344,3 +344,48 @@ describe("v1.2 regression outcomes", {concurrency: 1}, () => {
     await shutdownRuns(db); db.close();
   });
 });
+
+describe("version restore and schedule isolation", {concurrency: 1}, () => {
+  it("restores source connection and explicit nulls without changing the published version", async () => {
+    const {restoreVersionAsDraft} = await import("../src/services/pipelineRuntime.ts");
+    const db = openDb("def run():\n    return 0\n");
+    db.prepare("UPDATE pipelines SET source_connection_id=1, primary_key=NULL, cursor_field=NULL, destination_dataset=NULL, extract_strategy='full', write_behavior='append' WHERE id=1").run();
+    const original = publishVersion(db,1,1);
+    db.prepare("UPDATE pipelines SET source_connection_id=NULL, primary_key='id', cursor_field='time', destination_dataset='changed' WHERE id=1").run();
+    const latest = publishVersion(db,1,1);
+    const draft = restoreVersionAsDraft(db,1,1,original.version_id);
+    assert.equal(draft.source_connection_id,1);
+    assert.equal(draft.primary_key,null);
+    assert.equal(draft.cursor_field,null);
+    assert.equal(draft.destination_dataset,null);
+    assert.equal(draft.published_version_id,latest.version_id);
+    db.close();
+  });
+  it("uses published cron even when the draft removes its schedule", async () => {
+    const {enqueueDueSchedules} = await import("../src/services/pipelineRuntime.ts");
+    const db = openDb("def run():\n    return 0\n");
+    db.prepare("UPDATE pipelines SET schedule='* * * * *', schedule_enabled=1 WHERE id=1").run();
+    const version = publishVersion(db,1,1);
+    db.prepare("UPDATE pipelines SET schedule=NULL WHERE id=1").run();
+    db.prepare("INSERT INTO settings(key,value) VALUES ('pipeline_scheduler_tick',?)").run(String(Math.floor(Date.now()/1000)-90));
+    assert.equal(enqueueDueSchedules(db),1);
+    assert.equal(enqueueDueSchedules(db),0);
+    const run=db.prepare("SELECT version_id FROM pipeline_runs WHERE pipeline_id=1").get() as {version_id:number};
+    assert.equal(run.version_id,version.version_id);
+    await shutdownRuns(db); db.close();
+  });
+});
+
+describe("legacy pipeline upgrade", () => {
+  it("preserves incremental append behavior instead of defaulting to replace", async () => {
+    const {upgradePipelineTables} = await import("../src/db/pipelineSchema.ts");
+    const db = openDb("def run():\n    return 0\n");
+    db.prepare("UPDATE pipelines SET load_mode='incremental' WHERE id=1").run();
+    db.exec("ALTER TABLE pipelines DROP COLUMN extract_strategy");
+    db.exec("ALTER TABLE pipelines DROP COLUMN write_behavior");
+    upgradePipelineTables(db);
+    const row = db.prepare("SELECT extract_strategy,write_behavior FROM pipelines WHERE id=1").get();
+    assert.deepEqual(row, {extract_strategy: 'incremental', write_behavior: 'append'});
+    db.close();
+  });
+});

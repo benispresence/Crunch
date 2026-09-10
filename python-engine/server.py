@@ -426,6 +426,7 @@ async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
             )
 
     started = time.perf_counter()
+    adapter = None
     try:
         adapter = _adapter_for(req.connection.model_dump())
         result = await adapter.execute_query(
@@ -437,6 +438,12 @@ async def execute_sql(req: ExecuteSqlRequest) -> ExecuteSqlResponse:
             error=f"{type(exc).__name__}: {exc}",
             execution_time_ms=(time.perf_counter() - started) * 1000,
         )
+    finally:
+        # DuckDB permits only one writer process. Keeping a file-backed adapter
+        # cached after a preview/validation would prevent the pipeline worker
+        # from opening its destination. Preserve in-memory connections only.
+        if adapter is not None and conn_type == "duckdb" and req.connection.database not in (None, "", ":memory:"):
+            await adapter.close()
 
     elapsed_ms = (time.perf_counter() - started) * 1000
     if result.error:

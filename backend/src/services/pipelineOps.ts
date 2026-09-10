@@ -736,7 +736,7 @@ export function recoverRunsOnRestart(
       if (r.pid != null && pidAlive(r.pid)) {
         out.push({ id: r.id, nextStatus: "running", requeue: false });
       } else {
-        out.push({ id: r.id, nextStatus: "queued", requeue: true });
+        out.push({ id: r.id, nextStatus: "failed", requeue: false });
       }
     }
   }

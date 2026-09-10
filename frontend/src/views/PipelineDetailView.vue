@@ -29,7 +29,10 @@ const diffText = ref("");
 const diffHost = ref<HTMLDivElement | null>(null);
 let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
 const validationMessage = ref("");
-const dirty = computed(() => draft.value && pipelines.current && JSON.stringify(draft.value) !== JSON.stringify(pipelines.current));
+const savedDefinition = ref("");
+const definitionKeys = ["name", "description", "source_type", "source_config", "source_connection_id", "destination_connection_id", "destination_dataset", "extract_strategy", "write_behavior", "load_mode", "primary_key", "cursor_field", "python_code", "code_mode", "schedule", "schedule_enabled", "timezone", "quality_checks", "tags", "stream_max_seconds", "stream_max_messages", "scratch_destination_connection_id", "scratch_destination_dataset", "freshness_threshold_seconds"];
+function definition(value: Partial<SavedPipeline> | null) { return JSON.stringify(definitionKeys.map(k => (value as Record<string, unknown> | null)?.[k])); }
+const dirty = computed(() => definition(draft.value) !== savedDefinition.value);
 let poll: ReturnType<typeof setInterval> | null = null;
 let refreshing = false;
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -61,7 +64,7 @@ const backfillWarning = ref("");
 
 onMounted(async () => {
   await Promise.all([ws.loadConnections(), pipelines.open(pipelineId.value)]);
-  if (pipelines.current) draft.value = clone(pipelines.current);
+  if (pipelines.current) { draft.value = clone(pipelines.current); savedDefinition.value = definition(draft.value); }
   const runId = route.params.runId ? Number(route.params.runId) : null;
   if (runId) {
     tab.value = "runs";
@@ -85,6 +88,7 @@ function mountEditor() {
   editor = monaco.editor.create(editorHost.value, {
     value: draft.value?.python_code ?? "",
     language: "python",
+    readOnly: draft.value?.code_mode === "template",
     theme: monacoTheme.value,
     fontFamily: "JetBrains Mono, SF Mono, monospace",
     fontSize: 13,
@@ -99,6 +103,7 @@ function mountEditor() {
     draft.value.python_code = editor!.getValue();
   });
 }
+watch(() => draft.value?.code_mode, mode => editor?.updateOptions({readOnly: mode === "template"}));
 watch(monacoTheme, (t) => monaco.editor.setTheme(t));
 watch(
   () => draft.value?.python_code,
@@ -114,6 +119,7 @@ async function saveDraft() {
   try {
     await pipelines.update(pipelineId.value, draft.value);
     draft.value = clone(pipelines.current as SavedPipeline);
+    savedDefinition.value = definition(draft.value);
     return true;
   } catch (e) {
     runError.value = (e as Error).message;
@@ -127,6 +133,7 @@ async function publish() {
   if (!await saveDraft()) return;
   try {
     await pipelines.publish(pipelineId.value);
+    draft.value = clone(pipelines.current!); savedDefinition.value = definition(draft.value);
     await pipelines.loadActivity(pipelineId.value);
   } catch (e) {
     runError.value = (e as Error).message;
@@ -193,13 +200,14 @@ function viewLogs() {
 }
 async function askAiInvestigate() {
   const run = selectedRunId.value;
+  window.dispatchEvent(new Event("crunch-open-chat"));
   await chat.send(
     `Investigate pipeline ${pipelineId.value} run ${run ?? ""}. Use get_pipeline_run_logs and diagnose_pipeline_failure. Cite log evidence and say whether the cause is likely or confirmed.`,
   );
 }
 async function restore(versionId: number) {
   await pipelines.restoreVersion(pipelineId.value, versionId);
-  if (pipelines.current) draft.value = clone(pipelines.current);
+  if (pipelines.current) { draft.value = clone(pipelines.current); savedDefinition.value = definition(draft.value); }
   tab.value = "definition";
 }
 async function showDiff(fromId: number, toId: number) {
@@ -217,22 +225,31 @@ async function showDiff(fromId: number, toId: number) {
 }
 
 async function requestBackfill() {
-  const start = Math.floor(new Date(backfillStart.value).getTime() / 1000);
-  const end = Math.floor(new Date(backfillEnd.value).getTime() / 1000);
-  const r = await pipelines.backfill(pipelineId.value, start, end, false) as { warning?: string; needs_confirm?: boolean };
-  backfillWarning.value = r.warning || JSON.stringify(r);
+  try {
+    const start = Math.floor(new Date(backfillStart.value).getTime() / 1000);
+    const end = Math.floor(new Date(backfillEnd.value).getTime() / 1000);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) throw new Error("Choose a start and end date");
+    const r = await pipelines.backfill(pipelineId.value, start, end, false) as {warning?: string};
+    backfillWarning.value = r.warning || "";
+    runError.value = "";
+  } catch(e) { runError.value = String(e); }
 }
 async function confirmBackfill() {
-  const start = Math.floor(new Date(backfillStart.value).getTime() / 1000);
-  const end = Math.floor(new Date(backfillEnd.value).getTime() / 1000);
-  await pipelines.backfill(pipelineId.value, start, end, true);
-  backfillWarning.value = "";
-  tab.value = "runs";
+  try {
+    const start = Math.floor(new Date(backfillStart.value).getTime() / 1000);
+    const end = Math.floor(new Date(backfillEnd.value).getTime() / 1000);
+    const run = await pipelines.backfill(pipelineId.value, start, end, true) as PipelineRun;
+    backfillWarning.value = "";
+    await pipelines.loadRuns(pipelineId.value); await selectRun(run);
+  } catch(e) { runError.value = String(e); }
 }
+watch([backfillStart, backfillEnd], () => { backfillWarning.value = ""; });
 
 function fmtDate(ts: number | null | undefined): string {
   if (!ts) return "—";
-  return new Date(ts * 1000).toLocaleString(undefined, {timeZone: draft.value?.timezone || "UTC", timeZoneName: "short"});
+  const zone = tab.value === "runs" ? pipelines.runDetail?.timezone : draft.value?.timezone;
+  try { return new Date(ts * 1000).toLocaleString(undefined, {timeZone: zone || "UTC", timeZoneName: "short"}); }
+  catch { return new Date(ts * 1000).toLocaleString(undefined, {timeZone: "UTC", timeZoneName: "short"}); }
 }
 function fmtDuration(start: number, end: number | null): string {
   if (!end) return "—";
@@ -260,6 +277,14 @@ watch(() => route.params.runId, async (id) => {
 const currentRun = computed(() => pipelines.runDetail ?? null);
 const p = computed(() => pipelines.current);
 
+function updateChecks(event: Event) {
+  try {
+    const parsed = JSON.parse((event.target as HTMLTextAreaElement).value || "[]");
+    if (!Array.isArray(parsed)) throw new Error("Quality checks must be an array");
+    if (draft.value) draft.value.quality_checks = parsed;
+    runError.value = "";
+  } catch(e) { runError.value = String(e); }
+}
 function ensureSourceConfig() {
   if (!draft.value) return {};
   if (!draft.value.source_config) draft.value.source_config = {};
@@ -381,7 +406,7 @@ function ensureSourceConfig() {
           <span>{{ fmtDate(run.started_at) }}</span>
           <span>{{ fmtDuration(run.started_at, run.finished_at) }}</span>
           <span>{{ run.rows_loaded ?? "—" }} rows</span>
-          <span>{{ run.triggered_by }}</span>
+          <span>{{ run.triggered_by }}{{ run.is_test ? " · test" : "" }}</span>
           <span v-if="run.version_id">{{ versionLabel(run.version_id) }}</span>
         </li>
       </ul>
@@ -427,9 +452,7 @@ function ensureSourceConfig() {
         <div v-if="currentRun.attempts?.length">
           <h4>Attempts</h4>
           <ul class="attempts">
-            <li v-for="a in currentRun.attempts" :key="String(a.id)">
-              #{{ a.attempt_number }} {{ a.status }} — {{ a.error_message || "ok" }}
-            </li>
+            <li v-for="a in currentRun.attempts" :key="String(a.id)"><details><summary>#{{ a.attempt_number }} {{ a.status }} — {{ a.error_message || a.status }}</summary><pre>{{ a.log || "No log output" }}</pre></details></li>
           </ul>
         </div>
         <ul v-if="currentRun.check_results?.length" class="checks">
@@ -595,9 +618,9 @@ function ensureSourceConfig() {
         class="json"
         :value="JSON.stringify(draft.quality_checks || [], null, 2)"
         rows="6"
-        @change="draft.quality_checks = JSON.parse(($event.target as HTMLTextAreaElement).value || '[]')"
+        @change="updateChecks"
       />
-      <h3>Backfill</h3>
+      <h3>Backfill</h3><p class="muted">Dates use your browser timezone ({{ Intl.DateTimeFormat().resolvedOptions().timeZone }}). The end is exclusive.</p>
       <div class="grid">
         <label class="field"><span>From</span><input v-model="backfillStart" type="datetime-local" /></label>
         <label class="field"><span>To</span><input v-model="backfillEnd" type="datetime-local" /></label>

@@ -32,7 +32,7 @@ class PipelineJobs:
         except FileExistsError:
             return {'job_id': job_id, **self.status(job_id)}
         job.setdefault('runtime_config', {})['state_dir'] = str(self.directory / 'state')
-        path = directory / 'job.json' 
+        path = directory / 'job.json'
         path.write_text(json.dumps(job))
         path.chmod(0o600)
         log = open(directory / 'process.log', 'wb')
