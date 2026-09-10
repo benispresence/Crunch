@@ -89,9 +89,12 @@ configuration. Changes appear in activity without values.
 
 Read values in custom Python with `ctx.env["API_TOKEN"]` or
 `ctx.env.get("REGION", "eu")`. They are also injected into the individual worker's
-process environment for libraries that read environment settings. Importing `os`
-is subject to the existing package allowlist. Process-control names such as
-`PATH`, `PYTHONPATH`, and `CRUNCH_*` are reserved.
+process environment for libraries that read environment settings. `import os`
+works without an allowlist entry and resolves to a curated stand-in: `os.environ`
+and `os.getenv` read this pipeline's variables and secrets — and nothing else from
+the worker's environment — alongside the pure `os.path` helpers. Process-control
+names such as `PATH`, `PYTHONPATH`, and `CRUNCH_*` are reserved, and process
+control itself (`os.system`, `os.popen`, `os.remove`, `os.fork`) is absent.
 
 Storage uses the existing application encryption key. The dedicated API exposes
 ordinary variables and secret names only. Values are excluded from pipeline

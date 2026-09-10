@@ -9,6 +9,10 @@ The trust model:
 * So we apply an *allowlist* on imports — admin-curated via
   Admin → Allowed packages — plus a small default list of libraries
   pipelines reliably need.
+* ``os`` is neither allowlisted nor blocked: pipelines get a curated
+  stand-in exposing ``environ`` (their own variables and secrets only),
+  ``getenv`` and the pure ``os.path`` helpers, so credential lookups
+  work while ``os.system`` / ``os.popen`` / ``os.remove`` stay absent.
 * A SIGALRM-based wall-clock guard kills any script that runs past
   its ``timeout_seconds``. SIGALRM only fires from POSIX main
   threads; the FastAPI route adds an `asyncio.wait_for` belt to
@@ -41,7 +45,9 @@ logger = logging.getLogger(__name__)
 # Default modules pipelines can import even when the DB-backed
 # allowlist isn't reachable (unit tests, freshly cloned repo). Admin
 # Settings → Packages overrides this; nothing here should depend on
-# subprocess / shutil / socket / os / sys.
+# subprocess / shutil / socket / sys. ``os`` is special-cased in
+# :func:`_make_controlled_import` — pipelines always get the curated
+# stand-in built by :func:`_build_os_module`, never the real module.
 _DEFAULT_PIPELINE_ALLOWLIST: dict[str, str] = {
     # data tools
     "dlt": "dlt", "pandas": "pandas", "numpy": "numpy", "pyarrow": "pyarrow",
@@ -103,7 +109,95 @@ def _validate_pipeline_code(code: str) -> list[str]:
     return errors
 
 
-def _make_controlled_import(allowed_modules: dict[str, str]):
+class _PipelineEnviron(dict):
+    """``os.environ`` for pipeline code.
+
+    Reads expose *only* the pipeline's own variables and secrets
+    (Pipeline → Settings → Variables), never the engine process
+    environment — the runner inherits the server's env, which holds
+    the JWT/encryption secrets, and user code must not be able to
+    read those back out over HTTP.
+
+    Writes are mirrored into the real process environment so the
+    dlt-style ``os.environ["DESTINATION__…"] = …`` configuration idiom
+    keeps working; the runner is a single-use child process, so that
+    only affects this one run.
+    """
+
+    def __setitem__(self, key, value):
+        import os as _os
+
+        key, value = str(key), str(value)
+        _os.environ[key] = value
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        import os as _os
+
+        _os.environ.pop(str(key), None)
+        super().__delitem__(key)
+
+    def setdefault(self, key, default=""):
+        if key not in self:
+            self[key] = default
+        return self[key]
+
+    def update(self, other=(), **kwargs):  # noqa: D102 - dict override
+        for key, value in dict(other, **kwargs).items():
+            self[key] = value
+
+    def pop(self, key, *default):
+        import os as _os
+
+        _os.environ.pop(str(key), None)
+        return super().pop(key, *default)
+
+
+def _build_os_module(env: dict[str, str] | None) -> _types.ModuleType:
+    """A curated stand-in for ``os``.
+
+    ``import os`` is the single most common thing a pipeline does —
+    every credential lookup is ``os.environ.get(...)`` — but the real
+    module is also the shortest path out of the sandbox
+    (``os.system``, ``os.popen``, ``os.remove``, ``os.fork``). Handing
+    pipelines a module that exposes the environment and the *pure*
+    path helpers keeps the common case working without an admin
+    having to allowlist a process-control API. Anything not defined
+    here raises ``AttributeError`` at the point of use.
+    """
+    import posixpath as _posixpath
+
+    path_mod = _types.ModuleType("os.path")
+    for name in (
+        "join", "split", "splitext", "basename", "dirname", "normpath",
+        "relpath", "commonprefix", "isabs", "expanduser",
+    ):
+        setattr(path_mod, name, getattr(_posixpath, name))
+    path_mod.sep = _posixpath.sep
+    path_mod.extsep = _posixpath.extsep
+    path_mod.pathsep = _posixpath.pathsep
+
+    environ = _PipelineEnviron({str(k): str(v) for k, v in (env or {}).items()})
+
+    os_mod = _types.ModuleType("os")
+    os_mod.environ = environ
+    os_mod.getenv = lambda key, default=None: environ.get(str(key), default)
+    os_mod.path = path_mod
+    os_mod.sep = _posixpath.sep
+    os_mod.extsep = _posixpath.extsep
+    os_mod.pathsep = _posixpath.pathsep
+    os_mod.linesep = "\n"
+    os_mod.name = "posix"
+    os_mod.curdir = "."
+    os_mod.pardir = ".."
+    os_mod.__all__ = [
+        "environ", "getenv", "path", "sep", "extsep", "pathsep", "linesep",
+        "name", "curdir", "pardir",
+    ]
+    return os_mod
+
+
+def _make_controlled_import(allowed_modules: dict[str, str], env: dict[str, str] | None = None):
     """Return a ``__import__`` replacement that only allows top-level
     modules from ``allowed_modules``. Matches the visualisation
     sandbox's controlled_import implementation so pipelines + viz
@@ -111,9 +205,21 @@ def _make_controlled_import(allowed_modules: dict[str, str]):
     import builtins as _b
 
     real_import = _b.__import__
+    os_module = _build_os_module(env)
 
     def _controlled_import(name, globals=None, locals=None, fromlist=(), level=0):
         top = name.split(".")[0]
+        if top == "os":
+            # Curated stand-in, even if an admin allowlisted "os" —
+            # user code never reaches process control from here.
+            if name == "os.path" and fromlist:
+                return os_module.path
+            if name not in ("os", "os.path"):
+                raise ImportError(
+                    f"Module '{name}' is not available to pipelines. "
+                    "'os' is limited to os.environ, os.getenv and os.path."
+                )
+            return os_module
         if top not in allowed_modules:
             raise ImportError(
                 f"Module '{name}' is not in the allowed package list. "
@@ -124,14 +230,19 @@ def _make_controlled_import(allowed_modules: dict[str, str]):
     return _controlled_import
 
 
-def _build_safe_builtins(allowed_modules: dict[str, str] | None = None) -> dict[str, Any]:
+def _build_safe_builtins(
+    allowed_modules: dict[str, str] | None = None,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Build the restricted ``__builtins__`` dict for pipeline scripts.
 
     We reuse the visualization sandbox's import-allowlist model so a
     pipeline can't ``import subprocess`` or any other module unless an
     admin has explicitly enabled it via the *Allowed packages* tab.
     This is the same trust boundary as visualisation Python — there is
-    no second tier.
+    no second tier. The one exception is ``os``: it always resolves to
+    the curated stand-in from :func:`_build_os_module` so credential
+    lookups work without exposing process control.
     """
     import builtins as _b
 
@@ -149,7 +260,9 @@ def _build_safe_builtins(allowed_modules: dict[str, str] | None = None) -> dict[
     for name in safe_names:
         if hasattr(_b, name):
             out[name] = getattr(_b, name)
-    out["__import__"] = _make_controlled_import(allowed_modules or _DEFAULT_PIPELINE_ALLOWLIST)
+    out["__import__"] = _make_controlled_import(
+        allowed_modules or _DEFAULT_PIPELINE_ALLOWLIST, env,
+    )
     return out
 
 
@@ -218,7 +331,7 @@ def execute_pipeline(
         "__doc__": None,
         "__loader__": None,
         "__spec__": None,
-        "__builtins__": _build_safe_builtins(allowed_modules),
+        "__builtins__": _build_safe_builtins(allowed_modules, ctx.env),
         "ctx": ctx,
         "print": _make_capturing_print(log_buf),
     }
@@ -317,6 +430,12 @@ def execute_pipeline(
             output_tables = list(output_tables) + [{"name": "output", "rows": captured}]
     elif isinstance(ret, int):
         rows = ret
+    elif isinstance(ret, list):
+        # ``run()`` that just returns the extracted records — the shape
+        # the conversational builder produces for simple REST sources.
+        captured = [r for r in ret if isinstance(r, dict)]
+        rows = len(captured)
+        output_tables = [{"name": "output", "rows": captured}]
 
     return PipelineResult(
         success=True,
