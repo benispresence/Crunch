@@ -15,7 +15,7 @@ import { app, BrowserWindow, dialog, Menu, shell } from "electron";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import http from "node:http";
+import { waitForHttp } from "./health.mjs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +28,13 @@ const children = [];
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
 let shuttingDown = false;
+let stackReady = false;
+let startupFailure = null;
+
+function logFile() { return path.join(userDir(), "desktop.log"); }
+function writeLog(message) {
+  try { fs.appendFileSync(logFile(), message, { mode: 0o600 }); } catch { /* console still available */ }
+}
 
 function repoRoot() {
   // desktop/src/main.mjs → repo root is ../..
@@ -45,6 +52,7 @@ function userDir() {
 
 function log(...args) {
   console.log("[crunch-desktop]", ...args);
+  writeLog(`${new Date().toISOString()} ${args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ")}\n`);
 }
 
 function readJson(file, fallback) {
@@ -88,35 +96,6 @@ function findFreePort() {
   });
 }
 
-function waitForHttp(url, timeoutMs) {
-  const started = Date.now();
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      const req = http.get(url, (res) => {
-        res.resume();
-        if (res.statusCode && res.statusCode < 500) {
-          resolve();
-          return;
-        }
-        retry();
-      });
-      req.on("error", retry);
-      req.setTimeout(1500, () => {
-        req.destroy();
-        retry();
-      });
-    };
-    const retry = () => {
-      if (Date.now() - started > timeoutMs) {
-        reject(new Error(`timed out waiting for ${url}`));
-        return;
-      }
-      setTimeout(tick, 300);
-    };
-    tick();
-  });
-}
-
 function firstExisting(candidates) {
   for (const c of candidates) {
     if (c && fs.existsSync(c)) return c;
@@ -150,16 +129,28 @@ function spawnLogged(cmd, args, opts) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const prefix = opts.label || path.basename(cmd);
-  child.stdout?.on("data", (buf) => process.stdout.write(`[${prefix}] ${buf}`));
-  child.stderr?.on("data", (buf) => process.stderr.write(`[${prefix}] ${buf}`));
+  child.stdout?.on("data", (buf) => {
+    process.stdout.write(`[${prefix}] ${buf}`);
+    writeLog(`[${prefix}] ${buf}`);
+  });
+  child.stderr?.on("data", (buf) => {
+    process.stderr.write(`[${prefix}] ${buf}`);
+    writeLog(`[${prefix}] ${buf}`);
+  });
+  const failed = (detail) => {
+    if (shuttingDown || startupFailure) return;
+    startupFailure = new Error(`${prefix} ${detail}. See ${logFile()}.`);
+    log(startupFailure.message);
+    if (stackReady) {
+      stopChildren();
+      dialog.showErrorBox("Crunch stopped", startupFailure.message);
+      app.quit();
+    }
+  };
+  child.on("error", err => failed(`could not start: ${err.message}`));
   child.on("exit", (code, signal) => {
     log(prefix, "exited", { code, signal });
-    if (!shuttingDown && code && code !== 0) {
-      dialog.showErrorBox(
-        "Crunch stopped",
-        `${prefix} exited unexpectedly (${signal || code}). Check the log in ${userDir()}.`,
-      );
-    }
+    failed(`exited unexpectedly (${signal || code})`);
   });
   children.push(child);
   return child;
@@ -218,6 +209,9 @@ function appIcon() {
 
 async function startStack() {
   fs.mkdirSync(userDir(), { recursive: true });
+  // Keep one previous launch; bound log growth between app restarts.
+  if (fs.existsSync(logFile())) fs.renameSync(logFile(), `${logFile()}.previous`);
+  log("Starting local services");
   const secrets = loadOrCreateSecrets();
   const setupToken = crypto.randomBytes(32).toString("hex");
   const apiPort = await findFreePort();
@@ -250,6 +244,9 @@ async function startStack() {
     NICEMETA_PUBLIC_BASE_URL: origin,
     PYTHONPATH: crunchPythonPath(),
     PYTHONDONTWRITEBYTECODE: "1",
+    PYTHONUNBUFFERED: "1",
+    PYTHONNOUSERSITE: "1",
+    MPLCONFIGDIR: path.join(userDir(), "matplotlib"),
   };
 
   const py = pythonExecutable();
@@ -271,7 +268,13 @@ async function startStack() {
     label: "backend",
   });
 
-  await waitForHttp(`${origin}/api/health`, 45_000);
+  const failure = () => startupFailure;
+  await waitForHttp(`http://127.0.0.1:${enginePort}/health`, 90_000, {
+    failure, healthy: body => body.status === "ok" && body.service === "crunch-python-engine",
+  });
+  await waitForHttp(`${origin}/api/health`, 45_000, { failure, healthy: body => body.ok === true });
+  if (startupFailure) throw startupFailure;
+  stackReady = true;
   return `${origin}/login#desktop-setup=${setupToken}`;
 }
 
@@ -320,13 +323,14 @@ async function createWindow() {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log("startup failed", msg);
+    stopChildren();
     await dialog.showMessageBox(mainWindow, {
       type: "error",
       title: "Crunch failed to start",
       message: msg,
       detail:
         "The desktop app starts a local API and a Python query engine, then opens them in this window. "
-        + "Python 3.11+ is required unless you packed a bundled interpreter.",
+        + `Startup details are saved in ${logFile()}.`,
     });
     app.quit();
   }
