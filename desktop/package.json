@@ -75,6 +75,7 @@
         "to": "python-engine/pipeline_jobs.py"
       }
     ],
+    "afterPack": "scripts/sign-mac.mjs",
     "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
     "mac": {
       "category": "public.app-category.productivity",

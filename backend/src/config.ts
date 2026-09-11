@@ -36,6 +36,7 @@ export const config = {
   bindHost: process.env.BIND_HOST ?? (isDesktop ? "127.0.0.1" : ""),
   isDev,
   isDesktop,
+  desktopSetupToken: isDesktop ? process.env.CRUNCH_DESKTOP_SETUP_TOKEN ?? "" : "",
   jwtSecret,
   // Access-token lifetime. Long-lived tokens are a bigger blast radius
   // if one leaks; operators who want tighter sessions can shorten this

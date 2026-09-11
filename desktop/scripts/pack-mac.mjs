@@ -10,14 +10,6 @@
  *
  * Flags:
  *   --skip-python-bundle  use whatever python3 is on the user's PATH at runtime
- *   --arch=<arm64|x64>    build for that architecture instead of this machine's
- *
- * Cross-building is how CI produces both zips: GitHub's macos-13 (Intel)
- * runners are being retired, so an arm64 runner builds the x64 zip too.
- * Everything bundled is arch-specific — the Node and CPython downloads
- * below, and backend/node_modules (better-sqlite3 is native) — so a
- * cross-build also needs `npm_config_arch` set for `npm ci`, which is
- * what the workflow does.
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -30,20 +22,15 @@ const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 const repo = path.resolve(desktopDir, "..");
 const packDir = path.join(desktopDir, ".pack");
 const skipPython = process.argv.includes("--skip-python-bundle");
-
-function targetArch() {
-  const flag = process.argv.find((a) => a.startsWith("--arch="))?.slice(7);
-  const want = flag ?? process.env.CRUNCH_PACK_ARCH ?? process.arch;
-  if (want !== "arm64" && want !== "x64") {
-    throw new Error(`unsupported --arch=${want} (expected arm64 or x64)`);
-  }
-  return want;
+const arch = process.argv.find((arg) => arg.startsWith("--arch="))?.split("=")[1] ?? process.arch;
+if (process.platform !== "darwin" || !["arm64", "x64"].includes(arch) || arch !== process.arch) {
+  throw new Error(`Build on a native ${arch} Mac with matching Node (got ${process.platform}/${process.arch}).`);
 }
-const arch = targetArch();
 
 function run(cmd, args, cwd, env = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd, stdio: "inherit", env, shell: process.platform === "win32" });
+    child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`${cmd} ${args.join(" ")} exited ${code}`));
@@ -83,7 +70,14 @@ const PYTHON_STANDALONE = {
   x64: "https://github.com/astral-sh/python-build-standalone/releases/download/20250317/cpython-3.11.11+20250317-x86_64-apple-darwin-install_only.tar.gz",
 };
 
+// A cached interpreter or native wheel from another architecture cannot be reused.
+const cacheKey = `${arch}-node-${NODE_VERSION}`;
+const cacheFile = path.join(packDir, "runtime-version");
+if (fs.existsSync(packDir) && (!fs.existsSync(cacheFile) || fs.readFileSync(cacheFile, "utf8") !== cacheKey)) {
+  fs.rmSync(packDir, { recursive: true, force: true });
+}
 fs.mkdirSync(packDir, { recursive: true });
+fs.writeFileSync(cacheFile, cacheKey);
 fs.mkdirSync(path.join(packDir, "python"), { recursive: true });
 fs.mkdirSync(path.join(packDir, "pydeps"), { recursive: true });
 fs.mkdirSync(path.join(packDir, "node"), { recursive: true });
@@ -136,7 +130,7 @@ if (!skipPython) {
   }
 }
 
-console.log("→ electron-builder (zip for", arch, ")");
+console.log("→ electron-builder (zip for this Mac:", arch, ")");
 await run(
   path.join(desktopDir, "node_modules", ".bin", "electron-builder"),
   ["--mac", "zip", `--${arch}`, "--publish", "never"],
@@ -144,15 +138,17 @@ await run(
   { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: "false" },
 );
 
+const appPath = path.join(desktopDir, "release", arch === "arm64" ? "mac-arm64" : "mac", "Crunch.app");
+await run(process.execPath, [path.join(desktopDir, "scripts", "verify-mac.mjs"), appPath, arch], desktopDir);
+
 const label = arch === "arm64" ? "apple-silicon" : "intel";
 const zips = fs.readdirSync(path.join(desktopDir, "release"))
   .filter((f) => f.endsWith(".zip"))
   .map((f) => path.join(desktopDir, "release", f));
-console.log("\nDownloadable file(s) for " + label + ":");
+console.log("\nDownloadable file(s) for this machine (" + label + "):");
 for (const z of zips) {
   const mb = (fs.statSync(z).size / (1024 * 1024)).toFixed(1);
   console.log("  " + z + "  (" + mb + " MB)");
 }
 console.log("Send that zip. Recipients unzip, then right-click Crunch.app → Open.");
-console.log("Intel and Apple Silicon are different zips — pass --arch=x64 / --arch=arm64");
-console.log("for the other one (or let GitHub Actions build both).");
+console.log("Intel and Apple Silicon are different zips — pack on each arch (or GitHub Actions).");
