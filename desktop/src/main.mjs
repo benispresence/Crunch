@@ -249,6 +249,7 @@ async function startStack() {
     CORS_ORIGIN: origin,
     NICEMETA_PUBLIC_BASE_URL: origin,
     PYTHONPATH: crunchPythonPath(),
+    PYTHONDONTWRITEBYTECODE: "1",
   };
 
   const py = pythonExecutable();

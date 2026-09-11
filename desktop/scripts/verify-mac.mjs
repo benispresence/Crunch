@@ -24,5 +24,5 @@ run(path.join(resources, 'python', 'bin', 'python3'), ['-c', `
 import platform
 assert platform.machine() == ${JSON.stringify(arch === 'x64' ? 'x86_64' : 'arm64')}
 import fastapi, uvicorn, pandas, numpy, duckdb, sqlalchemy, greenlet
-`], { env: { ...process.env, PYTHONPATH: path.join(resources, 'pydeps') } });
+`], { env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", PYTHONPATH: path.join(resources, 'pydeps') } });
 console.log(`Verified signature and native runtimes: ${arch}`);
