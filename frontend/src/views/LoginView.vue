@@ -14,6 +14,8 @@ interface SsoProvider {
   name: string;
 }
 
+const desktopSetup = ref(false);
+let setupToken = sessionStorage.getItem("crunch_desktop_setup") ?? "";
 const mode = ref<"login" | "register">("login");
 const email = ref("");
 const password = ref("");
@@ -35,6 +37,11 @@ const ldapProviders = computed(() =>
 );
 
 onMounted(async () => {
+  if (window.location.hash.startsWith("#desktop-setup=")) {
+    setupToken = window.location.hash.slice("#desktop-setup=".length);
+    sessionStorage.setItem("crunch_desktop_setup", setupToken);
+    history.replaceState(null, "", window.location.pathname);
+  }
   // The OIDC/SAML callback redirects back with the JWT in the URL
   // fragment (#token=…). Pluck it out, sign the user in, and clean the
   // fragment so a back-button doesn't re-trigger the flow.
@@ -53,12 +60,15 @@ onMounted(async () => {
 
   try {
     const cfg = await api.get<{
+      desktop_setup_required?: boolean;
       registration_enabled: boolean;
       default_admin_pending: boolean;
       default_admin_email: string | null;
       default_admin_password: string | null;
       sso_providers: SsoProvider[];
     }>("/auth/config");
+    desktopSetup.value = !!cfg.desktop_setup_required && !!setupToken;
+    if (desktopSetup.value) mode.value = "register";
     registrationEnabled.value = cfg.registration_enabled;
     defaultAdminPending.value = cfg.default_admin_pending;
     defaultAdminEmail.value = cfg.default_admin_email;
@@ -133,11 +143,12 @@ async function submit() {
   busy.value = true;
   error.value = "";
   try {
-    const path = mode.value === "login" ? "/auth/login" : "/auth/register";
+    const path = desktopSetup.value ? "/auth/desktop-setup" : mode.value === "login" ? "/auth/login" : "/auth/register";
     const res = await api.post<{ token: string; user: { id: number; email: string; role: string } }>(
       path,
-      { email: email.value, password: password.value },
+      { email: email.value, password: password.value, ...(desktopSetup.value ? { setup_token: setupToken } : {}) },
     );
+    if (desktopSetup.value) sessionStorage.removeItem("crunch_desktop_setup");
     auth.setSession(res.token, res.user);
     await goAfterLogin();
   } catch (e) {
@@ -182,7 +193,7 @@ const useLdap = ref(false);
     <div class="login__card">
       <img src="/logo.png" alt="Crunch" class="login__logo" />
       <h1 class="login__title">Crunch</h1>
-      <p class="login__subtitle">Sign in to continue.</p>
+      <p class="login__subtitle">{{ desktopSetup ? "Create your admin account to get started. Choose your email and password." : "Sign in to continue." }}</p>
 
       <div
         v-if="mode === 'login' && defaultAdminPending && defaultAdminPassword"
@@ -264,20 +275,20 @@ const useLdap = ref(false);
         </label>
 
         <button class="btn btn-primary" type="submit" :disabled="busy">
-          {{ busy ? "..." : useLdap ? "Sign in via LDAP" : (mode === "login" ? "Sign in" : "Create account") }}
+          {{ busy ? "..." : useLdap ? "Sign in via LDAP" : (desktopSetup ? "Create admin account" : mode === "login" ? "Sign in" : "Create account") }}
         </button>
 
         <p v-if="error" class="login__error">{{ error }}</p>
 
         <button
-          v-if="(registrationEnabled || mode === 'register') && !useLdap"
+          v-if="!desktopSetup && (registrationEnabled || mode === 'register') && !useLdap"
           class="btn-ghost login__toggle"
           type="button"
           @click="mode = mode === 'login' ? 'register' : 'login'"
         >
           {{ mode === "login" ? "Need an account? Register" : "Have an account? Sign in" }}
         </button>
-        <p v-else-if="!registrationEnabled && !useLdap" class="login__locked">
+        <p v-else-if="!desktopSetup && !registrationEnabled && !useLdap" class="login__locked">
           Public registration is disabled. Ask an admin to create your account.
         </p>
       </form>
