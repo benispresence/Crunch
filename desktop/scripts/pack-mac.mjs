@@ -11,6 +11,7 @@
  * Flags:
  *   --skip-python-bundle  use whatever python3 is on the user's PATH at runtime
  */
+import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import https from "node:https";
@@ -71,7 +72,9 @@ const PYTHON_STANDALONE = {
 };
 
 // A cached interpreter or native wheel from another architecture cannot be reused.
-const cacheKey = `${arch}-node-${NODE_VERSION}`;
+const requirementsFile = path.join(desktopDir, "requirements-engine.txt");
+const requirementsHash = crypto.createHash("sha256").update(fs.readFileSync(requirementsFile)).digest("hex");
+const cacheKey = `${arch}-node-${NODE_VERSION}-${requirementsHash}`;
 const cacheFile = path.join(packDir, "runtime-version");
 if (fs.existsSync(packDir) && (!fs.existsSync(cacheFile) || fs.readFileSync(cacheFile, "utf8") !== cacheKey)) {
   fs.rmSync(packDir, { recursive: true, force: true });
@@ -114,7 +117,9 @@ if (!skipPython) {
     await extractTarGz(tar, pyDir);
   }
   const pydeps = path.join(packDir, "pydeps");
-  if (!fs.existsSync(path.join(pydeps, "crunch")) && !fs.existsSync(path.join(pydeps, "fastapi"))) {
+  const depsComplete = path.join(packDir, "pydeps-complete");
+  if (!fs.existsSync(depsComplete)) {
+    fs.rmSync(pydeps, { recursive: true, force: true });
     console.log("→ pip install --target pydeps (this is the bulky step)");
     await run(pyBin, ["-m", "pip", "install", "--upgrade", "pip"], pyDir);
     // Install engine deps into a relocatable target dir. Do NOT
@@ -122,11 +127,9 @@ if (!skipPython) {
     // the desktop engine never imports. PYTHONPATH=pydeps:src at runtime.
     await run(pyBin, [
       "-m", "pip", "install", "--target", pydeps,
-      "fastapi", "uvicorn[standard]", "pydantic",
-      "pandas", "numpy", "plotly", "duckdb", "openpyxl",
-      "sqlalchemy[asyncio]", "greenlet",
-      "asyncpg", "aiomysql", "aiosqlite",
+      "-r", requirementsFile,
     ], repo);
+    fs.writeFileSync(depsComplete, requirementsHash);
   }
 }
 
