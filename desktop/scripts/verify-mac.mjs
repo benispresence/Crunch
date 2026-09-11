@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const app = path.resolve(process.argv[2]);
 const arch = process.argv[3] ?? process.arch;
 const resources = path.join(app, 'Contents', 'Resources');
 function run(cmd, args, options = {}) {
-  return execFileSync(cmd, args, { encoding: 'utf8', ...options }).trim();
+  return execFileSync(cmd, args, { encoding: 'utf8', ...options })?.trim() ?? '';
 }
 run('codesign', ['--verify', '--deep', '--strict', app]);
 const executable = path.join(app, 'Contents', 'MacOS', 'Crunch');
@@ -26,3 +27,10 @@ assert platform.machine() == ${JSON.stringify(arch === 'x64' ? 'x86_64' : 'arm64
 import fastapi, uvicorn, pandas, numpy, duckdb, sqlalchemy, greenlet
 `], { env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", PYTHONPATH: path.join(resources, 'pydeps') } });
 console.log(`Verified signature and native runtimes: ${arch}`);
+
+run(path.join(resources, 'python', 'bin', 'python3'), [
+  fileURLToPath(new URL('./engine-smoke.py', import.meta.url)), resources,
+], { env: { ...process.env, PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONPATH: path.join(resources, 'pydeps') }, stdio: 'inherit' });
+
+// Running queries must not modify resources protected by the app signature.
+run('codesign', ['--verify', '--deep', '--strict', app]);

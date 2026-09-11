@@ -48,7 +48,7 @@ jobs:
         working-directory: desktop
 
       - name: Test production desktop setup
-        run: node --test backend/test/desktopSetup.test.mjs
+        run: node --test backend/test/desktopSetup.test.mjs desktop/scripts/health.test.mjs
 
       - name: Verify the distributed zip
         env:

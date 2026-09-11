@@ -53,8 +53,8 @@ Output (gitignored):
 
 | Machine        | File |
 |----------------|------|
-| Apple Silicon  | `desktop/release/Crunch-1.1.2-mac-arm64.zip` |
-| Intel          | `desktop/release/Crunch-1.1.2-mac-x64.zip` |
+| Apple Silicon  | `desktop/release/Crunch-1.1.3-mac-arm64.zip` |
+| Intel          | `desktop/release/Crunch-1.1.3-mac-x64.zip` |
 
 Send the zip. The other person unzips, then **right-click `Crunch.app` →
 Open** (the build is ad-hoc signed, without Apple notarization).
@@ -73,3 +73,5 @@ binaries and a code-signing story of its own.
 Choose your administrator email and password in the app; completing setup signs you in. An untouched v1.1.1 default account is recovered by the same screen when upgrading. Existing configured accounts continue to use their chosen credentials.
 
 Builds validate the app signature and bundled native runtimes; CI repeats validation after extracting the ZIP. Run the setup regression tests with `node --test backend/test/desktopSetup.test.mjs` from the repository root after building the backend.
+
+The desktop engine dependency list lives in `requirements-engine.txt`. Changing it invalidates cached Python dependencies. Packaging starts the actual bundled engine, runs SQLite and CSV queries, and renders charts with every built-in renderer. Startup waits for engine health; service output is saved to `~/Library/Application Support/Crunch/desktop.log` (the previous launch is retained as `desktop.log.previous`).
