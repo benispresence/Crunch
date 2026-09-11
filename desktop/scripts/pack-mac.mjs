@@ -22,11 +22,15 @@ const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 const repo = path.resolve(desktopDir, "..");
 const packDir = path.join(desktopDir, ".pack");
 const skipPython = process.argv.includes("--skip-python-bundle");
-const arch = process.arch === "arm64" ? "arm64" : "x64";
+const arch = process.argv.find((arg) => arg.startsWith("--arch="))?.split("=")[1] ?? process.arch;
+if (process.platform !== "darwin" || !["arm64", "x64"].includes(arch) || arch !== process.arch) {
+  throw new Error(`Build on a native ${arch} Mac with matching Node (got ${process.platform}/${process.arch}).`);
+}
 
 function run(cmd, args, cwd, env = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd, stdio: "inherit", env, shell: process.platform === "win32" });
+    child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`${cmd} ${args.join(" ")} exited ${code}`));
@@ -66,7 +70,14 @@ const PYTHON_STANDALONE = {
   x64: "https://github.com/astral-sh/python-build-standalone/releases/download/20250317/cpython-3.11.11+20250317-x86_64-apple-darwin-install_only.tar.gz",
 };
 
+// A cached interpreter or native wheel from another architecture cannot be reused.
+const cacheKey = `${arch}-node-${NODE_VERSION}`;
+const cacheFile = path.join(packDir, "runtime-version");
+if (fs.existsSync(packDir) && (!fs.existsSync(cacheFile) || fs.readFileSync(cacheFile, "utf8") !== cacheKey)) {
+  fs.rmSync(packDir, { recursive: true, force: true });
+}
 fs.mkdirSync(packDir, { recursive: true });
+fs.writeFileSync(cacheFile, cacheKey);
 fs.mkdirSync(path.join(packDir, "python"), { recursive: true });
 fs.mkdirSync(path.join(packDir, "pydeps"), { recursive: true });
 fs.mkdirSync(path.join(packDir, "node"), { recursive: true });
@@ -122,10 +133,13 @@ if (!skipPython) {
 console.log("→ electron-builder (zip for this Mac:", arch, ")");
 await run(
   path.join(desktopDir, "node_modules", ".bin", "electron-builder"),
-  ["--mac", "zip", "--publish", "never"],
+  ["--mac", "zip", `--${arch}`, "--publish", "never"],
   desktopDir,
   { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: "false" },
 );
+
+const appPath = path.join(desktopDir, "release", arch === "arm64" ? "mac-arm64" : "mac", "Crunch.app");
+await run(process.execPath, [path.join(desktopDir, "scripts", "verify-mac.mjs"), appPath, arch], desktopDir);
 
 const label = arch === "arm64" ? "apple-silicon" : "intel";
 const zips = fs.readdirSync(path.join(desktopDir, "release"))

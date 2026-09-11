@@ -42,7 +42,7 @@ if you want to inspect or back up the files yourself.
 
 These are **two different files**. Native Python/Node wheels cannot be
 universal. Pack on the matching Mac, or run the `Desktop Mac zips`
-GitHub Action (it builds both on `macos-13` Intel and `macos-14` Apple
+GitHub Action (it builds both on `macos-15-intel` Intel and `macos-14` Apple
 Silicon and uploads artifacts).
 
 ```bash
@@ -53,11 +53,11 @@ Output (gitignored):
 
 | Machine        | File |
 |----------------|------|
-| Apple Silicon  | `desktop/release/Crunch-1.1.1-mac-arm64.zip` |
-| Intel          | `desktop/release/Crunch-1.1.1-mac-x64.zip` |
+| Apple Silicon  | `desktop/release/Crunch-1.1.2-mac-arm64.zip` |
+| Intel          | `desktop/release/Crunch-1.1.2-mac-x64.zip` |
 
 Send the zip. The other person unzips, then **right-click `Crunch.app` →
-Open** (the build is unsigned).
+Open** (the build is ad-hoc signed, without Apple notarization).
 
 The first pack is slow (downloads CPython + pandas/Plotly/DuckDB). The
 zip is large — hundreds of MB.
@@ -67,3 +67,9 @@ zip is large — hundreds of MB.
 electron-builder has an NSIS target stub. Do not ship it yet — the pack
 script only fetches macOS CPython/Node. A Windows pack needs Win
 binaries and a code-signing story of its own.
+
+### First launch
+
+Choose your administrator email and password in the app; completing setup signs you in. An untouched v1.1.1 default account is recovered by the same screen when upgrading. Existing configured accounts continue to use their chosen credentials.
+
+Builds validate the app signature and bundled native runtimes; CI repeats validation after extracting the ZIP. Run the setup regression tests with `node --test backend/test/desktopSetup.test.mjs` from the repository root after building the backend.

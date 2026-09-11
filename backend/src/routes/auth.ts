@@ -5,6 +5,7 @@ import { config } from "../config.js";
 import { db } from "../db/index.js";
 import {
   createUser,
+  DEFAULT_ADMIN_EMAIL,
   findUserByEmail,
   findUserById,
   getDefaultAdminBootstrapPassword,
@@ -82,6 +83,8 @@ authRouter.get("/config", (_req, res) => {
   // pre-fill it on the login page for convenience, where exposure is
   // local-only (F10).
   res.json({
+    desktop_setup_required: config.isDesktop && pending && !!config.desktopSetupToken &&
+      (db.prepare("SELECT COUNT(*) AS c FROM users").get() as { c: number }).c === 1,
     registration_enabled: isPublicRegistrationEnabled(),
     default_admin_pending: pending,
     default_admin_email: pending ? "admin@nicemeta.local" : null,
@@ -89,6 +92,36 @@ authRouter.get("/config", (_req, res) => {
       pending && config.isDev ? getDefaultAdminBootstrapPassword() : null,
     sso_providers: providers,
   });
+});
+
+// The desktop shell supplies a per-launch capability in the URL fragment.
+// Never publish it (or the generated password) in the public config response.
+authRouter.post("/desktop-setup", authLimiter, (req, res) => {
+  if (!config.isDesktop || !config.desktopSetupToken ||
+      req.body?.setup_token !== config.desktopSetupToken) {
+    res.status(403).json({ error: "Open setup from the Crunch desktop app." });
+    return;
+  }
+  const parsed = registerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const user = db.transaction(() => {
+    const admin = findUserByEmail(DEFAULT_ADMIN_EMAIL);
+    const count = db.prepare("SELECT COUNT(*) AS c FROM users").get() as { c: number };
+    if (!admin || admin.must_change_password !== 1 || count.c !== 1) return null;
+    updatePassword(admin.id, parsed.data.password);
+    db.prepare("UPDATE users SET email = ? WHERE id = ?").run(parsed.data.email, admin.id);
+    return findUserById(admin.id)!;
+  })();
+  if (!user) {
+    res.status(409).json({ error: "Setup is already complete. Sign in with your existing account." });
+    return;
+  }
+  res.json({ token: signToken(user), user: {
+    id: user.id, email: user.email, role: user.role, must_change_password: false,
+  } });
 });
 
 authRouter.post("/register", authLimiter, (req, res) => {

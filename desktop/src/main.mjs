@@ -219,6 +219,7 @@ function appIcon() {
 async function startStack() {
   fs.mkdirSync(userDir(), { recursive: true });
   const secrets = loadOrCreateSecrets();
+  const setupToken = crypto.randomBytes(32).toString("hex");
   const apiPort = await findFreePort();
   const enginePort = await findFreePort();
   const origin = `http://127.0.0.1:${apiPort}`;
@@ -231,6 +232,7 @@ async function startStack() {
   const commonEnv = {
     ...process.env,
     CRUNCH_DESKTOP: "1",
+    CRUNCH_DESKTOP_SETUP_TOKEN: setupToken,
     NODE_ENV: app.isPackaged ? "production" : (process.env.NODE_ENV || "development"),
     JWT_SECRET: secrets.JWT_SECRET,
     PYTHON_ENGINE_TOKEN: secrets.PYTHON_ENGINE_TOKEN,
@@ -269,7 +271,7 @@ async function startStack() {
   });
 
   await waitForHttp(`${origin}/api/health`, 45_000);
-  return origin;
+  return `${origin}/login#desktop-setup=${setupToken}`;
 }
 
 function splashHtml() {
